@@ -26,7 +26,7 @@ First, create the three repositories on GitHub or your preferred Git hosting ser
 
 ```bash
 # Clone the main repository
-git clone git@github.com:you/redpen-infra.git
+git clone git@github.com:volokhonsky/redpen-infra.git
 cd redpen-infra
 
 # Add and commit the initial files
@@ -45,7 +45,7 @@ git add .
 git commit -m "Initial commit for redpen-content"
 
 # Add remote and push
-git remote add origin git@github.com:you/redpen-content.git
+git remote add origin git@github.com:volokhonsky/redpen-content.git
 git push -u origin main
 ```
 
@@ -59,7 +59,7 @@ git add .
 git commit -m "Initial commit for redpen-publish"
 
 # Add remote and push
-git remote add origin git@github.com:you/redpen-publish.git
+git remote add origin git@github.com:volokhonsky/redpen-publish.git
 git push -u origin main
 ```
 
@@ -72,8 +72,8 @@ From the main repository:
 rm -rf redpen-content redpen-publish
 
 # Add the repositories as submodules
-git submodule add git@github.com:you/redpen-content.git redpen-content
-git submodule add git@github.com:you/redpen-publish.git redpen-publish
+git submodule add git@github.com:volokhonsky/redpen-content.git redpen-content
+git submodule add git@github.com:volokhonsky/redpen-publish.git redpen-publish
 
 # Commit the changes
 git commit -am "Add redpen-content and redpen-publish as submodules"
@@ -85,7 +85,7 @@ git push origin main
 To clone the project with all submodules:
 
 ```bash
-git clone --recurse-submodules git@github.com:you/redpen-infra.git
+git clone --recurse-submodules git@github.com:volokhonsky/redpen-infra.git
 cd redpen-infra
 ```
 
