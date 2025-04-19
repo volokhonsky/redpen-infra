@@ -31,7 +31,7 @@ This is the main repository for the RedPen project, which processes PDF textbook
 
 1. Clone this repository with submodules:
    ```bash
-   git clone --recurse-submodules git@github.com:you/redpen-infra.git
+   git clone --recurse-submodules git@github.com:volokhonsky/redpen-infra.git
    cd redpen-infra
    ```
 
