@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>RedPen — Красной ручкой</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <link rel="stylesheet" href="templates/css/main.css">
+  <link rel="stylesheet" href="templates/css/components.css">
+  <link rel="stylesheet" href="templates/css/responsive.css">
+</head>
+<body>
+  <header>RedPen — Красной ручкой</header>
+  <nav>
+    <a href="#" onclick="loadPage(7);return false;">Стр. 7</a>
+    <a href="#" onclick="loadPage(8);return false;">Стр. 8</a>
+    <a href="#" onclick="loadPage(9);return false;">Стр. 9</a>
+    <a href="#" onclick="loadPage(10);return false;">Стр. 10</a>
+    <a href="#" onclick="loadPage(11);return false;">Стр. 11</a>
+    <a href="#" onclick="loadPage(12);return false;">Стр. 12</a>
+  </nav>
+  <div id="layout">
+    <div id="content-wrapper">
+      <div id="image-container">
+        <img id="page-image"/>
+      </div>
+      <div id="comments-content">
+        <h2>Комментарии</h2>
+        <ul id="comment-list"></ul>
+      </div>
+    </div>
+    <div id="global-comment-container">
+      <h2>Общий комментарий</h2>
+      <div id="global-comment">Загрузка...</div>
+    </div>
+  </div>
+
+  <!-- Mobile comment overlay -->
+  <div id="mobile-overlay" class="mobile-overlay">
+    <div class="mobile-overlay-close" onclick="closeMobileOverlay()">×</div>
+    <div class="mobile-comment-content" id="mobile-comment-content"></div>
+  </div>
+
+  <script src="templates/js/layout.js"></script>
+  <script src="templates/js/annotations.js"></script>
+  <script src="templates/js/mobile.js"></script>
+  <script src="templates/js/main.js"></script>
+</body>
+</html>

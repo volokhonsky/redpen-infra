@@ -1,0 +1,2 @@
+# Requirements for PDF processing and data conversion
+PyMuPDF==1.19.6  # For PDF processing and image extraction

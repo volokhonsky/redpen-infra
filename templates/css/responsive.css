@@ -1,0 +1,120 @@
+/* Responsive styles for RedPen application */
+
+/* Large screens (desktop or landscape tablets) with image width >= 500px */
+@media (min-width: 1024px), (min-width: 768px) and (orientation: landscape) {
+  #layout {
+    flex-direction: row;
+    min-height: calc(100vh - 98px);
+  }
+  
+  #content-wrapper {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: row;
+  }
+  
+  #image-container {
+    flex: 1;
+    width: 100%;
+  }
+  
+  #global-comment-container {
+    width: 300px;
+    border-top: none;
+    border-left: 2px solid #DC143C;
+    box-shadow: -5px 0 15px rgba(0,0,0,0.05);
+  }
+  
+  #global-comment-container::before {
+    top: 0;
+    left: 0;
+    right: auto;
+    width: 5px;
+    height: 100%;
+    background: linear-gradient(to bottom, #DC143C, #ff6b6b);
+  }
+  
+  .mobile-overlay {
+    display: none !important; /* Never show mobile overlay on desktop */
+  }
+  
+  #comments-content {
+    display: none !important; /* Hide comments sidebar in desktop view */
+  }
+}
+
+/* Medium screens */
+@media (min-width: 500px) and (max-width: 1023px) {
+  #layout {
+    flex-direction: column !important; /* Force column layout */
+  }
+  
+  #content-wrapper {
+    flex-direction: column !important; /* Force column layout */
+  }
+  
+  #image-container {
+    width: 100%;
+    display: flex !important; /* Force image container to be visible */
+    min-height: 200px; /* Ensure minimum height */
+  }
+  
+  #global-comment-container {
+    width: 100%;
+    border-left: none;
+    border-top: 2px solid #DC143C;
+  }
+  
+  #global-comment-container::before {
+    top: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    height: 5px;
+    background: linear-gradient(to right, #DC143C, #ff6b6b);
+  }
+}
+
+/* Small screens (mobile or portrait tablets) */
+@media (max-width: 767px) and (orientation: portrait), (max-width: 499px) {
+  #layout {
+    flex-direction: column;
+  }
+  
+  #content-wrapper {
+    flex-direction: column;
+  }
+  
+  #comments-content {
+    width: auto;
+    border-left: none;
+    border-top: 1px solid #ddd;
+  }
+  
+  #global-comment-container {
+    width: 100%;
+    border-left: none;
+    border-top: 2px solid #DC143C;
+    display: block !important; /* Ensure global comment is visible on mobile */
+    min-height: 100px; /* Ensure minimum height */
+    z-index: 50; /* Ensure it's above other elements */
+    position: relative; /* Ensure z-index works */
+    margin-top: 20px; /* Add some space above */
+    padding-top: 20px; /* Add some space inside */
+    background-color: #ffeeee !important; /* Even lighter red background for mobile */
+    border: 3px solid #ff0000 !important; /* Bright red border for mobile */
+    order: 999 !important; /* Ensure it's at the end of the flex container */
+  }
+  
+  .comment-popup {
+    display: none !important; /* Never show popups on mobile */
+  }
+  
+  /* Force global comment to be visible on mobile */
+  body #layout #global-comment-container {
+    display: block !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+  }
+}

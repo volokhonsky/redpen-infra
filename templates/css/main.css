@@ -1,0 +1,77 @@
+/* Main CSS for RedPen application */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: sans-serif;
+  background: #f8f8f8;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+header {
+  background: crimson;
+  color: #fff;
+  padding: 1rem;
+  text-align: center;
+  font-size: 1.5rem;
+}
+
+nav {
+  background: #eee;
+  padding: 0.5rem 1rem;
+}
+
+nav a {
+  margin-right: 1rem;
+  color: #c00;
+  text-decoration: none;
+  font-weight: bold;
+}
+
+#layout {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 98px);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+#content-wrapper {
+  display: flex;
+  flex: 1;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+#image-container {
+  position: relative;
+  flex: 1;
+  background: #fff;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+#page-image {
+  max-width: 100%;
+  height: auto;
+}
+
+#comments-content {
+  width: 300px;
+  padding: 1rem;
+  background: #fff;
+  border-left: 1px solid #ddd;
+  display: none;
+}
+
+h2 {
+  margin-top: 0;
+}
