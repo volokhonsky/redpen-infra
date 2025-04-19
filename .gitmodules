@@ -1,0 +1,6 @@
+[submodule "redpen-content"]
+	path = redpen-content
+	url = git@github.com:volokhonsky/redpen-content.git
+[submodule "redpen-publish"]
+	path = redpen-publish
+	url = git@github.com:volokhonsky/redpen-publish.git
