@@ -1,0 +1,22 @@
+[
+  {
+    "id": "ann-test-1",
+    "text": "This is a general annotation without a target.",
+    "annType": "general"
+  },
+  {
+    "id": "ann-test-2",
+    "text": "This is a main annotation with a target block.",
+    "annType": "main",
+    "targetBlock": "test_block_1"
+  },
+  {
+    "id": "ann-test-3",
+    "text": "This is a comment annotation with coordinates.",
+    "annType": "comment",
+    "coords": [
+      350,
+      220
+    ]
+  }
+]

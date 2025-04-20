@@ -76,8 +76,12 @@ function repositionAnnotations() {
       console.log('Processed text blocks:', textBlocks);
       console.log('Annotations to process:', allAnns);
 
-      // Create circles and popups
-      allAnns.forEach((a, i) => {
+      // Filter out general comments for separate processing
+      const generalComments = allAnns.filter(a => a.annType === 'general');
+      const nonGeneralComments = allAnns.filter(a => a.annType !== 'general');
+
+      // Create circles and popups for non-general comments
+      nonGeneralComments.forEach((a, i) => {
         let cx, cy;
         const bb = textBlocks[a.targetBlock];
         console.log(`Processing annotation ${i+1} (ID: ${a.id || 'no-id'}):`);
@@ -120,6 +124,9 @@ function repositionAnnotations() {
         circle.style.transform = 'translateX(-50%)';
         circle.textContent = i + 1;
 
+        // Use only this comment's text
+        let commentText = a.text;
+
         // Create popup for desktop hover
         const popup = document.createElement('div');
         popup.className = 'comment-popup';
@@ -127,7 +134,7 @@ function repositionAnnotations() {
         popup.id = (a.id || `ann-${currentPageId}-${i+1}`);
         popup.innerHTML = `
           <div class="comment-popup-title">Комментарий ${i + 1}</div>
-          <div>${a.text}</div>
+          <div>${commentText}</div>
         `;
         // Center the popup under the circle
         popup.style.left = cx + 'px';  // Now using translateX in CSS for centering
@@ -168,13 +175,14 @@ function repositionAnnotations() {
         circle.addEventListener('click', (e) => {
           if (isMobile) {
             // Mobile: Show overlay
-            showMobileComment(i, a.text);
+            // Use the combined text that includes general comments
+            showMobileComment(i, commentText);
           } else {
             // Desktop: Update sidebar list and show popup
             const listUl = document.getElementById('comment-list');
             listUl.innerHTML = '';
             const li = document.createElement('li');
-            li.innerHTML = '<strong>' + (i + 1) + '.</strong> ' + a.text;
+            li.innerHTML = '<strong>' + (i + 1) + '.</strong> ' + commentText;
             listUl.appendChild(li);
 
             // Reset all popups' click-shown state
@@ -211,7 +219,12 @@ function repositionAnnotations() {
       // Try to create annotations using fallback coordinates even if text blocks failed to load
       if (allAnns && allAnns.length > 0) {
         console.log('Attempting to create annotations using only fallback coordinates...');
-        allAnns.forEach((a, i) => {
+
+        // Filter out general comments for separate processing
+        const generalComments = allAnns.filter(a => a.annType === 'general');
+        const nonGeneralComments = allAnns.filter(a => a.annType !== 'general');
+
+        nonGeneralComments.forEach((a, i) => {
           if (a.coords) {
             const cx = a.coords[0] * scaleX;
             const cy = a.coords[1] * scaleY;
@@ -230,12 +243,15 @@ function repositionAnnotations() {
             circle.style.fontSize = (d * 0.6) + 'px';
             circle.textContent = i + 1;
 
+            // Use only this comment's text
+            let commentText = a.text;
+
             const popup = document.createElement('div');
             popup.className = 'comment-popup';
             popup.id = (a.id || `ann-${currentPageId}-${i+1}`);
             popup.innerHTML = `
               <div class="comment-popup-title">Комментарий ${i + 1}</div>
-              <div>${a.text}</div>
+              <div>${commentText}</div>
             `;
             popup.style.left = cx + 'px';
             popup.style.top = (cy + d / 2 + 10) + 'px';
@@ -244,6 +260,34 @@ function repositionAnnotations() {
 
             overlayContainer.appendChild(popup);
             overlayContainer.appendChild(circle);
+
+            // Add click event handler for mobile
+            circle.addEventListener('click', (e) => {
+              if (isMobile) {
+                // Mobile: Show overlay with combined text
+                showMobileComment(i, commentText);
+              } else {
+                // Desktop: Update sidebar list and show popup
+                const listUl = document.getElementById('comment-list');
+                listUl.innerHTML = '';
+                const li = document.createElement('li');
+                li.innerHTML = '<strong>' + (i + 1) + '.</strong> ' + commentText;
+                listUl.appendChild(li);
+
+                // Reset all popups' click-shown state
+                document.querySelectorAll('.comment-popup').forEach(p => {
+                  p.dataset.clickShown = 'false';
+                  if (p !== popup) p.style.display = 'none';
+                });
+
+                // Show this popup and mark it as shown by click
+                popup.style.display = 'block';
+                popup.dataset.clickShown = 'true';
+
+                // Stop propagation to prevent the document click handler from immediately hiding it
+                e.stopPropagation();
+              }
+            });
 
             console.log(`Created fallback circle with ID: ${circle.id}`);
             console.log(`Created fallback popup with ID: ${popup.id}`);

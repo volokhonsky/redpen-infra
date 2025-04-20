@@ -105,6 +105,7 @@ async function loadPage(pageNum) {
   // Global comment
   const globalDiv = document.getElementById('global-comment');
   const globalContainer = document.getElementById('global-comment-container');
+  const generalAnns = allAnns.filter(a=>a.annType==='general');
   const mainAnns = allAnns.filter(a=>a.annType==='main');
 
   // Force global comment container to be visible
@@ -113,8 +114,21 @@ async function loadPage(pageNum) {
   // Add a border to make it more visible for debugging
   globalContainer.style.border = '3px solid #DC143C';
 
+  // Build the global comment content
+  let globalContent = '';
+
+  // Add general comments first
+  if (generalAnns.length) {
+    globalContent += generalAnns.map(a => '<p>' + a.text + '</p>').join('');
+  }
+
+  // Add main comments, each with a number
   if (mainAnns.length) {
-    globalDiv.innerHTML = mainAnns.map((a,i)=>'<p><strong>'+(i+1)+'.</strong> '+a.text+'</p>').join('');
+    globalContent += mainAnns.map((a,i) => '<p><strong>'+(i+1)+'.</strong> '+a.text+'</p>').join('');
+  }
+
+  if (globalContent) {
+    globalDiv.innerHTML = globalContent;
   } else {
     globalDiv.textContent = 'Нет общего комментария.';
   }
