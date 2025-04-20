@@ -1,0 +1,4 @@
+# Requirements for annotation positioning tests
+playwright==1.35.0
+pytest==7.3.1
+pytest-playwright==0.3.3

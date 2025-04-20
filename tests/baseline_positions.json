@@ -1,0 +1,46 @@
+{
+  "desktop": [
+    {
+      "id": "circle-ann-page7-1",
+      "centerX": 833.078125,
+      "centerY": 322.2109375,
+      "left": 783.078125,
+      "top": 272.2109375,
+      "width": 100,
+      "height": 100
+    }
+  ],
+  "mobile": [
+    {
+      "id": "circle-ann-page7-1",
+      "centerX": 691.9609375,
+      "centerY": 288.984375,
+      "left": 641.9609375,
+      "top": 238.984375,
+      "width": 100,
+      "height": 100
+    }
+  ],
+  "desktop_to_mobile": [
+    {
+      "id": "circle-ann-page7-1",
+      "centerX": 691.9609375,
+      "centerY": 288.984375,
+      "left": 641.9609375,
+      "top": 238.984375,
+      "width": 100,
+      "height": 100
+    }
+  ],
+  "mobile_to_desktop": [
+    {
+      "id": "circle-ann-page7-1",
+      "centerX": 833.078125,
+      "centerY": 322.2109375,
+      "left": 783.078125,
+      "top": 272.2109375,
+      "width": 100,
+      "height": 100
+    }
+  ]
+}

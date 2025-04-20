@@ -16,6 +16,12 @@ This is the main repository for the RedPen project, which processes PDF textbook
   - `js/`: JavaScript files for functionality
   - `index.html`: Main HTML file for the static website
   - `favicon.svg`: Favicon for the website
+- `tests/`: Automated tests for the application
+  - `annotation_position_tests.py`: Tests for annotation positioning at different screen widths
+  - `run_annotation_tests.sh`: Shell script to run annotation tests
+  - `requirements.txt`: Dependencies for testing tools
+  - `baseline_positions.json`: Baseline positions for annotation tests
+  - `README.md`: Documentation for annotation tests
 - Submodules:
   - `redpen-content/`: Repository containing content files (images, text, annotations)
   - `redpen-publish/`: Repository for the published static website
@@ -26,6 +32,7 @@ This is the main repository for the RedPen project, which processes PDF textbook
 - Generate annotation templates
 - Display textbook pages with annotations
 - Responsive design for both desktop and mobile viewing
+- Diagnostic tools for troubleshooting element positioning
 
 ## Setup
 
@@ -51,6 +58,22 @@ python scripts/process_pdf.py path/to/textbook.pdf
 ### Viewing the Website
 
 Open `templates/index.html` in a web browser to view the processed content, or use the fully functional website in the `redpen-publish` directory by opening `redpen-publish/index.html`.
+
+### Running Annotation Tests
+
+To verify the positioning of annotation circles at different screen widths:
+
+```bash
+./tests/run_annotation_tests.sh
+```
+
+This will run the annotation positioning tests, which measure the positions of circles at desktop width (1280px), mobile width (800px), and during window resizing. See `tests/README.md` for more details.
+
+To update the baseline positions for the tests:
+
+```bash
+./tests/run_annotation_tests.sh --update-baseline
+```
 
 ## Workflow
 
