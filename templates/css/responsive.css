@@ -6,26 +6,26 @@
     flex-direction: row;
     min-height: calc(100vh - 98px);
   }
-  
+
   #content-wrapper {
     flex: 1;
     min-width: 0;
     display: flex;
     flex-direction: row;
   }
-  
+
   #image-container {
     flex: 1;
     width: 100%;
   }
-  
+
   #global-comment-container {
     width: 300px;
     border-top: none;
     border-left: 2px solid #DC143C;
     box-shadow: -5px 0 15px rgba(0,0,0,0.05);
   }
-  
+
   #global-comment-container::before {
     top: 0;
     left: 0;
@@ -34,11 +34,11 @@
     height: 100%;
     background: linear-gradient(to bottom, #DC143C, #ff6b6b);
   }
-  
+
   .mobile-overlay {
     display: none !important; /* Never show mobile overlay on desktop */
   }
-  
+
   #comments-content {
     display: none !important; /* Hide comments sidebar in desktop view */
   }
@@ -49,23 +49,23 @@
   #layout {
     flex-direction: column !important; /* Force column layout */
   }
-  
+
   #content-wrapper {
     flex-direction: column !important; /* Force column layout */
   }
-  
+
   #image-container {
     width: 100%;
     display: flex !important; /* Force image container to be visible */
     min-height: 200px; /* Ensure minimum height */
   }
-  
+
   #global-comment-container {
     width: 100%;
     border-left: none;
     border-top: 2px solid #DC143C;
   }
-  
+
   #global-comment-container::before {
     top: 0;
     left: 0;
@@ -81,17 +81,17 @@
   #layout {
     flex-direction: column;
   }
-  
+
   #content-wrapper {
     flex-direction: column;
   }
-  
+
   #comments-content {
     width: auto;
     border-left: none;
     border-top: 1px solid #ddd;
   }
-  
+
   #global-comment-container {
     width: 100%;
     border-left: none;
@@ -106,15 +106,100 @@
     border: 3px solid #ff0000 !important; /* Bright red border for mobile */
     order: 999 !important; /* Ensure it's at the end of the flex container */
   }
-  
+
   .comment-popup {
     display: none !important; /* Never show popups on mobile */
   }
-  
+
   /* Force global comment to be visible on mobile */
   body #layout #global-comment-container {
     display: block !important;
     visibility: visible !important;
     opacity: 1 !important;
+  }
+
+  /* Hide top pagination on mobile */
+  #pagination {
+    display: none !important;
+  }
+
+  /* Mobile navigation buttons */
+  .mobile-nav-buttons {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    pointer-events: none;
+    z-index: 100;
+  }
+
+  .mobile-nav-button {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 60px;
+    height: 60px;
+    background-color: rgba(220, 20, 60, 0.5);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-size: 24px;
+    font-weight: bold;
+    pointer-events: auto;
+    opacity: 0;
+    transition: opacity 0.3s;
+    cursor: pointer;
+  }
+
+  .mobile-nav-button.prev {
+    left: 10px;
+  }
+
+  .mobile-nav-button.next {
+    right: 10px;
+  }
+
+  .mobile-nav-buttons.visible .mobile-nav-button {
+    opacity: 1;
+  }
+
+  /* Mobile bottom pagination */
+  .mobile-pagination {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background-color: white;
+    padding: 10px;
+    box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+    z-index: 100;
+  }
+
+  .mobile-pagination input {
+    width: 60px;
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    text-align: center;
+  }
+
+  .mobile-pagination button {
+    padding: 8px 15px;
+    background-color: #DC143C;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .mobile-pagination .page-info {
+    font-size: 14px;
   }
 }

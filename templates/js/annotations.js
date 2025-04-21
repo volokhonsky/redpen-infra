@@ -8,6 +8,9 @@
 function repositionAnnotations() {
   if (!overlayContainer || !currentPageId || allAnns.length === 0) return;
 
+  // Counter for sequential annotation IDs within the page
+  let annotationCounter = 0;
+
   const img = document.getElementById('page-image');
   if (!img.complete) return;
 
@@ -82,6 +85,8 @@ function repositionAnnotations() {
 
       // Create circles and popups for non-general comments
       nonGeneralComments.forEach((a, i) => {
+        // Increment counter for each annotation
+        annotationCounter++;
         let cx, cy;
         const bb = textBlocks[a.targetBlock];
         console.log(`Processing annotation ${i+1} (ID: ${a.id || 'no-id'}):`);
@@ -111,8 +116,8 @@ function repositionAnnotations() {
         const d = sizeMap[a.annType] || 50;
         const circle = document.createElement('div');
         circle.className = 'circle';
-        // Add unique ID to circle based on annotation ID or generate one
-        circle.id = 'circle-' + (a.id || `${currentPageId}-${i+1}`);
+        // Add unique ID to circle based on annotation ID or generate one using sequential counter
+        circle.id = 'circle-' + (a.id || `${currentPageId}-${annotationCounter}`);
         circle.style.width = d + 'px';
         circle.style.height = d + 'px';
         circle.style.left = cx + 'px';  // Now using translateX in CSS for centering
@@ -130,8 +135,8 @@ function repositionAnnotations() {
         // Create popup for desktop hover
         const popup = document.createElement('div');
         popup.className = 'comment-popup';
-        // Add unique ID to popup based on annotation ID or generate one
-        popup.id = (a.id || `ann-${currentPageId}-${i+1}`);
+        // Add unique ID to popup based on annotation ID or generate one using sequential counter
+        popup.id = (a.id || `ann-${currentPageId}-${annotationCounter}`);
         popup.innerHTML = `
           <div class="comment-popup-title">Комментарий ${i + 1}</div>
           <div>${commentText}</div>
@@ -226,6 +231,8 @@ function repositionAnnotations() {
 
         nonGeneralComments.forEach((a, i) => {
           if (a.coords) {
+            // Increment counter for each annotation in fallback section
+            annotationCounter++;
             const cx = a.coords[0] * scaleX;
             const cy = a.coords[1] * scaleY;
             console.log(`Creating annotation ${i+1} at fallback position (${cx}, ${cy})`);
@@ -233,7 +240,7 @@ function repositionAnnotations() {
             const d = sizeMap[a.annType] || 50;
             const circle = document.createElement('div');
             circle.className = 'circle';
-            circle.id = 'circle-' + (a.id || `${currentPageId}-${i+1}`);
+            circle.id = 'circle-' + (a.id || `${currentPageId}-${annotationCounter}`);
             circle.style.width = d + 'px';
             circle.style.height = d + 'px';
             circle.style.left = cx + 'px';
@@ -248,7 +255,7 @@ function repositionAnnotations() {
 
             const popup = document.createElement('div');
             popup.className = 'comment-popup';
-            popup.id = (a.id || `ann-${currentPageId}-${i+1}`);
+            popup.id = (a.id || `ann-${currentPageId}-${annotationCounter}`);
             popup.innerHTML = `
               <div class="comment-popup-title">Комментарий ${i + 1}</div>
               <div>${commentText}</div>

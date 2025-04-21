@@ -12,19 +12,29 @@ Usage:
 """
 
 import sys, os
-import fitz  # PyMuPDF
+from pdf2image import convert_from_path
 
 def extract_images(pdf_path, out_dir, zoom=2):
     os.makedirs(out_dir, exist_ok=True)
-    doc = fitz.open(pdf_path)
-    mat = fitz.Matrix(zoom, zoom)
-    for i, page in enumerate(doc, start=1):
-        pix = page.get_pixmap(matrix=mat, alpha=False)
+
+    # Calculate DPI based on zoom factor (default PDF DPI is 72)
+    dpi = int(72 * zoom)
+
+    # Convert PDF to images
+    images = convert_from_path(
+        pdf_path,
+        dpi=dpi,
+        output_folder=None,  # Don't save directly, we'll handle that
+        fmt="png",
+        thread_count=4  # Use multiple threads for faster conversion
+    )
+
+    # Save each image
+    for i, image in enumerate(images, start=1):
         fname = f"page_{i:03d}.png"
         out_path = os.path.join(out_dir, fname)
-        pix.save(out_path)
+        image.save(out_path)
         print(f"[+] Saved {out_path}")
-    doc.close()
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:

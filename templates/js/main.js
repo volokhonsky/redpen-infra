@@ -1,177 +1,253 @@
+// Updated main.js to use metadata.json for pagination and document info
 /**
  * Main JavaScript file for RedPen application
- * Contains core functionality and initialization
+ * Now loads metadata.json to get totalPages, defaultPage, and other info
  */
 
-// Global variables
-let overlayContainer, currentPageId, allAnns = [], isMobile = false, resizeTimeout;
+let overlayContainer;
+let currentPageId;
+let allAnns = [];
+let isMobile = false;
+let resizeTimeout;
+let metadata = null;
 
 /**
  * Initialize the application
  */
-function init() {
+async function init() {
   // Set initial mobile flag
   isMobile = checkMobile();
 
+  // Load document metadata
+  try {
+    const res = await fetch('metadata.json');
+    metadata = await res.json();
+  } catch (e) {
+    console.error('Failed to load metadata.json', e);
+    metadata = { totalPages: 1, defaultPage: 1 };
+  }
+
   // Add event listener for window resize
-  window.addEventListener('resize', function() {
+  window.addEventListener('resize', () => {
     isMobile = checkMobile();
     updateLayout();
 
-    // Debounce the annotation repositioning to prevent too many updates during resizing
     clearTimeout(resizeTimeout);
-    resizeTimeout = setTimeout(function() {
+    resizeTimeout = setTimeout(() => {
       repositionAnnotations();
-    }, 250); // Wait 250ms after resize ends before repositioning
+    }, 250);
   });
 
+  // Check for hash in URL to determine initial page
+  const hash = window.location.hash;
+  let startPage = 1;
+
+  if (hash && hash.startsWith('#page')) {
+    const pageNum = parseInt(hash.substring(5));
+    if (!isNaN(pageNum) && pageNum >= 1 && pageNum <= (metadata.totalPages || 1)) {
+      startPage = pageNum;
+    }
+  } else if (metadata.pageNumbering && metadata.pageNumbering.logicalStart) {
+    // Use logical start page from metadata if available
+    startPage = metadata.pageNumbering.logicalStart;
+  }
+
   // Load the initial page
-  loadPage(7);
+  loadPage(startPage);
+
+  // Listen for hash changes
+  window.addEventListener('hashchange', () => {
+    const hash = window.location.hash;
+    if (hash && hash.startsWith('#page')) {
+      const pageNum = parseInt(hash.substring(5));
+      if (!isNaN(pageNum) && pageNum >= 1 && pageNum <= (metadata.totalPages || 1)) {
+        loadPage(pageNum);
+      }
+    }
+  });
+
+  // Initialize mobile-specific functionality
+  if (typeof initMobile === 'function') {
+    initMobile();
+  }
 }
 
 /**
- * Load a page with the given page number
- * @param {number} pageNum - The page number to load
+ * Load a page with the given logical page number
+ * @param {number} pageNum - Logical page number to load
  */
 async function loadPage(pageNum) {
-  // Set mobile flag
   isMobile = checkMobile();
-
-  // Close mobile overlay if it's open
   closeMobileOverlay();
 
-  // Remove any existing comment popups and circles
   document.querySelectorAll('.comment-popup').forEach(popup => popup.remove());
   document.querySelectorAll('.circle').forEach(circle => circle.remove());
 
-  // Always ensure image container is visible from the start
   document.getElementById('image-container').style.display = 'flex';
-
-  // Always ensure global comment container is visible from the start
   document.getElementById('global-comment-container').style.display = 'block';
 
-  currentPageId = 'page_' + String(pageNum).padStart(3,'0');
+  // Compute physical page: logicalStart + pageNum - 1
+  const phys = (metadata.pageNumbering.physicalStart || 2) + (pageNum - 1);
+  currentPageId = 'page_' + String(phys).padStart(3, '0');
   const img = document.getElementById('page-image');
   img.src = 'images/' + currentPageId + '.png';
 
-  // Wait for image to load
-  await new Promise(r => {
-    img.onload = r;
-  });
-
-  // Add a small delay to ensure the image is fully rendered
-  await new Promise(resolve => setTimeout(resolve, 50));
+  await new Promise(r => { img.onload = r; });
+  await new Promise(r => setTimeout(r, 50));
 
   if (overlayContainer) overlayContainer.remove();
   overlayContainer = document.createElement('div');
   overlayContainer.id = 'overlay-container';
-  // Don't set position: absolute inline, let CSS handle it with position: relative
-  overlayContainer.style.top  = img.offsetTop + 'px';
+  overlayContainer.style.top = img.offsetTop + 'px';
   overlayContainer.style.left = img.offsetLeft + 'px';
-  overlayContainer.style.width  = img.width  + 'px';
+  overlayContainer.style.width = img.width + 'px';
   overlayContainer.style.height = img.height + 'px';
   overlayContainer.style.pointerEvents = 'auto';
-  // Log overlay container position for debugging
-  console.log('Overlay container created with position:', {
-    top: overlayContainer.style.top,
-    left: overlayContainer.style.left,
-    width: overlayContainer.style.width,
-    height: overlayContainer.style.height,
-    offsetTop: img.offsetTop,
-    offsetLeft: img.offsetLeft,
-    computedStyle: {
-      position: window.getComputedStyle(overlayContainer).position,
-      top: window.getComputedStyle(overlayContainer).top,
-      left: window.getComputedStyle(overlayContainer).left
-    }
-  });
 
-  // Force image container to be visible again
-  const imageContainer = document.getElementById('image-container');
-  imageContainer.style.display = 'flex';
-  imageContainer.appendChild(overlayContainer);
-
-  // Update layout based on image width
+  document.getElementById('image-container').appendChild(overlayContainer);
   updateLayout();
-
-  // Double-check layout after a short delay
   setTimeout(updateLayout, 100);
 
-  // Load annotations
   try {
-    allAnns = await fetch('annotations/' + currentPageId + '.json').then(r=>r.json());
-  } catch(e){ allAnns = [] }
+    allAnns = await fetch('annotations/' + currentPageId + '.json').then(r => r.json());
+  } catch (e) {
+    allAnns = [];
+  }
 
-  // Global comment
-  const globalDiv = document.getElementById('global-comment');
   const globalContainer = document.getElementById('global-comment-container');
-  const generalAnns = allAnns.filter(a=>a.annType==='general');
-  const mainAnns = allAnns.filter(a=>a.annType==='main');
+  const globalDiv = document.getElementById('global-comment');
+  const generalAnns = allAnns.filter(a => a.annType === 'general');
+  const mainAnns = allAnns.filter(a => a.annType === 'main');
 
-  // Force global comment container to be visible
   globalContainer.style.display = 'block';
-
-  // Add a border to make it more visible for debugging
   globalContainer.style.border = '3px solid #DC143C';
 
-  // Build the global comment content
   let globalContent = '';
-
-  // Add general comments first
   if (generalAnns.length) {
-    globalContent += generalAnns.map(a => '<p>' + a.text + '</p>').join('');
+    globalContent += generalAnns.map(a => `<p>${a.text}</p>`).join('');
   }
-
-  // Add main comments, each with a number
   if (mainAnns.length) {
-    globalContent += mainAnns.map((a,i) => '<p><strong>'+(i+1)+'.</strong> '+a.text+'</p>').join('');
+    globalContent += mainAnns.map((a,i) => `<p><strong>${i+1}.</strong> ${a.text}</p>`).join('');
   }
+  globalDiv.innerHTML = globalContent || 'Нет общего комментария.';
 
-  if (globalContent) {
-    globalDiv.innerHTML = globalContent;
-  } else {
-    globalDiv.textContent = 'Нет общего комментария.';
-  }
-
-  // Log for debugging
-  console.log('Global comment container:', globalContainer);
-  console.log('Global comment container display:', globalContainer.style.display);
-  console.log('Global comment container visibility:', window.getComputedStyle(globalContainer).visibility);
-  console.log('Global comment container height:', window.getComputedStyle(globalContainer).height);
-
-  const listUl = document.getElementById('comment-list');
-  listUl.innerHTML = '';
-
-  // Position annotations using the repositionAnnotations function
+  document.getElementById('comment-list').innerHTML = '';
   repositionAnnotations();
+
+  // Update pagination
+  updatePagination(pageNum);
+
+  // Update mobile pagination if function exists
+  if (typeof updateMobilePagination === 'function') {
+    updateMobilePagination();
+  }
 }
 
 /**
- * Function to scroll to the global comment
+ * Jump to next page
  */
-function scrollToGlobalComment() {
-  const globalCommentContainer = document.getElementById('global-comment-container');
-  if (globalCommentContainer) {
-    // Ensure the global comment is visible
-    globalCommentContainer.style.display = 'block';
-    globalCommentContainer.style.visibility = 'visible';
-    globalCommentContainer.style.opacity = '1';
+function nextPage() {
+  const total = metadata.totalPages || 1;
+  const currentLogical = logicalFromPhysical();
+  if (currentLogical < total) loadPage(currentLogical + 1);
+}
 
-    // Add a highlight effect to make it more noticeable
-    globalCommentContainer.style.transition = 'background-color 0.5s';
-    globalCommentContainer.style.backgroundColor = '#ffdddd';
+/**
+ * Jump to previous page
+ */
+function prevPage() {
+  const currentLogical = logicalFromPhysical();
+  if (currentLogical > 1) loadPage(currentLogical - 1);
+}
 
-    // Scroll to the global comment with smooth behavior
-    globalCommentContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+/**
+ * Go to a specific page entered by the user
+ */
+function goToPage() {
+  const input = document.getElementById('page-input');
+  const pageNum = parseInt(input.value);
+  const totalPages = metadata.totalPages || 1;
 
-    // Reset the background color after a delay
-    setTimeout(() => {
-      globalCommentContainer.style.backgroundColor = '';
-    }, 1500);
-
-    console.log('Scrolled to global comment container');
+  if (!isNaN(pageNum) && pageNum >= 1 && pageNum <= totalPages) {
+    loadPage(pageNum);
+    input.value = ''; // Clear the input after navigation
+  } else {
+    alert(`Пожалуйста, введите номер страницы от 1 до ${totalPages}`);
   }
 }
 
-// Initialize the application when the DOM is loaded
+/**
+ * Convert currentPageId (physical) to logical page number
+ */
+function logicalFromPhysical() {
+  const phys = parseInt(currentPageId.split('_')[1], 10);
+  return phys - (metadata.pageNumbering.physicalStart || 2) + 1;
+}
+
+/**
+ * Update pagination based on current page and total pages
+ * @param {number} currentPage - Current logical page number
+ */
+function updatePagination(currentPage) {
+  const pageNumbersContainer = document.getElementById('page-numbers');
+  if (!pageNumbersContainer) return;
+
+  // Clear existing page numbers
+  pageNumbersContainer.innerHTML = '';
+
+  // Get total pages from metadata
+  const totalPages = metadata.totalPages || 1;
+
+  // Determine which page numbers to show
+  // Always show first page, last page, current page, and pages around current page
+  const pagesToShow = new Set();
+  pagesToShow.add(1); // First page
+  pagesToShow.add(totalPages); // Last page
+
+  // Add current page and pages around it
+  for (let i = Math.max(1, currentPage - 2); i <= Math.min(totalPages, currentPage + 2); i++) {
+    pagesToShow.add(i);
+  }
+
+  // Convert to sorted array
+  const pageNumbers = Array.from(pagesToShow).sort((a, b) => a - b);
+
+  // Add page numbers with ellipses for gaps
+  let prevPage = 0;
+  pageNumbers.forEach(pageNum => {
+    if (pageNum - prevPage > 1) {
+      // Add ellipsis for gap
+      const ellipsis = document.createElement('span');
+      ellipsis.className = 'page-ellipsis';
+      ellipsis.textContent = '...';
+      pageNumbersContainer.appendChild(ellipsis);
+    }
+
+    // Add page number
+    const pageElement = document.createElement('a');
+    pageElement.className = 'page-number' + (pageNum === currentPage ? ' active' : '');
+    pageElement.textContent = pageNum;
+    pageElement.href = '#';
+    pageElement.onclick = function() {
+      loadPage(pageNum);
+      return false;
+    };
+    pageNumbersContainer.appendChild(pageElement);
+
+    prevPage = pageNum;
+  });
+
+  // Update prev/next buttons
+  const prevButton = document.getElementById('prev-page');
+  const nextButton = document.getElementById('next-page');
+
+  if (prevButton) {
+    prevButton.style.visibility = currentPage > 1 ? 'visible' : 'hidden';
+  }
+
+  if (nextButton) {
+    nextButton.style.visibility = currentPage < totalPages ? 'visible' : 'hidden';
+  }
+}
+
 document.addEventListener('DOMContentLoaded', init);

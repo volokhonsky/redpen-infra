@@ -124,6 +124,54 @@ git commit -m "Обновить подмодуль redpen-content"
 git push origin main
 ```
 
+## Установка зависимостей Python
+
+Для работы с PDF-файлами и обработки данных проект использует несколько Python-пакетов. Чтобы установить все необходимые зависимости:
+
+```bash
+# Перейдите в директорию scripts
+cd scripts
+
+# Установите зависимости из файла requirements.txt
+pip install -r requirements.txt
+```
+
+Основные зависимости включают:
+- PyPDF2 - для извлечения текста из PDF
+- pdf2image - для конвертации PDF в изображения
+- Pillow - для работы с изображениями
+
+### Установка Poppler
+
+Библиотека pdf2image требует установки Poppler - набора утилит для работы с PDF-файлами. Без Poppler вы можете получить ошибку `PDFInfoNotInstalledError: Unable to get page count. Is poppler installed and in PATH?`.
+
+#### macOS
+
+Установка через Homebrew:
+
+```bash
+brew install poppler
+```
+
+#### Linux (Ubuntu/Debian)
+
+```bash
+sudo apt-get update
+sudo apt-get install poppler-utils
+```
+
+#### Windows
+
+1. Скачайте бинарные файлы Poppler для Windows с [сайта](https://github.com/oschwartz10612/poppler-windows/releases/)
+2. Распакуйте архив в удобное место (например, `C:\Program Files\poppler`)
+3. Добавьте путь к бинарным файлам в переменную среды PATH:
+   - Откройте "Система" -> "Дополнительные параметры системы" -> "Переменные среды"
+   - Выберите переменную "Path" и нажмите "Изменить"
+   - Добавьте путь к папке bin (например, `C:\Program Files\poppler\bin`)
+   - Нажмите "ОК" для сохранения изменений
+
+После установки Poppler убедитесь, что команда `pdfinfo -v` работает в терминале.
+
 ## Развертывание
 
 Для развертывания вам нужно убедиться, что подмодули правильно клонированы и обновлены на вашем сервере развертывания. Большинство систем CI/CD имеют опции для работы с подмодулями.

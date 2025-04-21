@@ -1,2 +1,4 @@
 # Requirements for PDF processing and data conversion
-PyMuPDF==1.19.6  # For PDF processing and image extraction
+PyPDF2>=2.0.0  # For PDF text extraction
+pdf2image>=1.16.0  # For PDF to image conversion
+Pillow>=8.0.0  # Required by pdf2image
