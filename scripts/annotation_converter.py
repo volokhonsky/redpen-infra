@@ -42,8 +42,8 @@ def convert_json_to_md(json_file_path):
         ann_type = annotation.get('annType', '')
         coords = annotation.get('coords', [])
 
-        # Start annotation with separator
-        md_content += "---\n"
+        # Start annotation with meta block
+        md_content += "~~~meta\n"
 
         # Add type field (mapping annType to type)
         md_content += f"type: {ann_type}\n"
@@ -62,7 +62,7 @@ def convert_json_to_md(json_file_path):
                 md_content += f"target: {target_block}\n"
 
         # End metadata section with separator
-        md_content += "---\n\n"
+        md_content += "~~~\n\n"
 
         # Add the annotation text
         md_content += f"{text}\n\n"
@@ -79,8 +79,8 @@ def parse_markdown_annotation(md_content):
     Returns:
         list: List of annotation dictionaries
     """
-    # Split the content by the frontmatter delimiter
-    sections = re.split(r'^---$', md_content, flags=re.MULTILINE)
+    # Split the content by the meta block delimiter (supporting both old and new formats)
+    sections = re.split(r'^~~~meta$|^~~~$|^---$', md_content, flags=re.MULTILINE)
 
     # Remove empty sections
     sections = [s.strip() for s in sections if s.strip()]
@@ -88,6 +88,7 @@ def parse_markdown_annotation(md_content):
     annotations = []
 
     # Process sections in pairs (metadata + content)
+    # With the new format, we expect sections to alternate between metadata and content
     for i in range(0, len(sections), 2):
         if i + 1 >= len(sections):
             continue
@@ -118,7 +119,7 @@ def parse_markdown_annotation(md_content):
         # Process target field if present and annotation type is not general
         if 'target' in metadata_dict and ann_type != 'general':
             target_value = metadata_dict['target'].strip()
-            
+
             # Check if target is in the format [X, Y]
             coords_match = re.match(r'^\[(\d+),\s*(\d+)\]$', target_value)
             if coords_match:
