@@ -28,6 +28,7 @@ import subprocess
 import importlib.util
 import shutil
 import glob
+import datetime
 
 # Add the project root to the Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -175,6 +176,10 @@ def run_annotation_tests(target_dir=None):
         os.path.join(project_root, 'tests', 'annotation_position_tests.py')
     )
 
+    # Create test files in the target directory
+    print("\n=== Creating Test Files for Annotation Tests ===")
+    tests_module.create_test_files(target_dir or os.path.join(project_root, 'redpen-publish'))
+
     try:
         # Run the tests with a custom function that captures the result
         class TestResult:
@@ -314,6 +319,13 @@ def publish_website_data(target_dir=None, document=None, specific_folders=None):
             # Publish content data directly to the document directory
             publish_data.publish_data(images_dir, text_dir, annotations_dir, doc_content_dir)
 
+            # Check if illustrations folder exists and publish its content to images folder
+            illustrations_dir = os.path.join(project_root, 'redpen-content', document, 'illustrations')
+            if os.path.exists(illustrations_dir) and os.path.isdir(illustrations_dir):
+                images_output = os.path.join(doc_content_dir, "images")
+                publish_data.copy_files(illustrations_dir, images_output, "*")
+                print(f"[+] Published illustrations from {illustrations_dir} to {images_output}")
+
             # Copy meta.json to the document directory as metadata.json
             meta_json_path = os.path.join(project_root, 'redpen-content', document, 'meta.json')
             metadata_json_path = os.path.join(doc_content_dir, 'metadata.json')
@@ -321,12 +333,23 @@ def publish_website_data(target_dir=None, document=None, specific_folders=None):
                 shutil.copy2(meta_json_path, metadata_json_path)
                 print(f"[+] Copied meta.json to {metadata_json_path}")
 
-            # Copy document index template to the document directory
+            # Copy document index template to the document directory with updated timestamp
             document_template = os.path.join(templates_dir, 'document_index.html')
             document_index = os.path.join(doc_content_dir, 'index.html')
             if os.path.exists(document_template):
-                shutil.copy2(document_template, document_index)
-                print(f"[+] Copied document index template to {document_index}")
+                # Read the template content
+                with open(document_template, 'r', encoding='utf-8') as f:
+                    template_content = f.read()
+
+                # Replace the timestamp with current date and time
+                current_timestamp = datetime.datetime.now().strftime('%d.%m.%Y %H:%M')
+                template_content = template_content.replace('Последнее обновление: 15.05.2023 14:30', f'Последнее обновление: {current_timestamp}')
+
+                # Write the modified content to the output file
+                with open(document_index, 'w', encoding='utf-8') as f:
+                    f.write(template_content)
+
+                print(f"[+] Copied document index template to {document_index} with updated timestamp")
 
             # No need for redirect HTML file anymore as we're using the document directory directly
             # create_redirect_html(doc_output_dir, f"i/{document}")
@@ -361,6 +384,13 @@ def publish_website_data(target_dir=None, document=None, specific_folders=None):
                 # Publish content data directly to the document directory
                 publish_data.publish_data(images_dir, text_dir, annotations_dir, doc_content_dir)
 
+                # Check if illustrations folder exists and publish its content to images folder
+                illustrations_dir = os.path.join(project_root, 'redpen-content', doc, 'illustrations')
+                if os.path.exists(illustrations_dir) and os.path.isdir(illustrations_dir):
+                    images_output = os.path.join(doc_content_dir, "images")
+                    publish_data.copy_files(illustrations_dir, images_output, "*")
+                    print(f"[+] Published illustrations from {illustrations_dir} to {images_output}")
+
                 # Copy meta.json to the document directory as metadata.json
                 meta_json_path = os.path.join(project_root, 'redpen-content', doc, 'meta.json')
                 metadata_json_path = os.path.join(doc_content_dir, 'metadata.json')
@@ -368,12 +398,29 @@ def publish_website_data(target_dir=None, document=None, specific_folders=None):
                     shutil.copy2(meta_json_path, metadata_json_path)
                     print(f"[+] Copied meta.json to {metadata_json_path}")
 
-                # Copy document index template to the document directory
+                # Copy document index template to the document directory with updated timestamp
                 document_template = os.path.join(templates_dir, 'document_index.html')
                 document_index = os.path.join(doc_content_dir, 'index.html')
+                document_index_html = os.path.join(doc_content_dir, 'document_index.html')
                 if os.path.exists(document_template):
-                    shutil.copy2(document_template, document_index)
-                    print(f"[+] Copied document index template to {document_index}")
+                    # Read the template content
+                    with open(document_template, 'r', encoding='utf-8') as f:
+                        template_content = f.read()
+
+                    # Replace the timestamp with current date and time
+                    current_timestamp = datetime.datetime.now().strftime('%d.%m.%Y %H:%M')
+                    template_content = template_content.replace('Последнее обновление: 15.05.2023 14:30', f'Последнее обновление: {current_timestamp}')
+
+                    # Write the modified content to the output files
+                    with open(document_index, 'w', encoding='utf-8') as f:
+                        f.write(template_content)
+
+                    # Also create document_index.html for compatibility with tests
+                    with open(document_index_html, 'w', encoding='utf-8') as f:
+                        f.write(template_content)
+
+                    print(f"[+] Copied document index template to {document_index} with updated timestamp")
+                    print(f"[+] Also created document_index.html at {document_index_html} for test compatibility")
 
                 # No need for redirect HTML file anymore as we're using the document directory directly
                 # create_redirect_html(doc_output_dir, f"i/{doc}")
@@ -430,6 +477,9 @@ def create_index_page(target_dir=None, specific_folders=None):
 
     # Create the index.html file
     index_path = os.path.join(output_dir, 'index.html')
+
+    # Also create document_index.html at the root level for test compatibility
+    document_index_path = os.path.join(output_dir, 'document_index.html')
 
     # Get the list of document folders
     document_folders = get_document_folders(specific_folders)
@@ -488,7 +538,10 @@ def create_index_page(target_dir=None, specific_folders=None):
 
         documents.append({'id': doc_id, 'title': title, 'icon': icon_path})
 
-    # Create the HTML content
+    # Get current timestamp
+    current_timestamp = datetime.datetime.now().strftime('%d.%m.%Y %H:%M')
+
+    # Create the HTML content - header part
     html_content = """<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -548,8 +601,11 @@ def create_index_page(target_dir=None, specific_folders=None):
     }
   </style>
 </head>
-<body>
-  <header>RedPen — Красной ручкой <span id="timestamp" style="font-size: 0.7rem; font-weight: normal; opacity: 0.8;">Последнее обновление: 15.05.2023 14:30</span></header>
+<body>"""
+
+    # Add header with dynamic timestamp
+    html_content += f"""
+  <header>RedPen — Красной ручкой <span id="timestamp" style="font-size: 0.7rem; font-weight: normal; opacity: 0.8;">Последнее обновление: {current_timestamp}</span></header>
 
   <div class="document-list">
     <h1>Выберите документ</h1>
@@ -581,11 +637,16 @@ def create_index_page(target_dir=None, specific_folders=None):
 </html>
 """
 
-    # Write the HTML content to the file
+    # Write the HTML content to the files
     with open(index_path, 'w', encoding='utf-8') as f:
         f.write(html_content)
 
+    # Also create a copy as document_index.html for test compatibility
+    with open(document_index_path, 'w', encoding='utf-8') as f:
+        f.write(html_content)
+
     print(f"[+] Created index page at {index_path}")
+    print(f"[+] Also created document_index.html at {document_index_path} for test compatibility")
 
     # Clean up old structure
     print("\n=== Cleaning Up Old Structure ===")

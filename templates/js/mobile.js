@@ -193,7 +193,8 @@ function showMobileComment(index, text) {
   const mobileContent = document.getElementById('mobile-comment-content');
   const globalCommentContainer = document.getElementById('global-comment-container');
 
-  mobileContent.innerHTML = `<h3>Комментарий ${index+1}</h3><p>${text}</p>`;
+  // Use the renderMobileCommentContent function from comment-content.js
+  mobileContent.innerHTML = renderMobileCommentContent(index, text);
 
   // Prevent clicks on the content from closing the overlay
   mobileContent.addEventListener('click', function(event) {
@@ -210,15 +211,6 @@ function showMobileComment(index, text) {
   globalCommentContainer.style.display = 'block';
   globalCommentContainer.style.visibility = 'visible';
   globalCommentContainer.style.opacity = '1';
-
-  // Add a button to scroll to the global comment
-  mobileContent.innerHTML += `
-    <div style="margin-top:20px;text-align:center;">
-      <button id="scroll-to-global" style="background:#DC143C;color:white;border:none;padding:10px 15px;border-radius:5px;font-weight:bold;cursor:pointer;">
-        Показать общий комментарий
-      </button>
-    </div>
-  `;
 
   // Add click event to the button
   setTimeout(() => {

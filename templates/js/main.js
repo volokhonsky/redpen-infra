@@ -87,7 +87,7 @@ async function loadPage(pageNum) {
   document.getElementById('global-comment-container').style.display = 'block';
 
   // Compute physical page: logicalStart + pageNum - 1
-  const phys = (metadata.pageNumbering.physicalStart || 2) + (pageNum - 1);
+  const phys = (metadata.pageNumbering.physicalStart || 1) + (pageNum - 1);
   currentPageId = 'page_' + String(phys).padStart(3, '0');
   const img = document.getElementById('page-image');
   img.src = 'images/' + currentPageId + '.png';
@@ -124,10 +124,10 @@ async function loadPage(pageNum) {
 
   let globalContent = '';
   if (generalAnns.length) {
-    globalContent += generalAnns.map(a => `<p>${a.text}</p>`).join('');
+    globalContent += generalAnns.map(a => `<p>${formatCommentText(a.text)}</p>`).join('');
   }
   if (mainAnns.length) {
-    globalContent += mainAnns.map((a,i) => `<p><strong>${i+1}.</strong> ${a.text}</p>`).join('');
+    globalContent += mainAnns.map((a,i) => `<p><strong>${i+1}.</strong> ${formatCommentText(a.text)}</p>`).join('');
   }
   globalDiv.innerHTML = globalContent || 'Нет общего комментария.';
 
@@ -181,7 +181,7 @@ function goToPage() {
  */
 function logicalFromPhysical() {
   const phys = parseInt(currentPageId.split('_')[1], 10);
-  return phys - (metadata.pageNumbering.physicalStart || 2) + 1;
+  return phys - (metadata.pageNumbering.physicalStart || 1) + 1;
 }
 
 /**

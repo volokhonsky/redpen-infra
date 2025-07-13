@@ -11,6 +11,7 @@ Example:
     python extract_text.py textbook.pdf ../artifacts_repo/text/
 """
 
+
 import sys
 import os
 import json
