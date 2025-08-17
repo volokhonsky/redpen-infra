@@ -714,9 +714,35 @@ def create_index_page(target_dir=None, specific_folders=None):
     </div>
 """
 
-    # Close HTML tags
+    # Close HTML tags with optional editor flag propagation script
     html_content += """
   </div>
+  <script>
+  (function(){
+    var g = window;
+    function hasEditorFlag(){
+      try {
+        var usp = new URLSearchParams(g.location.search || '');
+        var hsp = new URLSearchParams((g.location.hash || '').replace(/^#/, ''));
+        var qp = usp.get('editor');
+        var hp = hsp.get('editor');
+        return (qp === '1' || qp === 'true') || (hp === '1' || hp === 'true') || g.REDPEN_EDITOR === true;
+      } catch(e) { return g.REDPEN_EDITOR === true; }
+    }
+    if (!hasEditorFlag()) return;
+    // Propagate editor=1 to document links on the selector page
+    var links = document.querySelectorAll('.document-card a[href]');
+    links.forEach(function(a){
+      try {
+        var url = new URL(a.getAttribute('href'), g.location.href);
+        if (!url.searchParams.get('editor')) {
+          url.searchParams.set('editor','1');
+        }
+        a.setAttribute('href', url.pathname + url.search + url.hash);
+      } catch(e) {}
+    });
+  })();
+  </script>
 </body>
 </html>
 """
