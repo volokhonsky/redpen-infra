@@ -262,30 +262,159 @@ function repositionAnnotations() {
             popup.dataset.hoverShown = 'false';
             popup.dataset.clickShown = 'false';
 
+            // Check if comment contains an image or is longer than 600 characters
+            // Only apply for desktop version
+            let hasWidthAdjustment = false;
+            const hasImage = commentText && commentText.includes('![');
+            const isLong = commentText && commentText.length > 600;
+
+            if (!isMobile && (hasImage || isLong)) {
+              hasWidthAdjustment = true;
+              // Get the image width and set popup width to 60% of it
+              const img = document.getElementById('page-image');
+              if (img) {
+                const imageWidth = img.width;
+                popup.style.width = (imageWidth * 0.6) + 'px';
+                popup.style.maxWidth = 'none'; // Remove max-width constraint
+              }
+            }
+
             // Append to DOM temporarily to get dimensions
             document.body.appendChild(popup);
 
-            // Check if popup extends beyond viewport bottom
-            const popupRect = popup.getBoundingClientRect();
-            const viewportHeight = window.innerHeight;
+            // Function to position the popup based on its actual dimensions
+            const positionPopup = (finalHeight) => {
+              // Get popup dimensions and viewport height
+              const popupRect = popup.getBoundingClientRect();
+              const actualHeight = finalHeight || popupRect.height;
+              const viewportHeight = window.innerHeight;
 
-            // If popup extends beyond viewport bottom, position it above the annotation
-            if (popupRect.bottom > viewportHeight) {
-              // Position above the annotation circle instead of below
-              popup.style.top = (cy - d / 2 - popup.offsetHeight - 10) + 'px';
-              // Add class to flip the arrow direction
-              popup.classList.add('above');
+              // Calculate space available below and above the annotation
+              const spaceBelow = viewportHeight - (cy + d / 2 + 10);
+              const spaceAbove = cy - d / 2 - 10;
+
+              console.log(`Positioning popup ${popup.id} with height ${actualHeight}px`);
+              console.log(`Space below: ${spaceBelow}px, Space above: ${spaceAbove}px`);
+
+              // Calculate if the popup would extend beyond the top of the viewport if positioned above
+              const wouldExtendBeyondTop = (cy - d / 2 - actualHeight - 20) < 0;
+              console.log(`Would extend beyond top: ${wouldExtendBeyondTop}`);
+
+              // Determine if popup should be positioned above or below
+              // Position below if:
+              // 1. It would extend beyond the top of the viewport when positioned above, or
+              // 2. It's not an image and fits below, or
+              // 3. It's not an image, annotation is in upper half, and there's more space below
+              if (wouldExtendBeyondTop || 
+                  (!hasImage && actualHeight <= spaceBelow) || 
+                  (!hasImage && cy < viewportHeight / 2 && spaceBelow >= spaceAbove)) {
+                // Position below the annotation
+                if (hasWidthAdjustment) {
+                  popup.style.top = (cy + d / 2 + 10) + 'px';
+                }
+                // Remove the above class if it exists
+                popup.classList.remove('above');
+                console.log(`Positioned popup ${popup.id} below annotation`);
+              } else {
+                // Position above the annotation circle
+                // Calculate position to place the popup above the annotation with proper spacing
+                popup.style.top = (cy - d / 2 - actualHeight - 20) + 'px';
+                popup.style.bottom = 'auto'; // Clear any bottom property
+                // Add class to flip the arrow direction
+                popup.classList.add('above');
+                console.log(`Positioned popup ${popup.id} above annotation`);
+              }
+            };
+
+            // If the popup contains images, wait for them to load before finalizing position
+            if (hasImage) {
+              const images = popup.querySelectorAll('img');
+              let loadedImages = 0;
+              const totalImages = images.length;
+
+              console.log(`Popup ${popup.id} contains ${totalImages} images, waiting for them to load...`);
+
+              // Set a timeout in case images take too long to load
+              const positioningTimeout = setTimeout(() => {
+                if (loadedImages < totalImages) {
+                  console.warn(`Timeout reached while waiting for images in popup ${popup.id}. Positioning with current dimensions.`);
+                  positionPopup();
+
+                  // Remove from body - it will be added to the proper container later
+                  if (document.body.contains(popup)) {
+                    document.body.removeChild(popup);
+                  }
+                  popup.style.visibility = 'visible';
+                  popup.style.display = 'none'; // Reset display to none (will be shown on hover/click)
+                }
+              }, 3000); // 3 second timeout
+
+              // Add load event listeners to all images
+              images.forEach(img => {
+                // If image is already loaded
+                if (img.complete) {
+                  loadedImages++;
+                  console.log(`Image ${loadedImages}/${totalImages} in popup ${popup.id} was already loaded`);
+                  if (loadedImages === totalImages) {
+                    clearTimeout(positioningTimeout);
+                    // Get the updated height after all images are loaded
+                    const updatedHeight = popup.getBoundingClientRect().height;
+                    positionPopup(updatedHeight);
+
+                    // Remove from body - it will be added to the proper container later
+                    if (document.body.contains(popup)) {
+                      document.body.removeChild(popup);
+                    }
+                    popup.style.visibility = 'visible';
+                    popup.style.display = 'none'; // Reset display to none (will be shown on hover/click)
+                  }
+                } else {
+                  // Add load event listener
+                  img.addEventListener('load', () => {
+                    loadedImages++;
+                    console.log(`Image ${loadedImages}/${totalImages} in popup ${popup.id} loaded`);
+                    if (loadedImages === totalImages) {
+                      clearTimeout(positioningTimeout);
+                      // Get the updated height after all images are loaded
+                      const updatedHeight = popup.getBoundingClientRect().height;
+                      positionPopup(updatedHeight);
+
+                      // Remove from body - it will be added to the proper container later
+                      if (document.body.contains(popup)) {
+                        document.body.removeChild(popup);
+                      }
+                      popup.style.visibility = 'visible';
+                      popup.style.display = 'none'; // Reset display to none (will be shown on hover/click)
+                    }
+                  });
+
+                  // Add error event listener in case image fails to load
+                  img.addEventListener('error', () => {
+                    loadedImages++;
+                    console.warn(`Image ${loadedImages}/${totalImages} in popup ${popup.id} failed to load`);
+                    if (loadedImages === totalImages) {
+                      clearTimeout(positioningTimeout);
+                      positionPopup();
+
+                      // Remove from body - it will be added to the proper container later
+                      if (document.body.contains(popup)) {
+                        document.body.removeChild(popup);
+                      }
+                      popup.style.visibility = 'visible';
+                      popup.style.display = 'none'; // Reset display to none (will be shown on hover/click)
+                    }
+                  });
+                }
+              });
             } else {
-              // Keep original position below the annotation
-              popup.style.top = (cy + d / 2 + 10) + 'px';
-              // Remove the above class if it exists
-              popup.classList.remove('above');
-            }
+              // No images, position immediately
+              positionPopup();
 
-            // Remove from body - it will be added to the proper container later
-            document.body.removeChild(popup);
-            popup.style.visibility = 'visible';
-            popup.style.display = 'none'; // Reset display to none (will be shown on hover/click)
+              // Remove from body - it will be added to the proper container later
+              document.body.removeChild(popup);
+              popup.style.visibility = 'visible';
+              popup.style.display = 'none'; // Reset display to none (will be shown on hover/click)
+            }
 
             overlayContainer.appendChild(popup);
             overlayContainer.appendChild(circle);
@@ -297,6 +426,11 @@ function repositionAnnotations() {
                 if (popup.dataset.clickShown !== 'true') {
                   popup.style.display = 'block';
                   popup.dataset.hoverShown = 'true';
+
+                  // Ensure the popup is fully visible by adding a spacer if needed
+                  if (typeof ensurePopupVisibility === 'function') {
+                    ensurePopupVisibility(popup, cy, d);
+                  }
                 }
               });
 
@@ -351,6 +485,11 @@ function repositionAnnotations() {
                 popup.style.display = 'block';
                 popup.dataset.clickShown = 'true';
 
+                // Ensure the popup is fully visible by adding a spacer if needed
+                if (typeof ensurePopupVisibility === 'function') {
+                  ensurePopupVisibility(popup, cy, d);
+                }
+
                 // Stop propagation to prevent the document click handler from immediately hiding it
                 e.stopPropagation();
               }
@@ -369,6 +508,11 @@ function repositionAnnotations() {
  */
 function hideAllPopups() {
   document.querySelectorAll('.comment-popup').forEach(popup => {
+    // Remove any spacers that might have been added
+    if (typeof removePopupSpacer === 'function' && popup.dataset.spacerAdded === 'true') {
+      removePopupSpacer(popup);
+    }
+
     popup.style.display = 'none';
     popup.dataset.clickShown = 'false';
   });

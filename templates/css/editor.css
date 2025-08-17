@@ -1,0 +1,18 @@
+.redpen-editor { font-family: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif; border: 1px solid #eee; border-radius: 8px; padding: 12px; background: #fafafa; }
+.redpen-editor__header { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+.redpen-editor__title { font-weight:700; }
+.redpen-editor__label { display:block; margin:8px 0; font-size: 14px; }
+.redpen-editor__select, .redpen-editor__input, .redpen-editor__textarea { width:100%; box-sizing:border-box; margin-top:4px; padding:8px; border:1px solid #ccc; border-radius:6px; font-size:14px; }
+.redpen-editor__actions { display:flex; gap:8px; margin-top:8px; }
+.redpen-editor__btn { padding:8px 12px; border-radius:6px; border:1px solid #ccc; background:#fff; cursor:pointer; }
+.redpen-editor__btn.primary { background:#DC143C; color:#fff; border-color:#DC143C; }
+.redpen-editor__btn:disabled { opacity:0.6; cursor:not-allowed; }
+.redpen-editor__errors { color:#b00020; font-size:13px; margin-top:6px; }
+.redpen-login__modal { padding:10px; border:1px dashed #ccc; border-radius:8px; background:#fff; margin-top:10px; }
+.redpen-login__title { font-weight:600; margin-bottom:6px; }
+.redpen-login__row { display:flex; gap:8px; }
+.redpen-editor__toast { position: fixed; bottom: 20px; right: 20px; background: rgba(0,0,0,0.8); color:#fff; padding:10px 14px; border-radius:8px; opacity:0; transform: translateY(8px); transition: all .2s ease; z-index: 9999; }
+.redpen-editor__toast.show { opacity:1; transform: translateY(0); }
+
+/* Marker selection highlight only in editor mode: class added by editor.js */
+#overlay-container .circle.is-selected { outline: 3px solid #00a3ff; box-shadow: 0 0 0 4px rgba(0,163,255,0.25); }
