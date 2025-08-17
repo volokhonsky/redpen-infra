@@ -1,0 +1,42 @@
+/* Styles for the global comment container (right block comments) */
+
+#global-comment-container {
+  padding: 1.5rem;
+  background: #fff8f8; /* Light red background for better visibility */
+  border-top: 2px solid #DC143C;
+  border: 2px solid #DC143C; /* Add border all around */
+  box-shadow: 0 -5px 15px rgba(0,0,0,0.05);
+  position: relative;
+  width: 100%;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  display: block !important; /* Always ensure global comment is visible */
+  min-height: 200px; /* Increased minimum height for better visibility */
+  z-index: 50; /* Ensure it's above other elements */
+  margin-top: 20px; /* Add some space above */
+  margin-bottom: 50px; /* Add space at the bottom for better scrolling */
+  scroll-margin-top: 70px; /* Ensure proper scrolling position */
+}
+
+#global-comment-container::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 5px;
+  background: linear-gradient(to right, #DC143C, #ff6b6b);
+}
+
+#global-comment-container h2 {
+  color: #DC143C;
+  border-bottom: 1px solid #ffcccb;
+  padding-bottom: 8px;
+  margin-bottom: 15px;
+}
+
+/* Ensure images in global comment scale properly */
+#global-comment img {
+  max-width: 100%;
+  height: auto;
+}

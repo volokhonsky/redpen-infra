@@ -1,0 +1,157 @@
+<!-- AUTO-GENERATED FILE. Do not edit directly. Run scripts/build_website.py -->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>RedPen — Красной ручкой</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <link rel="stylesheet" href="../css/main.css">
+  <link rel="stylesheet" href="../css/components.css">
+  <link rel="stylesheet" href="../css/annotations.css">
+  <link rel="stylesheet" href="../css/global-comment.css">
+  <link rel="stylesheet" href="../css/editor.css">
+  <link rel="stylesheet" href="../css/responsive.css">
+  <link rel="icon" href="../favicon.svg">
+  <style>
+    .home-button {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      width: 40px;
+      height: 40px;
+      background-color: #DC143C;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      text-decoration: none;
+      font-weight: bold;
+      font-size: 20px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+      z-index: 1000;
+      transition: background-color 0.2s;
+    }
+    .home-button:hover {
+      background-color: #b01030;
+    }
+  </style>
+</head>
+<body>
+  <a href="../index.html" class="home-button" title="Вернуться к выбору документов">⌂</a>
+  <header>RedPen — Красной ручкой <span id="timestamp" style="font-size: 0.7rem; font-weight: normal; opacity: 0.8;">Последнее обновление: 17.08.2025 13:51</span></header>
+  <nav id="pagination">
+    <a href="#" class="pagination-btn" id="prev-page" onclick="prevPage();return false;">« Назад</a>
+    <div id="page-numbers" class="page-numbers">
+      <!-- Page numbers will be generated dynamically -->
+    </div>
+    <div class="page-input-container">
+      <input type="number" id="page-input" min="1" placeholder="Стр." aria-label="Номер страницы" onkeypress="if(event.key === 'Enter') { goToPage(); return false; }">
+      <button id="go-to-page-btn" class="pagination-btn" onclick="goToPage()">Перейти</button>
+    </div>
+    <a href="#" class="pagination-btn" id="next-page" onclick="nextPage();return false;">Вперед »</a>
+  </nav>
+  <style>
+    #pagination {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 10px;
+      margin: 10px 0;
+    }
+    .pagination-btn {
+      padding: 5px 10px;
+      background-color: #DC143C;
+      color: white;
+      border-radius: 4px;
+      text-decoration: none;
+      transition: background-color 0.2s;
+      border: none;
+      cursor: pointer;
+    }
+    .pagination-btn:hover {
+      background-color: #b01030;
+    }
+    .page-numbers {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 5px;
+    }
+    .page-number {
+      padding: 5px 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+    .page-number:hover {
+      background-color: #f0f0f0;
+    }
+    .page-number.active {
+      background-color: #DC143C;
+      color: white;
+      border-color: #DC143C;
+    }
+    .page-ellipsis {
+      padding: 5px 10px;
+    }
+    .page-input-container {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    #page-input {
+      width: 60px;
+      padding: 5px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      text-align: center;
+    }
+  </style>
+  <div id="layout">
+    <div id="content-wrapper">
+      <div id="image-container">
+        <img id="page-image"/>
+      </div>
+      <div id="comments-content">
+        <h2>Комментарии</h2>
+        <ul id="comment-list"></ul>
+      </div>
+    </div>
+    <div id="global-comment-container">
+      <h2>Общий комментарий</h2>
+      <div id="global-comment">Загрузка...</div>
+    </div>
+  </div>
+
+  <!-- Mobile comment overlay -->
+  <div id="mobile-overlay" class="mobile-overlay">
+    <div class="mobile-overlay-close" onclick="closeMobileOverlay()">×</div>
+    <div class="mobile-comment-content" id="mobile-comment-content"></div>
+  </div>
+
+  <!-- Mobile navigation buttons -->
+  <div id="mobile-nav-buttons" class="mobile-nav-buttons">
+    <div id="mobile-prev-button" class="mobile-nav-button prev" onclick="prevPage()">‹</div>
+    <div id="mobile-next-button" class="mobile-nav-button next" onclick="nextPage()">›</div>
+  </div>
+
+
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="../js/layout.js"></script>
+  <script src="../js/comment-content.js"></script>
+  <script src="../js/annotations.js"></script>
+  <script src="../js/mobile.js"></script>
+  <script src="../js/main.js"></script>
+  <script src="../js/editor.js"></script>
+  <script>
+    // Set the document title based on the URL path
+    document.addEventListener('DOMContentLoaded', function() {
+      const pathParts = window.location.pathname.split('/');
+      const documentId = pathParts[pathParts.length - 2] || 'med1'; // Default to med1 if not found
+      document.title = `RedPen — ${documentId === 'med1' ? 'Медицинский документ 1' : 'Медицинский документ 2'}`;
+    });
+  </script>
+</body>
+</html>

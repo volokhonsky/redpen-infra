@@ -7,6 +7,8 @@
   <link rel="stylesheet" href="../css/main.css">
   <link rel="stylesheet" href="../css/components.css">
   <link rel="stylesheet" href="../css/annotations.css">
+  <link rel="stylesheet" href="../css/global-comment.css">
+  <link rel="stylesheet" href="../css/editor.css">
   <link rel="stylesheet" href="../css/responsive.css">
   <link rel="icon" href="../favicon.svg">
   <style>
@@ -134,12 +136,6 @@
     <div id="mobile-next-button" class="mobile-nav-button next" onclick="nextPage()">›</div>
   </div>
 
-  <!-- Mobile bottom pagination -->
-  <div id="mobile-pagination" class="mobile-pagination">
-    <span class="page-info">Страница: <span id="current-page-number">1</span> из <span id="total-pages-number">1</span></span>
-    <input type="number" id="mobile-page-input" min="1" placeholder="Стр." aria-label="Номер страницы">
-    <button id="mobile-go-to-page-btn" onclick="goToMobilePage()">Перейти</button>
-  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="../js/layout.js"></script>
@@ -147,6 +143,7 @@
   <script src="../js/annotations.js"></script>
   <script src="../js/mobile.js"></script>
   <script src="../js/main.js"></script>
+  <script src="../js/editor.js"></script>
   <script>
     // Set the document title based on the URL path
     document.addEventListener('DOMContentLoaded', function() {
