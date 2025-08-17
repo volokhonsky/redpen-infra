@@ -449,102 +449,7 @@
 [+] Converted /Users/Vladimir.Volokhonsky/Documents/redpen/redpen-content/medinsky11klass/annotations/page_186.md to /Users/Vladimir.Volokhonsky/Documents/redpen/redpen-publish/medinsky11klass/annotations/page_186.json
 [+] Converted /Users/Vladimir.Volokhonsky/Documents/redpen/redpen-content/medinsky11klass/annotations/page_357.md to /Users/Vladimir.Volokhonsky/Documents/redpen/redpen-publish/medinsky11klass/annotations/page_357.json
 [+] Converted /Users/Vladimir.Volokhonsky/Documents/redpen/redpen-content/medinsky11klass/annotations/page_419.md to /Users/Vladimir.Volokhonsky/Documents/redpen/redpen-publish/medinsky11klass/annotations/page_419.json
-=== Running Annotation Position Tests ===
-=== Creating Test Files for Annotation Tests ===
-Created metadata.json at /Users/Vladimir.Volokhonsky/Documents/redpen/redpen-publish/metadata.json
-Created minimal document_index.html at /Users/Vladimir.Volokhonsky/Documents/redpen/redpen-publish/document_index.html
-Created test image at /Users/Vladimir.Volokhonsky/Documents/redpen/redpen-publish/images/page_007.png
-Starting HTTP server on port 64283...
-=== Test 1: Desktop Width (1280px) ===
-Starting test_desktop_width...
-Opening: http://localhost:64283/document_index.html
-127.0.0.1 - - [17/Aug/2025 15:50:56] "GET /document_index.html HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:50:56] "GET /images/page_007.png HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:50:56] code 404, message File not found
-127.0.0.1 - - [17/Aug/2025 15:50:56] "GET /favicon.ico HTTP/1.1" 404 -
-Page loaded
-127.0.0.1 - - [17/Aug/2025 15:50:56] "GET /metadata.json HTTP/1.1" 200 -
-metadata.json exists: True
-Waiting for networkidle...
-Network is idle
-page-image exists: True
-Loading page 7...
-Page 7 loaded
-Waiting for annotations to load...
-Waiting for circles to be created...
-Circles created
-Wait complete
-Found 3 circles
-Circle ann-page7-1: centerX=334.5, centerY=123
-Circle circle-1: centerX=434.5, centerY=223
-Circle circle-2: centerX=634.5, centerY=623
-=== Test 2: Mobile Width (800px) ===
-Starting test_mobile_width...
-Opening: http://localhost:64283/document_index.html
-127.0.0.1 - - [17/Aug/2025 15:50:59] "GET /document_index.html HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:50:59] "GET /images/page_007.png HTTP/1.1" 200 -
-Page loaded
-Waiting for networkidle...
-127.0.0.1 - - [17/Aug/2025 15:50:59] code 404, message File not found
-127.0.0.1 - - [17/Aug/2025 15:50:59] "GET /favicon.ico HTTP/1.1" 404 -
-Network is idle
-Loading page 7...
-Page 7 loaded
-Waiting for annotations to load...
-Waiting for circles to be created...
-Circles created
-Wait complete
-Found 3 circles
-Circle ann-page7-1: centerX=103, centerY=123
-Circle circle-1: centerX=203, centerY=223
-Circle circle-2: centerX=403, centerY=623
-=== Test 3: Resize from Desktop to Mobile ===
-Starting test_resize_desktop_to_mobile...
-Opening: http://localhost:64283/document_index.html
-127.0.0.1 - - [17/Aug/2025 15:51:02] "GET /document_index.html HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:51:02] "GET /images/page_007.png HTTP/1.1" 200 -
-Page loaded
-Waiting for networkidle...
-127.0.0.1 - - [17/Aug/2025 15:51:02] code 404, message File not found
-127.0.0.1 - - [17/Aug/2025 15:51:02] "GET /favicon.ico HTTP/1.1" 404 -
-Network is idle
-Loading page 7...
-Page 7 loaded
-Waiting for annotations to load...
-Waiting for circles to be created...
-Circles created
-Wait complete
-Found 3 circles after resize
-Circle ann-page7-1: centerX=103, centerY=123
-Circle circle-1: centerX=203, centerY=223
-Circle circle-2: centerX=403, centerY=623
-=== Test 4: Resize from Mobile to Desktop ===
-Starting test_resize_mobile_to_desktop...
-Opening: http://localhost:64283/document_index.html
-127.0.0.1 - - [17/Aug/2025 15:51:08] "GET /document_index.html HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:51:08] "GET /images/page_007.png HTTP/1.1" 200 -
-Page loaded
-Waiting for networkidle...
-127.0.0.1 - - [17/Aug/2025 15:51:08] code 404, message File not found
-127.0.0.1 - - [17/Aug/2025 15:51:08] "GET /favicon.ico HTTP/1.1" 404 -
-Network is idle
-Loading page 7...
-Page 7 loaded
-Waiting for annotations to load...
-Waiting for circles to be created...
-Circles created
-Wait complete
-Found 3 circles after resize
-Circle ann-page7-1: centerX=334.5, centerY=123
-Circle circle-1: centerX=434.5, centerY=223
-Circle circle-2: centerX=634.5, centerY=623
-=== Comparing with Baseline ===
-=== Overall Results ===
-Desktop width test: PASS
-Mobile width test: PASS
-Desktop to mobile resize test: PASS
-Mobile to desktop resize test: PASS
-Overall: PASS
+Skipping annotation position tests
 === Publishing Website Data for all documents ===
 [+] Copied /Users/Vladimir.Volokhonsky/Documents/redpen/redpen-content/medinsky11klass/images/page_233.png to /Users/Vladimir.Volokhonsky/Documents/redpen/redpen-publish/medinsky11klass/images/page_233.png
 [+] Copied /Users/Vladimir.Volokhonsky/Documents/redpen/redpen-content/medinsky11klass/images/page_227.png to /Users/Vladimir.Volokhonsky/Documents/redpen/redpen-publish/medinsky11klass/images/page_227.png
@@ -1467,30 +1372,6 @@ Overall: PASS
 [+] Created index page at /Users/Vladimir.Volokhonsky/Documents/redpen/redpen-publish/index.html
 [+] Also created document_index.html at /Users/Vladimir.Volokhonsky/Documents/redpen/redpen-publish/document_index.html for test compatibility
 === Cleaning Up Old Structure ===
-[+] Removed old directory: /Users/Vladimir.Volokhonsky/Documents/redpen/redpen-publish/images
-=== Running Editor Mode Visibility Tests ===
-[editor_mode_tests] Serving /Users/Vladimir.Volokhonsky/Documents/redpen/redpen-publish on port 64317
-[editor_mode_tests] Test A: opening http://localhost:64317/medinsky11klass/index.html
-127.0.0.1 - - [17/Aug/2025 15:51:14] "GET /medinsky11klass/index.html HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:51:14] "GET /css/main.css HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:51:14] "GET /css/components.css HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:51:14] "GET /css/annotations.css HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:51:14] "GET /css/global-comment.css HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:51:14] "GET /css/editor.css HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:51:14] "GET /css/responsive.css HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:51:14] "GET /js/layout.js HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:51:14] "GET /js/comment-content.js HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:51:14] "GET /js/annotations.js HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:51:14] "GET /js/mobile.js HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:51:14] "GET /js/main.js HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:51:14] "GET /js/editor.js HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:51:14] "GET /medinsky11klass/metadata.json HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:51:14] "GET /medinsky11klass/images/page_001.png HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:51:14] "GET /medinsky11klass/annotations/page_001.json HTTP/1.1" 200 -
-127.0.0.1 - - [17/Aug/2025 15:51:14] "GET /medinsky11klass/text/page_001.json HTTP/1.1" 200 -
-[editor_mode_tests] Test B: opening http://localhost:64317/medinsky11klass/index.html?editor=1
-127.0.0.1 - - [17/Aug/2025 15:51:15] "GET /medinsky11klass/index.html?editor=1 HTTP/1.1" 200 -
-[editor_mode_tests] All checks passed
-Editor mode tests: PASS
+Skipping editor mode tests
 Skipping push to redpen-publish submodule
 === Website Build Completed Successfully ===
