@@ -356,6 +356,21 @@ def run_annotation_tests(target_dir=None):
         print(f"Error running annotation tests: {e}")
         return False
 
+def run_editor_mode_tests(target_dir=None):
+    """Run editor mode visibility tests (presence of panel when ?editor=1)."""
+    print("\n=== Running Editor Mode Visibility Tests ===")
+    try:
+        tests_module = import_module_from_file(
+            'editor_mode_tests',
+            os.path.join(project_root, 'tests', 'editor_mode_tests.py')
+        )
+        result = tests_module.run_tests(target_dir)
+        print(f"Editor mode tests: {'PASS' if result else 'FAIL'}")
+        return bool(result)
+    except Exception as e:
+        print(f"Error running editor mode tests: {e}")
+        return False
+
 def publish_website_data(target_dir=None, document=None, specific_folders=None):
     """
     Publish data to the target directory
@@ -923,7 +938,18 @@ def main():
         # Only create the index page when building all documents
         create_index_page(target_dir, specific_folders)
 
-    # Step 5: Push changes to submodule (if not skipped)
+    # Step 5: Run editor mode tests (post-publish) unless skipped
+    if not args.skip_tests and not document:
+        editor_passed = run_editor_mode_tests(target_dir)
+        if not editor_passed:
+            print("Editor mode tests failed. Aborting.")
+            sys.exit(1)
+    elif args.skip_tests:
+        print("Skipping editor mode tests")
+    else:
+        print("Skipping editor mode tests for specific document build")
+
+    # Step 6: Push changes to submodule (if not skipped)
     if not args.skip_push:
         if not push_to_submodule(target_dir):
             print("Failed to push changes to redpen-publish submodule. Aborting.")
