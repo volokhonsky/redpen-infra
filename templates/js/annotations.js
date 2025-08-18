@@ -129,6 +129,15 @@ function repositionAnnotations() {
         circle.style.transform = 'translateX(-50%)';
         circle.textContent = i + 1;
 
+        // Attach annotation data for editor mode to pick up
+        try {
+          circle.dataset.annType = a.annType || 'comment';
+          if (typeof a.text === 'string') circle.dataset.text = a.text;
+          if (Array.isArray(a.coords) && a.coords.length === 2) {
+            circle.dataset.coords = `[${a.coords[0]}, ${a.coords[1]}]`;
+          }
+        } catch (e) { /* noop */ }
+
         // Use only this comment's text
         let commentText = a.text;
 
@@ -244,6 +253,15 @@ function repositionAnnotations() {
             circle.style.background = `radial-gradient(circle, ${color}80 0%, ${color}40 50%, ${color}00 100%)`;
             circle.style.fontSize = (d * 0.6) + 'px';
             circle.textContent = i + 1;
+
+            // Attach annotation data for editor mode to pick up
+            try {
+              circle.dataset.annType = a.annType || 'comment';
+              if (typeof a.text === 'string') circle.dataset.text = a.text;
+              if (Array.isArray(a.coords) && a.coords.length === 2) {
+                circle.dataset.coords = `[${a.coords[0]}, ${a.coords[1]}]`;
+              }
+            } catch (e) { /* noop */ }
 
             // Use only this comment's text
             let commentText = a.text;
