@@ -131,6 +131,9 @@ async function loadPage(pageNum) {
   }
   globalDiv.innerHTML = globalContent || 'Нет общего комментария.';
 
+  // Notify editor (if present) about loaded annotations for this page
+  try { if (window.RedPenEditor && typeof window.RedPenEditor.onAnnotationsLoaded === 'function') { window.RedPenEditor.onAnnotationsLoaded(allAnns || []); } } catch(e) { /* noop */ }
+
   document.getElementById('comment-list').innerHTML = '';
   repositionAnnotations();
 

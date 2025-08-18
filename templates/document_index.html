@@ -8,7 +8,6 @@
   <link rel="stylesheet" href="../css/components.css">
   <link rel="stylesheet" href="../css/annotations.css">
   <link rel="stylesheet" href="../css/global-comment.css">
-  <link rel="stylesheet" href="../css/editor.css">
   <link rel="stylesheet" href="../css/responsive.css">
   <link rel="icon" href="../favicon.svg">
   <style>
@@ -143,40 +142,8 @@
   <script src="../js/annotations.js"></script>
   <script src="../js/mobile.js"></script>
   <script src="../js/main.js"></script>
-  <script src="../js/editor.js" defer></script>
-  <script>
-    // Safe bootstrap for editor mode: runs only if editor flag is present
-    (function(){
-      function hasEditorFlag(){
-        try {
-          var g = window;
-          var usp = new URLSearchParams(g.location.search || '');
-          var hsp = new URLSearchParams((g.location.hash || '').replace(/^#/, ''));
-          var qp = usp.get('editor');
-          var hp = hsp.get('editor');
-          return (qp === '1' || qp === 'true') || (hp === '1' || hp === 'true') || g.REDPEN_EDITOR === true;
-        } catch(e) {
-          return window.REDPEN_EDITOR === true;
-        }
-      }
-      function initIfNeeded(){
-        if (!hasEditorFlag()) return;
-        try {
-          if (window.RedPenEditor && typeof window.RedPenEditor.init === 'function') {
-            window.RedPenEditor.init();
-          }
-        } catch(e) {
-          // swallow errors to keep viewer intact
-          console.warn('[RedPenEditor] init failed (non-fatal):', e);
-        }
-      }
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initIfNeeded);
-      } else {
-        initIfNeeded();
-      }
-    })();
-  </script>
+  <script src="../js/redpen-editor-panel.js"></script>
+  <script src="../js/redpen-editor-bootstrap.js"></script>
   <script>
     // Set the document title based on the URL path
     document.addEventListener('DOMContentLoaded', function() {
