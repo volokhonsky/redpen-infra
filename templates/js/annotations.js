@@ -144,6 +144,7 @@ function repositionAnnotations() {
         // Create popup for desktop hover using the comment-content.js function
         const popup = createCommentPopup(a, i, cx, cy, d);
         overlayContainer.appendChild(popup);
+        try { circle.dataset.popupId = popup.id; } catch(e) { /* noop */ }
         console.log(`  Popup created with ID: ${popup.id}`);
 
         // Desktop: Show popup on hover
@@ -435,6 +436,7 @@ function repositionAnnotations() {
             }
 
             overlayContainer.appendChild(popup);
+            try { circle.dataset.popupId = popup.id; } catch(e) { /* noop */ }
             overlayContainer.appendChild(circle);
 
             // Desktop: Show popup on hover

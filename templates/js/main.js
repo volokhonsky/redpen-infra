@@ -11,6 +11,44 @@ let isMobile = false;
 let resizeTimeout;
 let metadata = null;
 
+function isEditorMode() {
+  try {
+    if (window.hasEditorFlag && typeof window.hasEditorFlag === 'function') {
+      return !!window.hasEditorFlag();
+    }
+    const usp = new URLSearchParams(window.location.search || '');
+    const hsp = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
+    const qp = usp.get('editor');
+    const hp = hsp.get('editor');
+    return (qp === '1' || qp === 'true') || (hp === '1' || hp === 'true') || window.REDPEN_EDITOR === true;
+  } catch (e) {
+    return window.REDPEN_EDITOR === true;
+  }
+}
+
+function clampPage(n) {
+  const total = (metadata && metadata.totalPages) ? metadata.totalPages : 1;
+  n = parseInt(n, 10);
+  if (isNaN(n)) n = 1;
+  if (n < 1) n = 1;
+  if (n > total) n = total;
+  return n;
+}
+
+function buildPageUrl(n) {
+  const url = new URL(window.location.href);
+  url.searchParams.set('page', String(n));
+  if (isEditorMode()) url.searchParams.set('editor', '1'); else url.searchParams.delete('editor');
+  return url.pathname + url.search + url.hash;
+}
+
+function navigateTo(targetPage) {
+  const n = clampPage(targetPage);
+  const href = buildPageUrl(n);
+  history.pushState({ page: n }, '', href);
+  loadPage(n);
+}
+
 /**
  * Initialize the application
  */
@@ -38,33 +76,55 @@ async function init() {
     }, 250);
   });
 
-  // Check for hash in URL to determine initial page
-  const hash = window.location.hash;
-  let startPage = 1;
-
-  if (hash && hash.startsWith('#page')) {
-    const pageNum = parseInt(hash.substring(5));
-    if (!isNaN(pageNum) && pageNum >= 1 && pageNum <= (metadata.totalPages || 1)) {
-      startPage = pageNum;
+  // Determine initial page from query (?page) then hash (#page)
+  const usp = new URLSearchParams(window.location.search || '');
+  const pageFromQuery = parseInt(usp.get('page'), 10);
+  let startPage = !isNaN(pageFromQuery) ? pageFromQuery : undefined;
+  if (typeof startPage === 'undefined') {
+    const hash = window.location.hash;
+    if (hash && hash.startsWith('#page')) {
+      const pageNum = parseInt(hash.substring(5), 10);
+      if (!isNaN(pageNum)) startPage = pageNum;
     }
-  } else if (metadata.pageNumbering && metadata.pageNumbering.logicalStart) {
-    // Use logical start page from metadata if available
-    startPage = metadata.pageNumbering.logicalStart;
   }
+  if (typeof startPage === 'undefined') {
+    if (metadata.pageNumbering && metadata.pageNumbering.logicalStart) {
+      startPage = metadata.pageNumbering.logicalStart;
+    } else {
+      startPage = 1;
+    }
+  }
+  startPage = clampPage(startPage);
 
   // Load the initial page
   loadPage(startPage);
 
-  // Listen for hash changes
-  window.addEventListener('hashchange', () => {
-    const hash = window.location.hash;
-    if (hash && hash.startsWith('#page')) {
-      const pageNum = parseInt(hash.substring(5));
-      if (!isNaN(pageNum) && pageNum >= 1 && pageNum <= (metadata.totalPages || 1)) {
-        loadPage(pageNum);
-      }
-    }
+  // Listen for Back/Forward navigation
+  window.addEventListener('popstate', () => {
+    const usp2 = new URLSearchParams(window.location.search || '');
+    const p = parseInt(usp2.get('page'), 10);
+    loadPage(clampPage(isNaN(p) ? 1 : p));
   });
+
+  // Delegate clicks on pagination to navigate without full reload
+  const pagination = document.getElementById('pagination');
+  if (pagination) {
+    pagination.addEventListener('click', (e) => {
+      const a = e.target && e.target.closest ? e.target.closest('a') : null;
+      if (!a) return;
+      const href = a.getAttribute('href');
+      if (!href) return;
+      try {
+        const u = new URL(href, window.location.href);
+        const pStr = u.searchParams.get('page');
+        if (pStr) {
+          e.preventDefault();
+          const n = parseInt(pStr, 10);
+          navigateTo(n);
+        }
+      } catch (_) { /* ignore */ }
+    });
+  }
 
   // Initialize mobile-specific functionality
   if (typeof initMobile === 'function') {
@@ -152,7 +212,7 @@ async function loadPage(pageNum) {
 function nextPage() {
   const total = metadata.totalPages || 1;
   const currentLogical = logicalFromPhysical();
-  if (currentLogical < total) loadPage(currentLogical + 1);
+  if (currentLogical < total) navigateTo(currentLogical + 1);
 }
 
 /**
@@ -160,7 +220,7 @@ function nextPage() {
  */
 function prevPage() {
   const currentLogical = logicalFromPhysical();
-  if (currentLogical > 1) loadPage(currentLogical - 1);
+  if (currentLogical > 1) navigateTo(currentLogical - 1);
 }
 
 /**
@@ -171,8 +231,9 @@ function goToPage() {
   const pageNum = parseInt(input.value);
   const totalPages = metadata.totalPages || 1;
 
-  if (!isNaN(pageNum) && pageNum >= 1 && pageNum <= totalPages) {
-    loadPage(pageNum);
+  if (!isNaN(pageNum)) {
+    const clamped = Math.max(1, Math.min(totalPages, pageNum));
+    navigateTo(clamped);
     input.value = ''; // Clear the input after navigation
   } else {
     alert(`Пожалуйста, введите номер страницы от 1 до ${totalPages}`);
@@ -215,10 +276,13 @@ function updatePagination(currentPage) {
   // Convert to sorted array
   const pageNumbers = Array.from(pagesToShow).sort((a, b) => a - b);
 
+  // Helper to create URL for page
+  const hrefFor = (n) => buildPageUrl(n);
+
   // Add page numbers with ellipses for gaps
-  let prevPage = 0;
+  let prevPageNum = 0;
   pageNumbers.forEach(pageNum => {
-    if (pageNum - prevPage > 1) {
+    if (pageNum - prevPageNum > 1) {
       // Add ellipsis for gap
       const ellipsis = document.createElement('span');
       ellipsis.className = 'page-ellipsis';
@@ -230,14 +294,11 @@ function updatePagination(currentPage) {
     const pageElement = document.createElement('a');
     pageElement.className = 'page-number' + (pageNum === currentPage ? ' active' : '');
     pageElement.textContent = pageNum;
-    pageElement.href = '#';
-    pageElement.onclick = function() {
-      loadPage(pageNum);
-      return false;
-    };
+    pageElement.href = hrefFor(pageNum);
+    // No inline onclick; use delegated handler for SPA navigation
     pageNumbersContainer.appendChild(pageElement);
 
-    prevPage = pageNum;
+    prevPageNum = pageNum;
   });
 
   // Update prev/next buttons
@@ -246,10 +307,12 @@ function updatePagination(currentPage) {
 
   if (prevButton) {
     prevButton.style.visibility = currentPage > 1 ? 'visible' : 'hidden';
+    prevButton.setAttribute('href', hrefFor(Math.max(1, currentPage - 1)));
   }
 
   if (nextButton) {
     nextButton.style.visibility = currentPage < totalPages ? 'visible' : 'hidden';
+    nextButton.setAttribute('href', hrefFor(Math.min(totalPages, currentPage + 1)));
   }
 }
 
