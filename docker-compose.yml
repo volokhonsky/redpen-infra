@@ -74,8 +74,8 @@ services:
     volumes:
       - content_data:/srv/public
       # Optional SSH keys for private repo (uncomment when present)
-      # - ./secrets/content-ssh/id_ed25519:/root/.ssh/id_ed25519:ro
-      # - ./secrets/content-ssh/known_hosts:/root/.ssh/known_hosts:ro
+      - ./secrets/content-ssh/id_ed25519:/root/.ssh/id_ed25519:ro
+      - ./secrets/content-ssh/known_hosts:/root/.ssh/known_hosts:ro
     networks:
       - redpen
     expose:
