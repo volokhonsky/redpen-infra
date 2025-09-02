@@ -1,0 +1,85 @@
+version: "3.8"
+
+name: redpen
+
+volumes:
+  caddy_data:
+  caddy_config:
+  redpen_data:
+  content_data:
+
+networks:
+  redpen:
+    driver: bridge
+
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      - API_BASE_URL=${API_BASE_URL}
+    volumes:
+      - content_data:/usr/share/nginx/html:ro
+    networks:
+      - redpen
+    restart: unless-stopped
+    # Optional resource limits (non-swarm):
+    # mem_limit: 256m
+
+  api:
+    build:
+      context: ./scripts/api
+    environment:
+      - STORAGE_DIR=/var/redpen-data
+      - LOG_LEVEL=${LOG_LEVEL}
+      - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS}
+    volumes:
+      - redpen_data:/var/redpen-data
+    networks:
+      - redpen
+    restart: unless-stopped
+    # mem_limit: 256m
+
+  caddy:
+    image: caddy:alpine
+    depends_on:
+      - frontend
+      - api
+      - content-sync
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN}
+      - API_HOST=${API_HOST}
+      - FRONTEND_ORIGIN=${FRONTEND_ORIGIN}
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      - redpen
+    restart: unless-stopped
+    # mem_limit: 256m
+
+  content-sync:
+    build:
+      context: ./content-sync
+    environment:
+      - GIT_REPO=${CONTENT_GIT_REPO}
+      - GIT_REF=${CONTENT_GIT_REF}
+      - WEBHOOK_SECRET=${CONTENT_WEBHOOK_SECRET}
+      - API_BASE_URL=${API_BASE_URL}
+    volumes:
+      - content_data:/srv/public
+      # Optional SSH keys for private repo (uncomment when present)
+      # - ./secrets/content-ssh/id_ed25519:/root/.ssh/id_ed25519:ro
+      # - ./secrets/content-ssh/known_hosts:/root/.ssh/known_hosts:ro
+    networks:
+      - redpen
+    expose:
+      - "9000"
+    restart: unless-stopped
+
+# Load .env from the project root (default behavior of docker compose).
