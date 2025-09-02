@@ -1,0 +1,62 @@
+{
+	# Optional: email for ACME account; can be set via env if needed
+	# email {$ACME_EMAIL}
+	# Enables automatic HTTPS, HTTP/2/3 by default
+}
+
+# Frontend host: serves static via frontend container
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Security headers
+	headers {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer-when-downgrade"
+		X-Frame-Options "DENY"
+		Permissions-Policy "geolocation=(), camera=(), microphone=()"
+	}
+
+	# GitHub webhook endpoint: only POST, no store
+	@ghhook {
+		method POST
+		path /.hooks/redpen-publish
+	}
+	headers @ghhook {
+		Cache-Control "no-store"
+	}
+	reverse_proxy @ghhook content-sync:9000
+
+	rewrite /.hooks/* 404
+
+	reverse_proxy frontend:80
+}
+
+# API host: reverse proxy to FastAPI; add CORS headers and handle preflight
+{$API_HOST} {
+	encode zstd gzip
+
+	# Security headers
+	headers {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer-when-downgrade"
+		X-Frame-Options "DENY"
+		Permissions-Policy "geolocation=(), camera=(), microphone=()"
+
+		# Basic CORS for browsers; backend also enforces CORS
+		Access-Control-Allow-Origin {$FRONTEND_ORIGIN}
+		Access-Control-Allow-Methods "GET, POST, PUT, OPTIONS"
+		Access-Control-Allow-Headers "*"
+		Access-Control-Allow-Credentials "true"
+	}
+
+	# Handle CORS preflight quickly
+	@preflight {
+		method OPTIONS
+		path /api/*
+	}
+	respond @preflight 204
+
+	reverse_proxy api:8080
+}
