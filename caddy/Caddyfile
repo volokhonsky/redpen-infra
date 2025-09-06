@@ -36,7 +36,7 @@
     header {
       Cache-Control "no-store"
     }
-    respond 404
+    respond 418
   }
 
   # Всё остальное — фронтенд
