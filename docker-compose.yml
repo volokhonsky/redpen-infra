@@ -64,6 +64,8 @@ services:
     # mem_limit: 256m
 
   content-sync:
+    env_file:
+      - .env.secrets
     build:
       context: ./content-sync
     environment:
