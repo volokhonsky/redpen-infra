@@ -33,10 +33,18 @@
   }
   respond @otherhooks 404
 
-  # Всё остальное — фронтенд
+  # Test probe hook: returns 418 with a debug header (does not change existing hooks)
+  @testhook {
+    path /.hooks/probe
+  }
+  header @testhook {
+    Cache-Control "no-store"
+    X-Debug "hook-probe"
+  }
+  respond @testhook 418
+
   reverse_proxy frontend:80
 }
-
 # API host: reverse proxy to FastAPI; add CORS headers and handle preflight
 {$API_HOST} {
 	encode zstd gzip
