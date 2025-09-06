@@ -16,32 +16,30 @@
     Permissions-Policy "geolocation=(), camera=(), microphone=()"
   }
 
-  # Разрешаем только конкретный POST-хук
-  @ghhook {
-    method POST
-    path /.hooks/redpen-publish
+  # Вебхуки: сначала точные пути, потом общий 404 для остальных
+  handle_path /.hooks/probe {
+    header {
+      Cache-Control "no-store"
+      X-Debug "hook-probe"
+    }
+    respond 418
   }
-  header @ghhook {
-    Cache-Control "no-store"
-  }
-  reverse_proxy @ghhook content-sync:9000
 
-  # Test probe hook: put BEFORE @otherhooks 404 to avoid being shadowed
-  @testhook {
-    path /.hooks/probe
+  handle_path /.hooks/redpen-publish {
+    header {
+      Cache-Control "no-store"
+    }
+    reverse_proxy content-sync:9000
   }
-  header @testhook {
-    Cache-Control "no-store"
-    X-Debug "hook-probe"
-  }
-  respond @testhook 418
 
-  @otherhooks {
-    path /.hooks/*
-    not path /.hooks/redpen-publish
+  handle_path /.hooks/* {
+    header {
+      Cache-Control "no-store"
+    }
+    respond 404
   }
-  respond @otherhooks 404
 
+  # Всё остальное — фронтенд
   reverse_proxy frontend:80
 }
 # API host: reverse proxy to FastAPI; add CORS headers and handle preflight
