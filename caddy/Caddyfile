@@ -5,7 +5,7 @@
 }
 
 # Frontend host: serves static via frontend container
-{{$DOMAIN} {
+{env.DOMAIN} {
 	encode zstd gzip
 
 	# Security headers
@@ -31,10 +31,7 @@
 
 	reverse_proxy frontend:80
 }
-
-
-# API host: reverse proxy to FastAPI; add CORS headers and handle preflight
-{$API_HOST} {
+{env.API_HOST} {
 	encode zstd gzip
 
 	# Security headers
