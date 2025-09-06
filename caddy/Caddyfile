@@ -26,14 +26,7 @@
   }
   reverse_proxy @ghhook content-sync:9000
 
-  # Все остальные /.hooks/* блокируем 404
-  @otherhooks {
-    path /.hooks/*
-    not path /.hooks/redpen-publish
-  }
-  respond @otherhooks 404
-
-  # Test probe hook: returns 418 with a debug header (does not change existing hooks)
+  # Test probe hook: put BEFORE @otherhooks 404 to avoid being shadowed
   @testhook {
     path /.hooks/probe
   }
@@ -42,6 +35,12 @@
     X-Debug "hook-probe"
   }
   respond @testhook 418
+
+  @otherhooks {
+    path /.hooks/*
+    not path /.hooks/redpen-publish
+  }
+  respond @otherhooks 404
 
   reverse_proxy frontend:80
 }
