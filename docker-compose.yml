@@ -71,7 +71,6 @@ services:
     environment:
       - GIT_REPO=${CONTENT_GIT_REPO}
       - GIT_REF=${CONTENT_GIT_REF}
-      - WEBHOOK_SECRET=${CONTENT_WEBHOOK_SECRET}
       - API_BASE_URL=${API_BASE_URL}
     volumes:
       - content_data:/srv/public
