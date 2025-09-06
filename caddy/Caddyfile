@@ -6,29 +6,37 @@
 
 # Frontend host: serves static via frontend container
 {$DOMAIN} {
-	encode zstd gzip
+  encode zstd gzip
 
-	# Security headers
-	header {
-		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-		X-Content-Type-Options "nosniff"
-		Referrer-Policy "no-referrer-when-downgrade"
-		X-Frame-Options "DENY"
-		Permissions-Policy "geolocation=(), camera=(), microphone=()"
-	}
-	@ghhook {
-		method POST
-		path /.hooks/redpen-publish
-	}
-	header @ghhook {
-		Cache-Control "no-store"
-	}
-	reverse_proxy @ghhook content-sync:9000
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "no-referrer-when-downgrade"
+    X-Frame-Options "DENY"
+    Permissions-Policy "geolocation=(), camera=(), microphone=()"
+  }
 
-	rewrite /.hooks/* 404
+  # Разрешаем только конкретный POST-хук
+  @ghhook {
+    method POST
+    path /.hooks/redpen-publish
+  }
+  header @ghhook {
+    Cache-Control "no-store"
+  }
+  reverse_proxy @ghhook content-sync:9000
 
-	reverse_proxy frontend:80
+  # Все остальные /.hooks/* блокируем 404
+  @otherhooks {
+    path /.hooks/*
+    not path /.hooks/redpen-publish
+  }
+  respond @otherhooks 404
+
+  # Всё остальное — фронтенд
+  reverse_proxy frontend:80
 }
+
 # API host: reverse proxy to FastAPI; add CORS headers and handle preflight
 {$API_HOST} {
 	encode zstd gzip
