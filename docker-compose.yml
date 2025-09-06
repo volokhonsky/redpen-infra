@@ -53,9 +53,10 @@ services:
       - API_HOST=${API_HOST}
       - FRONTEND_ORIGIN=${FRONTEND_ORIGIN}
     volumes:
-      - caddy_data:/data
-      - caddy_config:/config
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /root/apps/redpen/infra/caddy:/etc/caddy:ro
+#      - caddy_data:/data
+#      - caddy_config:/config
+#      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
     networks:
       - redpen
     restart: unless-stopped
