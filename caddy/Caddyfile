@@ -5,7 +5,7 @@
 }
 
 # Frontend host: serves static via frontend container
-{env.DOMAIN} {
+{$DOMAIN} {
 	encode zstd gzip
 
 	# Security headers
@@ -16,29 +16,21 @@
 		X-Frame-Options "DENY"
 		Permissions-Policy "geolocation=(), camera=(), microphone=()"
 	}
-
-	# Вебхук GitHub: строго по пути и только он уходит в content-sync
-	handle_path /.hooks/redpen-publish {
-		# Без кеша на этот эндпоинт
-		header {
-			Cache-Control "no-store"
-		}
-		reverse_proxy content-sync:9000
+	@ghhook {
+		method POST
+		path /.hooks/redpen-publish
 	}
-
-	# Любые другие /.hooks/* — 404
-	handle_path /.hooks/* {
-		header {
-			Cache-Control "no-store"
-		}
-		respond 404
+	header @ghhook {
+		Cache-Control "no-store"
 	}
+	reverse_proxy @ghhook content-sync:9000
 
-	# Остальной трафик — на фронтенд
+	rewrite /.hooks/* 404
+
 	reverse_proxy frontend:80
 }
 # API host: reverse proxy to FastAPI; add CORS headers and handle preflight
-{env.API_HOST} {
+{$API_HOST} {
 	encode zstd gzip
 
 	# Security headers
@@ -49,7 +41,7 @@
 		X-Frame-Options "DENY"
 		Permissions-Policy "geolocation=(), camera=(), microphone=()"
 
-		# Basic CORS; бекенд тоже делает CORS
+		# Basic CORS for browsers; backend also enforces CORS
 		Access-Control-Allow-Origin {$FRONTEND_ORIGIN}
 		Access-Control-Allow-Methods "GET, POST, PUT, OPTIONS"
 		Access-Control-Allow-Headers "*"
@@ -57,13 +49,12 @@
 	}
 
 	# Быстрый preflight
-	handle_path /api/* {
-		@preflight {
-			method OPTIONS
-		}
-		respond @preflight 204
-
-		# Остальные методы /api/* — в бекенд
-		reverse_proxy api:8080
+	@preflight {
+		method OPTIONS
+		path /api/*
 	}
+	respond @preflight 204
+
+	# Проксирование всех остальных /api/* в бекенд
+	reverse_proxy api:8080
 }
