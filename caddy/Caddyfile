@@ -9,7 +9,7 @@
 	encode zstd gzip
 
 	# Security headers
-	headers {
+	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "no-referrer-when-downgrade"
@@ -22,12 +22,12 @@
 		method POST
 		path /.hooks/redpen-publish
 	}
-	headers @ghhook {
+	header @ghhook {
 		Cache-Control "no-store"
 	}
 	reverse_proxy @ghhook content-sync:9000
 
-	rewrite /.hooks/* 404
+	respond /.hooks/* 404
 
 	reverse_proxy frontend:80
 }
