@@ -16,31 +16,37 @@
     Permissions-Policy "geolocation=(), camera=(), microphone=()"
   }
 
-  # Вебхуки: сначала точные пути, потом общий 404 для остальных
-  handle_path /.hooks/probe {
-    header {
-      Cache-Control "no-store"
-      X-Debug "hook-probe"
+  route {
+    # Тестовый зонд: сохраняем полный путь
+    handle /.hooks/probe {
+      header {
+        Cache-Control "no-store"
+        X-Debug "hook-probe"
+      }
+      respond 418
     }
-    respond 418
-  }
 
-  handle_path /.hooks/redpen-publish {
-    header {
-      Cache-Control "no-store"
+    # Основной вебхук: сохраняем полный путь (НЕ handle_path)
+    handle /.hooks/redpen-publish {
+      header {
+        Cache-Control "no-store"
+      }
+      reverse_proxy content-sync:9000
     }
-    reverse_proxy content-sync:9000
-  }
 
-  handle_path /.hooks/* {
-    header {
-      Cache-Control "no-store"
+    # Любые другие /.hooks/* → 404 (без среза префикса)
+    handle /.hooks/* {
+      header {
+        Cache-Control "no-store"
+      }
+      respond 404
     }
-    respond 418
-  }
 
-  # Всё остальное — фронтенд
-  reverse_proxy frontend:80
+    # Всё остальное — фронтенд
+    handle {
+      reverse_proxy frontend:80
+    }
+  }
 }
 # API host: reverse proxy to FastAPI; add CORS headers and handle preflight
 {$API_HOST} {
