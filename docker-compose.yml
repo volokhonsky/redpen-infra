@@ -71,11 +71,12 @@ services:
       - GIT_REPO=${CONTENT_GIT_REPO}
       - GIT_REF=${CONTENT_GIT_REF}
       - API_BASE_URL=${API_BASE_URL}
+      - GIT_SSH_COMMAND=ssh -o BatchMode=yes -o IdentitiesOnly=yes -o UserKnownHostsFile=/root/.ssh/known_hosts -i /root/.ssh/id_ed25519
+
     volumes:
       - content_data:/srv/public
       # Optional SSH keys for private repo (uncomment when present)
-      - ./secrets/content-ssh/id_ed25519:/root/.ssh/id_ed25519:ro
-      - ./secrets/content-ssh/known_hosts:/root/.ssh/known_hosts:ro
+      - ../secrets/content-ssh:/root/.ssh:ro
     networks:
       - redpen
     expose:
