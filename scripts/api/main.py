@@ -59,6 +59,14 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/api/hello")
+async def hello():
+    # Minimal Hello endpoint for local smoke tests
+    now = datetime.now().isoformat()
+    version = "local-dev"
+    return {"message": "Hello, RedPen!", "version": version, "now": now}
+
+
 @app.post("/api/store")
 async def store(request: Request):
     try:
