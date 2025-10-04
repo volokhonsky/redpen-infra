@@ -67,6 +67,78 @@ async def hello():
     return {"message": "Hello, RedPen!", "version": version, "now": now}
 
 
+@app.post("/api/store-raw")
+async def store_raw(request: Request):
+    # New endpoint that supports optional bucket/pageId and enhanced response
+    try:
+        body_any: Any = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    if not isinstance(body_any, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+
+    # Extract optional fields
+    raw_bucket = body_any.get("bucket") if isinstance(body_any.get("bucket"), str) else None
+    page_id = body_any.get("pageId") if isinstance(body_any.get("pageId"), str) else None
+
+    # Decide sanitization mode and candidate
+    bucket = None
+    if raw_bucket:
+        cand = raw_bucket
+        bucket = storage.sanitize_bucket(cand, for_page_id=False)
+    elif page_id:
+        cand = page_id
+        bucket = storage.sanitize_bucket(cand, for_page_id=True)
+
+    if not bucket:
+        bucket = None
+
+    # Prepare payload with metadata
+    received_at = datetime.utcnow().isoformat()
+    remote_addr: Optional[str] = None
+    try:
+        client = request.client
+        if client:
+            remote_addr = client.host
+    except Exception:
+        remote_addr = None
+
+    payload = {
+        "body": body_any,
+        "receivedAt": received_at,
+        "remoteAddr": remote_addr,
+    }
+
+    # Precompute size
+    data_str = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    data_size = len(data_str.encode("utf-8"))
+
+    # Generate id and write atomically to final dir
+    uid = uuid4().hex
+    filename = f"{uid}.json"
+    try:
+        rel_path = storage.save_inbox(payload, config.STORAGE_DIR, bucket=bucket, filename=filename)
+    except Exception:
+        logger.exception("failed to store incoming payload")
+        raise HTTPException(status_code=500, detail="failed to store")
+
+    # dateDir is the YYYYMMDD component
+    parts = rel_path.split("/")
+    date_dir = parts[1] if len(parts) >= 3 else None
+
+    # Logging
+    logger.info("stored file=%s size=%d bucket=%s", rel_path, data_size, bucket or "-")
+
+    return {
+        "stored": True,
+        "id": uid,
+        "dateDir": date_dir,
+        "bucket": bucket if bucket else None,
+        "relPath": rel_path,
+        "size": data_size,
+    }
+
+
 @app.post("/api/store")
 async def store(request: Request):
     try:
