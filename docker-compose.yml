@@ -27,13 +27,16 @@ services:
 
   api:
     build:
-      context: ./scripts/api
+      context: .
+      dockerfile: scripts/api/Dockerfile
     environment:
       - STORAGE_DIR=/var/redpen-data
       - LOG_LEVEL=${LOG_LEVEL}
       - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS}
     volumes:
       - redpen_data:/var/redpen-data
+      - ./redpen-content:/app/redpen-content
+      - ./redpen-publish:/app/redpen-publish
     networks:
       - redpen
     restart: unless-stopped

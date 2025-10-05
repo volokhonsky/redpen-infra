@@ -11,7 +11,7 @@ RUN useradd -m -u 10001 app
 WORKDIR /app
 
 # Copy requirements and install
-COPY requirements-api.txt /app/requirements.txt
+COPY scripts/api/requirements-api.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Copy application code
@@ -25,4 +25,4 @@ USER app
 EXPOSE 8080
 
 # Run the service
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--proxy-headers"]
+CMD ["uvicorn", "main:app", "--app-dir", "scripts/api", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--proxy-headers"]
