@@ -9,6 +9,11 @@ from typing import Any, Dict, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+import os
+import re
+import tempfile
+import importlib.util
+
 # Optional .env loading
 try:
     from dotenv import load_dotenv  # type: ignore
@@ -37,6 +42,18 @@ def setup_logger() -> logging.Logger:
 logger = setup_logger()
 
 app = FastAPI()
+
+# Resolve project root (two levels up from this file)
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+# Dynamically import the annotation converter to reuse existing parsing logic
+_annotation_converter_spec = importlib.util.spec_from_file_location(
+    "annotation_converter",
+    os.path.join(PROJECT_ROOT, "scripts", "annotation_converter.py"),
+)
+annotation_converter = importlib.util.module_from_spec(_annotation_converter_spec)
+assert _annotation_converter_spec is not None and _annotation_converter_spec.loader is not None
+_annotation_converter_spec.loader.exec_module(annotation_converter)  # type: ignore
 
 # CORS configuration
 allow_origins = config.CORS_ALLOW_ORIGINS or ["*"]
@@ -306,6 +323,92 @@ async def put_annotation(pageId: str, id: str, request: Request):
     logger.info("PUT pageId=%s anns=%d size=%d", pageId, ann_count, size)
 
     return {"id": id, "serverPageSha": sha}
+
+
+@app.post("/api/rebuild/{bookSlug}/annotations/{pageId}")
+async def rebuild_annotation_page(bookSlug: str, pageId: str):
+    started = time.time()
+
+    # Validate bookSlug
+    if not re.fullmatch(r"[a-z0-9_-]+", bookSlug or ""):
+        raise HTTPException(status_code=400, detail="invalid bookSlug")
+
+    # Validate pageId: page_XXX where XXX are digits with leading zeros
+    if not re.fullmatch(r"page_\d{3}", pageId or ""):
+        raise HTTPException(status_code=400, detail="invalid pageId")
+
+    content_md = os.path.join(PROJECT_ROOT, "redpen-content", bookSlug, "annotations", f"{pageId}.md")
+    publish_json_dir = os.path.join(PROJECT_ROOT, "redpen-publish", bookSlug, "annotations")
+    publish_json = os.path.join(publish_json_dir, f"{pageId}.json")
+
+    if not os.path.exists(content_md):
+        raise HTTPException(status_code=404, detail="markdown not found")
+
+    try:
+        with open(content_md, "r", encoding="utf-8") as f:
+            md_content = f.read()
+    except Exception:
+        logger.exception("failed to read markdown for bookSlug=%s pageId=%s path=%s", bookSlug, pageId, content_md)
+        raise HTTPException(status_code=500, detail="failed to read markdown")
+
+    try:
+        # Reuse the existing converter's parsing logic
+        annotations = annotation_converter.parse_markdown_annotation(md_content)
+    except Exception:
+        logger.exception("conversion failed for bookSlug=%s pageId=%s", bookSlug, pageId)
+        raise HTTPException(status_code=500, detail="conversion failed")
+
+    # Ensure target dir exists
+    try:
+        os.makedirs(publish_json_dir, exist_ok=True)
+    except Exception:
+        logger.exception("failed to ensure output dir for bookSlug=%s pageId=%s dir=%s", bookSlug, pageId, publish_json_dir)
+        raise HTTPException(status_code=500, detail="failed to prepare output directory")
+
+    # Serialize and atomically write JSON
+    try:
+        data_str = json.dumps(annotations, ensure_ascii=False, indent=2)
+        data_bytes = data_str.encode("utf-8")
+        fd, tmp_path = tempfile.mkstemp(dir=publish_json_dir, prefix="._tmp_", suffix=".json")
+        try:
+            with os.fdopen(fd, "wb") as tmp:
+                tmp.write(data_bytes)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            os.replace(tmp_path, publish_json)
+        finally:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+        size = len(data_bytes)
+    except Exception:
+        logger.exception("failed to write JSON for bookSlug=%s pageId=%s path=%s", bookSlug, pageId, publish_json)
+        raise HTTPException(status_code=500, detail="failed to write json")
+
+    duration_ms = int((time.time() - started) * 1000)
+    rel_json_path = os.path.join("annotations", f"{pageId}.json")
+
+    # Info log per requirements
+    logger.info(
+        "rebuild ok bookSlug=%s pageId=%s src=%s dst=%s size=%d durationMs=%d",
+        bookSlug,
+        pageId,
+        content_md,
+        publish_json,
+        size,
+        duration_ms,
+    )
+
+    return {
+        "ok": True,
+        "bookSlug": bookSlug,
+        "pageId": pageId,
+        "jsonPath": rel_json_path,
+        "size": size,
+        "regeneratedAt": datetime.utcnow().isoformat(),
+    }
 
 
 # Allow running with `python main.py` for local dev
