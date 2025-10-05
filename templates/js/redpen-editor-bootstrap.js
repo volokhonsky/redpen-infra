@@ -140,6 +140,7 @@
     if (!window.RedPenEditor) window.RedPenEditor = {};
     if (!window.RedPenEditor.state) {
       window.RedPenEditor.state = {
+        editorMode: true,
         ui: { selectedAnnotationId: null, lastAutoGeneralContent: undefined },
         draft: { id: undefined, annType: 'comment', content: '', coords: undefined },
         cache: { general: null },
@@ -152,6 +153,7 @@
       };
     } else {
       // ensure cache exists
+      window.RedPenEditor.state.editorMode = true;
       if (!window.RedPenEditor.state.cache) window.RedPenEditor.state.cache = { general: null };
       if (!window.RedPenEditor.state.ui) window.RedPenEditor.state.ui = { selectedAnnotationId: null, lastAutoGeneralContent: undefined };
       if (typeof window.RedPenEditor.state.ui.lastAutoGeneralContent === 'undefined') {
