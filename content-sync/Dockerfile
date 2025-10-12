@@ -3,6 +3,10 @@ FROM python:3.12-alpine
 # Install required tools: git, openssh-client for private repos, rsync for publishing
 RUN apk add --no-cache git openssh-client rsync bash curl
 
+# Set default git identity for all git operations (rebases, merges, etc.)
+RUN git config --global user.name "medinsky.net" && \
+    git config --global user.email "volokhonsky@gmail.com"
+
 # Prepare directories
 RUN mkdir -p /app /srv/repo /srv/public /srv/staging
 WORKDIR /app
