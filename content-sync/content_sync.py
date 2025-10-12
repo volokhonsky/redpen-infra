@@ -173,14 +173,30 @@ def publish_from_parent(parent: Path, public_dir: Path, staging_dir: Path, api_b
     except Exception as e:
         log("failed to write publish stamp:", e)
 
+def bump_parent_submodules(parent: Path, msg: str) -> bool:
+    try:
+        # Stage submodule pointers (and .gitmodules if changed)
+        try:
+            run(["git", "add", "redpen-content", "redpen-publish", ".gitmodules"], cwd=str(parent))
+        except subprocess.CalledProcessError:
+            # Fallback: add submodule dirs only
+            run(["git", "add", "redpen-content", "redpen-publish"], cwd=str(parent))
+        return commit_pull_push(parent, msg)
+    except Exception as e:
+        log("failed to bump parent submodules:", e)
+        return False
+
+
 def process_update(parent: Path, public: Path, staging: Path, git_ref: str, api_base: str) -> bool:
-    # Pull parent and submodules, then publish from parent/redpen-publish
+    # Pull parent and submodules from remote, bump pointers in parent, then publish
     if not is_git_repo(parent):
         log("parent repo at /srv/repo is not a git repo; skipping")
         return False
     parent_fetch_reset(parent, git_ref)
     use_remote = (os.environ.get("SUBMODULE_STRATEGY", "remote").strip().lower() == "remote")
     submodules_sync_update(parent, use_remote=use_remote)
+    # Commit updated submodule SHAs in parent and push
+    bump_parent_submodules(parent, "chore(sync): bump submodules")
     publish_from_parent(parent, public, staging, api_base)
     return True
 
@@ -276,16 +292,15 @@ class PollingWatcher:
                     with open(LOCK_FILE, "a+") as lf:
                         fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
                         try:
-                            if is_git_repo(repo_dir_for_commit):
-                                ok = commit_pull_push(repo_dir_for_commit, commit_msg)
-                                if ok and self.name == "content":
-                                    # after content changes pushed, pull parent and republish
-                                    process_update(parent, public_dir, staging_dir, git_ref, api_base)
-                                if ok and self.name == "publish":
-                                    # after publish repo changes pushed, stamp (rsync not needed)
-                                    (public_dir / ".published_by_sync").write_text(str(int(time.time())), encoding="utf-8")
+                            if is_git_repo(parent):
+                                # Variant B: do not commit inside submodules; update from remote, bump in parent, then publish
+                                submodules_sync_update(parent, use_remote=True)
+                                ok = bump_parent_submodules(parent, "chore(sync): bump submodules")
+                                # Publish current state to public
+                                publish_from_parent(parent, public_dir, staging_dir, api_base)
+                                # Fingerprint will be updated by server webhook path; here we just proceed
                             else:
-                                log(f"[{self.name}] {repo_dir_for_commit} is not a git repo; skip commit/push")
+                                log(f"[{self.name}] parent repo {parent} is not a git repo; skipping")
                         finally:
                             fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 
