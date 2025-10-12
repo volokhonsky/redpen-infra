@@ -75,12 +75,9 @@ services:
       - GIT_REF=${CONTENT_GIT_REF}
       - API_BASE_URL=${API_BASE_URL}
       - GIT_SSH_COMMAND=ssh -o BatchMode=yes -o IdentitiesOnly=yes -o UserKnownHostsFile=/root/.ssh/known_hosts -i /root/.ssh/id_ed25519
+      - PUBLIC_DIR=/srv/repo/redpen-publish
     volumes:
-      # Монтируем корень родительской репы (с .gitmodules) внутрь контейнера
       - ./:/srv/repo:rw
-      # Папку публикации оставляем для фронтенда
-      - ./redpen-publish:/srv/public:rw
-      # Optional SSH keys for private repo (uncomment when present)
       - ../secrets/content-ssh:/root/.ssh:ro
     networks:
       - redpen

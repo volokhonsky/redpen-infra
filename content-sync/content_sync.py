@@ -325,6 +325,7 @@ class Handler(BaseHTTPRequestHandler):
             fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
             try:
                 parent = Path(os.environ.get("REPO_DIR", "/srv/repo"))
+                # Use PUBLIC_DIR if provided; fallback to /srv/public for backward compatibility
                 public = Path(os.environ.get("PUBLIC_DIR", "/srv/public"))
                 staging = Path(os.environ.get("STAGING_DIR", "/srv/staging"))
                 git_ref = os.environ.get("GIT_REF", "main")
