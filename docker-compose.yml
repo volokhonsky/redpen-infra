@@ -4,7 +4,7 @@ volumes:
   caddy_data:
   caddy_config:
   redpen_data:
-  content_data:
+  # content_data:  # больше не используем общий volume для статики
 
 networks:
   redpen:
@@ -18,7 +18,7 @@ services:
     environment:
       - API_BASE_URL=${API_BASE_URL}
     volumes:
-      - content_data:/usr/share/nginx/html:ro
+      - ./redpen-publish:/usr/share/nginx/html:ro
     networks:
       - redpen
     restart: unless-stopped
@@ -75,9 +75,9 @@ services:
       - GIT_REF=${CONTENT_GIT_REF}
       - API_BASE_URL=${API_BASE_URL}
       - GIT_SSH_COMMAND=ssh -o BatchMode=yes -o IdentitiesOnly=yes -o UserKnownHostsFile=/root/.ssh/known_hosts -i /root/.ssh/id_ed25519
-
     volumes:
-      - content_data:/srv/public
+      - ./redpen-publish:/srv/public:rw
+      - ./redpen-content:/srv/content:rw
       # Optional SSH keys for private repo (uncomment when present)
       - ../secrets/content-ssh:/root/.ssh:ro
     networks:

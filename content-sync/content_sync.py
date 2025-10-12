@@ -14,8 +14,8 @@ import argparse
 from pathlib import Path
 from typing import Optional
 
-LOCK_FILE = "/srv/repo/.sync.lock"
-FINGERPRINT_FILE = "/srv/repo/.last_fingerprint"
+LOCK_FILE = "/srv/public/.sync.lock"
+FINGERPRINT_FILE = "/srv/public/.last_fingerprint"
 
 # Default commit author (can be overridden via env)
 COMMIT_AUTHOR_NAME = os.environ.get("COMMIT_AUTHOR_NAME", "medinsky.net")
@@ -30,7 +30,7 @@ def run(cmd, cwd=None, env=None):
     log("$", " ".join(cmd), f"cwd={cwd or os.getcwd()}")
     subprocess.check_call(cmd, cwd=cwd, env=env or os.environ.copy())
 
-
+# ... existing code ...
 def run_capture(cmd, cwd=None, env=None) -> str:
     log("$", " ".join(cmd), f"cwd={cwd or os.getcwd()}")
     out = subprocess.check_output(cmd, cwd=cwd, env=env or os.environ.copy())
@@ -106,6 +106,13 @@ def publish(repo_dir: Path, staging_dir: Path, public_dir: Path, api_base_url: s
     mutate_staging(staging_dir, api_base_url)
 
     run(["rsync", "-a", "--delete", f"{staging_dir}/", f"{public_dir}/"])  # type: ignore
+
+    # Write a publish stamp to help the public watcher ignore our own changes
+    try:
+        stamp = public_dir / ".published_by_sync"
+        stamp.write_text(str(int(time.time())), encoding="utf-8")
+    except Exception as e:
+        log("failed to write publish stamp:", e)
 
 
 def process_update(repo: Path, public: Path, staging: Path, git_ref: str, api_base: str) -> bool:
@@ -381,6 +388,206 @@ def local_submodules_sync(repo: Path) -> bool:
     return overall_ok
 
 
+# --------------- Filesystem watchers and sync from local sources ---------------
+
+from dataclasses import dataclass, field
+import shutil
+
+
+def get_submodule_path(repo: Path, env_var: str, keyword: str) -> Optional[Path]:
+    # Try env override as relative or absolute path
+    override = os.environ.get(env_var, "").strip()
+    if override:
+        p = Path(override)
+        return p if p.is_absolute() else (repo / p)
+    # Find by keyword
+    for name, rel in list_submodules(repo):
+        if keyword in name.lower() or keyword in rel.lower():
+            return (repo / rel).resolve()
+    return None
+
+
+def rsync_copy(src: Path, dst: Path, mode: str) -> None:
+    dst.mkdir(parents=True, exist_ok=True)
+    if mode == "public":
+        run(["rsync", "-a", "--delete", "--exclude", ".git", f"{src}/", f"{dst}/"])  # type: ignore
+    else:
+        # content: only md and metadata
+        cmd = [
+            "rsync", "-a", "--delete",
+            "--exclude", ".git",
+            "--include", "*/",
+            "--include", "*.md",
+            "--include", "*.markdown",
+            "--include", "*.json",
+            "--include", "*.yaml",
+            "--include", "*.yml",
+            "--exclude", "*",
+            f"{src}/", f"{dst}/",
+        ]
+        run(cmd)
+
+
+def sync_source_to_submodule(source_name: str, source_dir: Path, repo: Path, mode: str) -> bool:
+    sub_env = "SUBMODULE_PUBLISH_PATH" if mode == "public" else "SUBMODULE_CONTENT_PATH"
+    keyword = "publish" if mode == "public" else "content"
+    sub_dir = get_submodule_path(repo, sub_env, keyword)
+    if not sub_dir:
+        log(f"[{source_name}] submodule for '{keyword}' not found; skipping")
+        return False
+    # Copy changes into submodule worktree
+    rsync_copy(source_dir, sub_dir, mode)
+
+    # Commit and push
+    try:
+        if has_worktree_changes(sub_dir):
+            run(["git", "add", "-A"], cwd=str(sub_dir))
+            run([
+                "git", "-c", f"user.name={COMMIT_AUTHOR_NAME}",
+                "-c", f"user.email={COMMIT_AUTHOR_EMAIL}",
+                "commit", "-m", f"chore(sync): {source_name} local update"
+            ], cwd=str(sub_dir))
+        else:
+            log(f"[{source_name}] no changes after copy; nothing to commit")
+    except subprocess.CalledProcessError as e:
+        log(f"[{source_name}] commit failed:", e)
+        return False
+
+    # Pull --rebase and push
+    branch = detect_branch_for_submodule(sub_dir)
+    try:
+        run(["git", "fetch", "--all", "--prune"], cwd=str(sub_dir))
+        try:
+            run(["git", "pull", "--rebase", "origin", branch], cwd=str(sub_dir))
+        except subprocess.CalledProcessError as e:
+            conflict_files = ""
+            try:
+                conflict_files = run_capture(["git", "diff", "--name-only", "--diff-filter=U"], cwd=str(sub_dir))
+            except Exception:
+                pass
+            try:
+                run(["git", "rebase", "--abort"], cwd=str(sub_dir))
+            except Exception:
+                pass
+            log(f"[{source_name}] rebase conflict; files=\n{conflict_files}")
+            return False
+        ahead, behind = ahead_behind(sub_dir, branch)
+        if ahead > 0 or has_worktree_changes(sub_dir):
+            try:
+                run(["git", "push", "origin", branch], cwd=str(sub_dir))
+            except subprocess.CalledProcessError:
+                try:
+                    run(["git", "push", "--set-upstream", "origin", branch], cwd=str(sub_dir))
+                except subprocess.CalledProcessError as e2:
+                    log(f"[{source_name}] push failed:", e2)
+                    return False
+            log(f"[{source_name}] pushed to origin/{branch}")
+        else:
+            log(f"[{source_name}] nothing to push (ahead={ahead}, behind={behind})")
+    except subprocess.CalledProcessError as e:
+        log(f"[{source_name}] sync failed:", e)
+        return False
+    return True
+
+
+def get_publish_stamp_time(public_dir: Path) -> float:
+    try:
+        p = public_dir / ".published_by_sync"
+        if p.exists():
+            return p.stat().st_mtime
+    except Exception:
+        pass
+    return 0.0
+
+
+@dataclass
+class PollingWatcher:
+    name: str
+    directory: Path
+    mode: str  # "public" or "content"
+    interval: int
+    debounce: int
+    mask_mode: str = field(default="public")
+    last_digest: str = field(default="")
+
+    def _iter_files(self):
+        if not self.directory.exists():
+            return []
+        res = []
+        if self.mode == "public":
+            for p in self.directory.rglob("*"):
+                if p.is_file() and ".git" not in p.parts:
+                    res.append(p)
+        else:
+            for p in self.directory.rglob("*"):
+                if p.is_file() and ".git" not in p.parts:
+                    if p.suffix.lower() in (".md", ".markdown", ".json", ".yaml", ".yml"):
+                        res.append(p)
+        return res
+
+    def _compute_digest(self):
+        files = self._iter_files()
+        h = hashlib.sha256()
+        rels = []
+        base = self.directory
+        for f in sorted(files):
+            try:
+                st = f.stat()
+                rel = str(f.relative_to(base))
+                rels.append(rel)
+                h.update(rel.encode())
+                h.update(str(st.st_mtime_ns).encode())
+                h.update(str(st.st_size).encode())
+            except Exception:
+                continue
+        return h.hexdigest(), rels
+
+    def run(self, repo: Path, public_dir: Path, staging_dir: Path, git_ref: str, api_base: str):
+        loop_guard = int(os.environ.get("LOOP_GUARD_SECONDS", "10"))
+        while True:
+            try:
+                digest, files = self._compute_digest()
+                if self.last_digest and digest != self.last_digest:
+                    # Debounce
+                    time.sleep(max(2, self.debounce))
+                    digest2, files2 = self._compute_digest()
+                    if digest2 != digest:
+                        # More changes during debounce; update baseline and continue
+                        self.last_digest = digest2
+                        continue
+
+                    # Loop prevention for public edits after publish
+                    if self.mode == "public":
+                        stamp_time = get_publish_stamp_time(public_dir)
+                        if stamp_time and (time.time() - stamp_time) < loop_guard:
+                            log(f"[{self.name}] changes ignored due to recent publish (loop guard {loop_guard}s)")
+                            self.last_digest = digest2
+                            continue
+
+                    log(f"[{self.name}] detected changes in {self.directory}; files (debounced)={files2}")
+                    # Acquire global lock and process
+                    with open(LOCK_FILE, "a+") as lf:
+                        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+                        try:
+                            ok_src = sync_source_to_submodule(self.name, self.directory, repo, self.mode)
+                            if not ok_src:
+                                log(f"[{self.name}] source sync failed; not publishing (other sources unaffected)")
+                            else:
+                                ok_pub = process_update(repo, public_dir, staging_dir, git_ref, api_base)
+                                if not ok_pub:
+                                    log(f"[{self.name}] publish failed after source sync")
+                        finally:
+                            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+                    self.last_digest = digest2
+                else:
+                    if not self.last_digest:
+                        self.last_digest = digest
+                time.sleep(max(2, self.interval))
+            except Exception as e:
+                log(f"[{self.name}] watcher error:", e)
+                time.sleep(max(2, self.interval))
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
@@ -478,8 +685,29 @@ def start_server(addr: str, port: int, repo: Path, public: Path, staging: Path):
     t = threading.Thread(target=monitor_loop, name="content-monitor", daemon=True)
     t.start()
 
+    # Start filesystem watchers (polling)
+    watch_interval = int(os.environ.get("WATCH_INTERVAL_SECONDS", os.environ.get("FS_WATCH_INTERVAL", "5")))
+    debounce = int(os.environ.get("DEBOUNCE_SECONDS", "3"))
+    enable_public = os.environ.get("ENABLE_PUBLIC_WATCH", "1") not in ("0", "false", "False")
+    enable_content = os.environ.get("ENABLE_CONTENT_WATCH", "1") not in ("0", "false", "False")
+
+    public_watch_dir = Path(os.environ.get("PUBLIC_WATCH_DIR", str(public)))
+    content_watch_dir = Path(os.environ.get("CONTENT_WATCH_DIR", "/srv/content"))
+
+    if enable_public:
+        pub_watcher = PollingWatcher(name="public", directory=public_watch_dir, mode="public", interval=watch_interval, debounce=debounce)
+        threading.Thread(target=pub_watcher.run, args=(repo, public, staging, git_ref, api_base), name="public-watcher", daemon=True).start()
+    else:
+        log("public watcher disabled by env")
+
+    if enable_content:
+        cont_watcher = PollingWatcher(name="content", directory=content_watch_dir, mode="content", interval=watch_interval, debounce=debounce)
+        threading.Thread(target=cont_watcher.run, args=(repo, public, staging, git_ref, api_base), name="content-watcher", daemon=True).start()
+    else:
+        log("content watcher disabled by env")
+
     httpd = HTTPServer((addr, port), Handler)
-    log(f"Webhook server listening on {addr}:{port}; monitor interval={interval}s")
+    log(f"Webhook server listening on {addr}:{port}; monitor interval={interval}s, fs watch interval={watch_interval}s, debounce={debounce}s")
     httpd.serve_forever()
 
 
