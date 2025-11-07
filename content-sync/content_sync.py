@@ -50,7 +50,7 @@ def verify_signature(secret: str, payload: bytes, signature_header: str) -> bool
     except Exception:
         return False
 
-# --- Parent repo + submodules (single source of truth) ---
+# --- Parent repo + nested repos (single source of truth) ---
 def is_git_repo(path: Path) -> bool:
     try:
         return run_capture(["git", "rev-parse", "--is-inside-work-tree"], cwd=str(path)).strip() == "true"
@@ -65,14 +65,30 @@ def parent_fetch_reset(parent: Path, ref: str) -> None:
         run(["git", "checkout", "-f", ref], cwd=str(parent))
 
 def submodules_sync_update(parent: Path, use_remote: bool = True) -> None:
-    try:
-        run(["git", "submodule", "sync", "--recursive"], cwd=str(parent))
-    except Exception:
-        pass
-    try:
-        run(["git", "submodule", "update", "--init", "--recursive"] + (["--remote"] if use_remote else []), cwd=str(parent))
-    except Exception:
-        pass
+    """Update nested repos if present, without relying on Git submodules.
+
+    This function looks for redpen-content and redpen-publish directories
+    under the parent and, if they are Git repositories, performs fetch+pull.
+    It's safe to call even if those directories are not git repos.
+    """
+    for name in ("redpen-content", "redpen-publish"):
+        repo_dir = parent / name
+        if not repo_dir.exists():
+            continue
+        if is_git_repo(repo_dir):
+            try:
+                run(["git", "fetch", "--all", "--prune"], cwd=str(repo_dir))
+                br = detect_branch(repo_dir)
+                try:
+                    run(["git", "pull", "--rebase", "origin", br], cwd=str(repo_dir))
+                except subprocess.CalledProcessError:
+                    try:
+                        run(["git", "rebase", "--abort"], cwd=str(repo_dir))
+                    except Exception:
+                        pass
+                    log(f"[{repo_dir}] rebase conflict during pull; leaving as-is")
+            except Exception as e:
+                log(f"failed to update nested repo {repo_dir}:", e)
 
 def detect_branch(repo_dir: Path) -> str:
     try:
@@ -174,17 +190,26 @@ def publish_from_parent(parent: Path, public_dir: Path, staging_dir: Path, api_b
         log("failed to write publish stamp:", e)
 
 def bump_parent_submodules(parent: Path, msg: str) -> bool:
+    """No-op in independent-repos mode.
+
+    Historically, this staged submodule pointers in the parent repo. Now that
+    redpen-content and redpen-publish are independent repos, there are no
+    gitlinks to bump in the parent. We keep this function to preserve flow,
+    but it simply returns True.
+    """
     try:
-        # Stage submodule pointers (and .gitmodules if changed)
-        try:
-            run(["git", "add", "redpen-content", "redpen-publish", ".gitmodules"], cwd=str(parent))
-        except subprocess.CalledProcessError:
-            # Fallback: add submodule dirs only
-            run(["git", "add", "redpen-content", "redpen-publish"], cwd=str(parent))
-        return commit_pull_push(parent, msg)
+        # If someone still uses submodules, gracefully handle by attempting to add
+        gm = parent / ".gitmodules"
+        if gm.exists():
+            try:
+                run(["git", "add", "redpen-content", "redpen-publish", ".gitmodules"], cwd=str(parent))
+                return commit_pull_push(parent, msg)
+            except Exception:
+                pass
+        return True
     except Exception as e:
-        log("failed to bump parent submodules:", e)
-        return False
+        log("bump_parent_submodules noop failed:", e)
+        return True
 
 
 def process_update(parent: Path, public: Path, staging: Path, git_ref: str, api_base: str) -> bool:
@@ -383,7 +408,7 @@ def start_server(addr: str, port: int, parent: Path, public: Path, staging: Path
             daemon=True
         ).start()
     else:
-        log("content submodule directory not found; content watcher disabled")
+        log("content directory not found; content watcher disabled")
 
     if publish_dir.exists():
         pub_watcher = PollingWatcher(name="publish", directory=publish_dir, interval=watch_interval, debounce=debounce)

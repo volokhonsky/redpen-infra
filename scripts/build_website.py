@@ -8,7 +8,7 @@ This script:
 1. Converts markdown annotations to JSON
 2. Runs annotation position tests to verify correct positioning
 3. Publishes data (images, text, annotations) to the target directory (default: redpen-publish)
-4. Commits and pushes changes to the redpen-publish submodule (if target is redpen-publish)
+4. Optionally commits and pushes changes to the redpen-publish repository (if target is the default redpen-publish)
 
 Usage:
     python scripts/build_website.py [--skip-tests] [--skip-push] [--target-dir TARGET_DIR] [--document DOCUMENT] [--folders FOLDERS]
@@ -815,15 +815,15 @@ def create_redirect_html(directory, target_path):
     print(f"[+] Created redirect file at {redirect_path}")
 
 def push_to_submodule(target_dir=None):
-    """Commit and push changes to the redpen-publish submodule"""
+    """Commit and push changes to the redpen-publish repository"""
     # Only push if target_dir is None or is the default redpen-publish directory
     default_publish_dir = os.path.join(project_root, 'redpen-publish')
 
     if target_dir and os.path.abspath(target_dir) != os.path.abspath(default_publish_dir):
-        print("\n=== Skipping Push to Submodule (custom target directory used) ===")
+        print("\n=== Skipping push to redpen-publish (custom target directory used) ===")
         return True
 
-    print("\n=== Pushing Changes to redpen-publish Submodule ===")
+    print("\n=== Pushing changes to redpen-publish repository ===")
 
     submodule_path = os.path.join(project_root, 'redpen-publish')
 
@@ -865,7 +865,7 @@ def main():
     """Main function to build and publish the website"""
     parser = argparse.ArgumentParser(description="Build and publish the website")
     parser.add_argument("--skip-tests", action="store_true", help="Skip running annotation position tests")
-    parser.add_argument("--skip-push", action="store_true", help="Skip pushing changes to the redpen-publish submodule")
+    parser.add_argument("--skip-push", action="store_true", help="Skip pushing changes to the redpen-publish repository")
     parser.add_argument("--target-dir", help="Specify a target directory for the build output (default: redpen-publish)")
     parser.add_argument("--document", help="Specify a document to build (default: build all documents)")
     parser.add_argument("--folders", help="Comma-separated list of specific folders to deploy (default: all folders)")
@@ -949,13 +949,13 @@ def main():
     else:
         print("Skipping editor mode tests for specific document build")
 
-    # Step 6: Push changes to submodule (if not skipped)
+    # Step 6: Push changes to redpen-publish repository (if not skipped)
     if not args.skip_push:
         if not push_to_submodule(target_dir):
-            print("Failed to push changes to redpen-publish submodule. Aborting.")
+            print("Failed to push changes to redpen-publish repository. Aborting.")
             sys.exit(1)
     else:
-        print("Skipping push to redpen-publish submodule")
+        print("Skipping push to redpen-publish repository")
 
     # Optional: compare file path sets after build
     if args.backup_publish and args.compare_paths:

@@ -1,9 +1,3 @@
-[submodule "redpen-content"]
-	path = redpen-content
-	url = git@github.com:volokhonsky/redpen-content.git
-	branch = main
-[submodule "redpen-publish"]
-	path = redpen-publish
-	url = git@github.com:volokhonsky/redpen-publish.git
-	branch = main
+# Deprecated: Git submodules are no longer used in this project.
+# Keep this file empty or remove it in your local clone.
 
