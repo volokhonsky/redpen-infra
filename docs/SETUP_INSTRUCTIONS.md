@@ -1,10 +1,10 @@
 # Инструкции по настройке проекта RedPen
 
-Этот документ предоставляет инструкции по настройке проекта RedPen с его структурой подмодулей Git.
+ВНИМАНИЕ: Подмодули больше не используются. Проект состоит из трех независимых репозиториев, которые располагаются рядом друг с другом в одной папке рабочей станции/сервера. Никаких git submodule больше не требуется.
 
 ## Структура репозитория
 
-Проект RedPen разделен на три репозитория:
+Проект RedPen разделен на три независимых репозитория:
 
 1. **redpen-infra**: Основной репозиторий, содержащий инфраструктурный код и скрипты
 2. **redpen-content**: Репозиторий, содержащий файлы контента (изображения, текст, аннотации)
@@ -63,66 +63,33 @@ git remote add origin git@github.com:volokhonsky/redpen-publish.git
 git push -u origin main
 ```
 
-### 3. Настройка подмодулей
+### 3. Размещение репозиториев рядом
 
-Из основного репозитория:
+Теперь репозитории независимы. Рекомендуемая структура каталога на диске:
 
-```bash
-# Удалить существующие директории
-rm -rf redpen-content redpen-publish
-
-# Добавить репозитории как подмодули
-git submodule add git@github.com:volokhonsky/redpen-content.git redpen-content
-git submodule add git@github.com:volokhonsky/redpen-publish.git redpen-publish
-
-# Зафиксировать изменения
-git commit -am "Добавить redpen-content и redpen-publish как подмодули"
-git push origin main
+```text
+workdir/
+  redpen-infra/
+  redpen-content/
+  redpen-publish/
 ```
 
-### 4. Клонирование проекта с подмодулями
-
-Для клонирования проекта со всеми подмодулями:
+Клонирование и обновление:
 
 ```bash
-git clone --recurse-submodules git@github.com:volokhonsky/redpen-infra.git
-cd redpen-infra
+# В одной папке (workdir) выполните:
+
+git clone git@github.com:volokhonsky/redpen-infra.git
+git clone git@github.com:volokhonsky/redpen-content.git
+git clone git@github.com:volokhonsky/redpen-publish.git
+
+# Обновление
+(cd redpen-infra && git pull --rebase)
+(cd redpen-content && git pull --rebase)
+(cd redpen-publish && git pull --rebase)
 ```
 
-Или если вы уже клонировали репозиторий без подмодулей:
-
-```bash
-git submodule init
-git submodule update
-```
-
-## Работа с подмодулями
-
-### Обновление подмодулей
-
-Для обновления всех подмодулей до их последних коммитов:
-
-```bash
-git submodule update --remote
-```
-
-### Внесение изменений в подмодули
-
-```bash
-# Перейти в подмодуль
-cd redpen-content
-
-# Внести изменения, зафиксировать и отправить
-git add .
-git commit -m "Обновить контент"
-git push origin main
-
-# Вернуться в основной репозиторий и обновить ссылку на подмодуль
-cd ..
-git add redpen-content
-git commit -m "Обновить подмодуль redpen-content"
-git push origin main
-```
+Связь между репозиториями осуществляется на уровне путей: скрипты из redpen-infra читают/пишут в подкаталоги `../redpen-content` и `../redpen-publish` (или в одноимённые каталоги внутри `redpen-infra`, если вы храните всё в одном дереве). Git-подмодули не используются.
 
 ## Установка зависимостей Python
 
