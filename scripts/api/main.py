@@ -2,6 +2,7 @@ import json
 import logging
 import sys
 import time
+import secrets
 from uuid import uuid4
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -23,6 +24,15 @@ except Exception:
 
 import config
 import storage
+
+# Store for session tokens (in-memory for now)
+_session_store: Dict[str, Dict[str, str]] = {}
+
+# Hardcoded valid tokens for editor access
+VALID_TOKENS = {
+    "dev-token-123": "john_doe",
+    "demo-token-456": "demo_user"
+}
 
 
 def setup_logger() -> logging.Logger:
@@ -74,6 +84,81 @@ async def on_startup() -> None:
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/api/auth/csrf")
+async def get_csrf(request: Request, response: Response):
+    """Issue CSRF token for POST requests"""
+    csrf_token = f"csrf-{secrets.token_hex(16)}"
+    response.set_cookie(
+        "csrf_token", 
+        csrf_token, 
+        httponly=True, 
+        samesite="lax"
+    )
+    logger.info("CSRF token issued")
+    return {"csrfToken": csrf_token}
+
+
+@app.post("/api/auth/login")
+async def login(request: Request, response: Response):
+    """Accept personal token and create session"""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    
+    token = body.get("token", "").strip()
+    
+    if not token:
+        logger.warning("login attempt with empty token")
+        raise HTTPException(status_code=401, detail="empty token")
+    
+    # Check if token is valid
+    username = VALID_TOKENS.get(token)
+    if not username:
+        logger.warning("login attempt with invalid token: %s", token[:8] + "...")
+        raise HTTPException(status_code=401, detail="invalid token")
+    
+    # Create session
+    session_id = secrets.token_hex(16)
+    user_id = f"user-{abs(hash(username)) % 100000}"
+    
+    _session_store[session_id] = {
+        "userId": user_id,
+        "username": username,
+        "token": token
+    }
+    
+    # Set session cookie
+    response.set_cookie(
+        "redpen_session",
+        session_id,
+        httponly=True,
+        samesite="lax",
+        max_age=86400 * 7  # 7 days
+    )
+    
+    logger.info("user logged in: username=%s", username)
+    return {"userId": user_id, "username": username}
+
+
+@app.get("/api/auth/me")
+async def get_me(request: Request):
+    """Return current user info from session"""
+    # Get session cookie
+    session_id = request.cookies.get("redpen_session")
+    
+    if not session_id or session_id not in _session_store:
+        logger.warning("auth/me called without valid session")
+        raise HTTPException(status_code=401, detail="not authenticated")
+    
+    user_data = _session_store[session_id]
+    logger.info("user info retrieved: username=%s", user_data["username"])
+    return {
+        "userId": user_data["userId"],
+        "username": user_data["username"]
+    }
 
 
 @app.get("/api/hello")
