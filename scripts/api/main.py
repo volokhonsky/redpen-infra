@@ -33,7 +33,8 @@ _session_store: Dict[str, Dict[str, str]] = {}
 # Hardcoded valid tokens for editor access
 VALID_TOKENS = {
     "dev-token-123": "john_doe",
-    "demo-token-456": "demo_user"
+    "demo-token-456": "demo_user",
+    "tokentoken":"user12"
 }
 
 
