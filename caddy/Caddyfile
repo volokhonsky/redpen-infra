@@ -1,4 +1,9 @@
 {
+	# Use Let's Encrypt staging (no rate limits for testing)
+	acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+{
 	# Optional: email for ACME account; can be set via env if needed
 	# email {$ACME_EMAIL}
 	# Enables automatic HTTPS, HTTP/2/3 by default
