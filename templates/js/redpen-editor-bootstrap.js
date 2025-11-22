@@ -654,47 +654,113 @@
       return headers;
     }
     async function getCsrf(){
+      console.log('[RedPen Editor] 🛡️  Getting CSRF token');
       var st = window.RedPenEditor.state;
       if (st.flags && st.flags.mock === true) {
+        console.log('[RedPen Editor] 🎭 Mock mode: generating fake CSRF token');
         st.auth.csrfToken = st.auth.csrfToken || 'mock-csrf-'+Math.random().toString(36).slice(2,8);
         return { csrfToken: st.auth.csrfToken };
       }
-      if (st.auth.csrfToken) return { csrfToken: st.auth.csrfToken };
-      const res = await fetch(apiBase('/api/auth/csrf'), { credentials: 'include' });
-      if (!res.ok) throw new Error('csrf_failed');
-      const data = await res.json();
-      st.auth.csrfToken = data.csrfToken;
-      return data;
+      if (st.auth.csrfToken) {
+        console.log('[RedPen Editor] ℹ️  CSRF token already cached');
+        return { csrfToken: st.auth.csrfToken };
+      }
+      try {
+        console.log('[RedPen Editor] 📡 Fetching /api/auth/csrf');
+        const res = await fetch(apiBase('/api/auth/csrf'), { credentials: 'include' });
+        console.log('[RedPen Editor] 📥 CSRF response status:', res.status);
+        if (!res.ok) {
+          console.error('[RedPen Editor] ❌ CSRF request failed');
+          throw new Error('csrf_failed');
+        }
+        const data = await res.json();
+        st.auth.csrfToken = data.csrfToken;
+        console.log('[RedPen Editor] ✅ Got CSRF token:', data.csrfToken.substring(0, 16) + '...');
+        return data;
+      } catch (error) {
+        console.error('[RedPen Editor] ❌ CSRF error:', error);
+        throw error;
+      }
     }
     async function apiMe(){
+      console.log('[RedPen Editor] 🔍 Checking auth status via /api/auth/me');
       var st = window.RedPenEditor.state;
       if (st.flags && st.flags.mock === true) {
-        st.auth.isAuthenticated = true; st.auth.username = st.auth.username || 'mockuser'; st.auth.userId = st.auth.userId || 'mock-'+Math.random().toString(36).slice(2,6);
+        console.log('[RedPen Editor] 🎭 Mock mode: simulating auth check');
+        st.auth.isAuthenticated = true; 
+        st.auth.username = st.auth.username || 'mockuser'; 
+        st.auth.userId = st.auth.userId || 'mock-'+Math.random().toString(36).slice(2,6);
+        console.log('[RedPen Editor] ✅ Mock auth check success:', st.auth.username);
         return { userId: st.auth.userId, username: st.auth.username };
       }
-      const res = await fetch(apiBase('/api/auth/me'), { credentials: 'include' });
-      if (res.status === 401) { st.auth.isAuthenticated = false; return null; }
-      if (!res.ok) throw new Error('me_failed');
-      const data = await res.json();
-      st.auth.isAuthenticated = true; st.auth.userId = data.userId; st.auth.username = data.username;
-      return data;
+      try {
+        console.log('[RedPen Editor] 📡 Fetching /api/auth/me');
+        const res = await fetch(apiBase('/api/auth/me'), { credentials: 'include' });
+        console.log('[RedPen Editor] 📥 Response status:', res.status);
+        
+        if (res.status === 401) { 
+          console.warn('[RedPen Editor] ⚠️  Not authenticated (401)');
+          st.auth.isAuthenticated = false; 
+          return null; 
+        }
+        
+        if (!res.ok) {
+          console.error('[RedPen Editor] ❌ /api/auth/me failed with status:', res.status);
+          throw new Error('me_failed');
+        }
+        
+        const data = await res.json();
+        st.auth.isAuthenticated = true; 
+        st.auth.userId = data.userId; 
+        st.auth.username = data.username;
+        console.log('[RedPen Editor] ✅ Auth check success. User:', data.username, 'ID:', data.userId);
+        return data;
+      } catch (error) {
+        console.error('[RedPen Editor] ❌ Auth check error:', error);
+        throw error;
+      }
     }
     async function loginWithToken(token){
+      console.log('[RedPen Editor] 🔐 Login attempt with token length:', token.length);
       var st = window.RedPenEditor.state;
       if (st.flags && st.flags.mock === true) {
-        st.auth.isAuthenticated = true; st.auth.username = 'mockuser_'+token.slice(0,4); st.auth.userId = 'mock-'+Math.random().toString(36).slice(2,6);
+        console.log('[RedPen Editor] 🎭 Mock mode: simulating successful login');
+        st.auth.isAuthenticated = true; 
+        st.auth.username = 'mockuser_'+token.slice(0,4); 
+        st.auth.userId = 'mock-'+Math.random().toString(36).slice(2,6);
+        console.log('[RedPen Editor] ✅ Mock login success:', st.auth.username);
         return { ok: true };
       }
-      await getCsrf();
-      const res = await fetch(apiBase('/api/auth/login'), {
-        method: 'POST',
-        headers: withJsonHeaders({ 'X-CSRF-Token': st.auth.csrfToken }),
-        body: JSON.stringify({ token: token }),
-        credentials: 'include'
-      });
-      if (!res.ok) throw new Error('login_failed');
-      await apiMe();
-      return { ok: true };
+      try {
+        console.log('[RedPen Editor] 📡 Getting CSRF token...');
+        await getCsrf();
+        console.log('[RedPen Editor] ✅ Got CSRF token');
+        
+        console.log('[RedPen Editor] 📡 Sending login request to /api/auth/login');
+        const res = await fetch(apiBase('/api/auth/login'), {
+          method: 'POST',
+          headers: withJsonHeaders({ 'X-CSRF-Token': st.auth.csrfToken }),
+          body: JSON.stringify({ token: token }),
+          credentials: 'include'
+        });
+        
+        console.log('[RedPen Editor] 📥 Login response status:', res.status);
+        const responseText = await res.text();
+        console.log('[RedPen Editor] 📥 Login response body:', responseText);
+        
+        if (!res.ok) {
+          console.error('[RedPen Editor] ❌ Login failed with status:', res.status);
+          throw new Error('login_failed');
+        }
+        
+        console.log('[RedPen Editor] ✅ Login request succeeded, fetching /api/auth/me');
+        await apiMe();
+        console.log('[RedPen Editor] ✅ Auth check successful, user:', st.auth.username);
+        return { ok: true };
+      } catch (error) {
+        console.error('[RedPen Editor] ❌ Login error:', error);
+        throw error;
+      }
     }
     async function fetchPageFromServer(pageId){
       var st = window.RedPenEditor.state;
