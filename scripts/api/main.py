@@ -8,6 +8,8 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 
 import os
@@ -38,11 +40,24 @@ VALID_TOKENS = {
 def setup_logger() -> logging.Logger:
     logger = logging.getLogger("redpen.api")
     if not logger.handlers:
-        handler = logging.StreamHandler(sys.stdout)
-        fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s", "%Y-%m-%dT%H:%M:%S%z")
-        handler.setFormatter(fmt)
-        logger.addHandler(handler)
+        # Ensure logs directory exists
+        logs_dir = "/app/logs"
+        os.makedirs(logs_dir, exist_ok=True)
+        
+        # Console handler (stdout)
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s", "%Y-%m-%dT%H:%M:%S%z")
+        console_handler.setFormatter(console_fmt)
+        logger.addHandler(console_handler)
+        
+        # File handler (logs/redpen-api.log)
+        file_handler = logging.FileHandler(os.path.join(logs_dir, "redpen-api.log"))
+        file_fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s", "%Y-%m-%dT%H:%M:%S%z")
+        file_handler.setFormatter(file_fmt)
+        logger.addHandler(file_handler)
+        
         logger.propagate = False
+    
     # Set level from config
     level = getattr(logging, (config.LOG_LEVEL or "INFO").upper(), logging.INFO)
     logger.setLevel(level)
@@ -75,10 +90,139 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Setup Jinja2 templates
+TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
+os.makedirs(TEMPLATES_DIR, exist_ok=True)
+templates = Jinja2Templates(directory=TEMPLATES_DIR)
+
 
 @app.on_event("startup")
 async def on_startup() -> None:
     logger.info("service started LOG_LEVEL=%s storage_dir=%s", config.LOG_LEVEL, config.STORAGE_DIR)
+
+
+# ===== HELPER FUNCTIONS =====
+
+def parse_log_line(line: str) -> dict:
+    """Parse log line into structured data"""
+    try:
+        parts = line.strip().split(" | ")
+        if len(parts) >= 3:
+            return {
+                "timestamp": parts[0],
+                "level": parts[1],
+                "message": " | ".join(parts[2:])
+            }
+        elif len(parts) >= 2:
+            return {
+                "timestamp": parts[0],
+                "level": "INFO",
+                "message": " | ".join(parts[1:])
+            }
+        else:
+            return {
+                "timestamp": "",
+                "level": "UNKNOWN",
+                "message": line.strip()
+            }
+    except Exception:
+        return {
+            "timestamp": "",
+            "level": "ERROR",
+            "message": line.strip()
+        }
+
+
+def _serialize_size(obj: Dict[str, Any]) -> int:
+    try:
+        s = json.dumps(obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        return len(s.encode("utf-8"))
+    except Exception:
+        return 0
+
+
+def _parse_annotation_body(body: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    ann_type = body.get("annType")
+    text = body.get("text")
+    coords = body.get("coords", None)
+
+    if not isinstance(ann_type, str) or ann_type.strip() == "":
+        raise HTTPException(status_code=400, detail="annType must be a string")
+    if not isinstance(text, str):
+        raise HTTPException(status_code=400, detail="text must be a string")
+
+    ann: Dict[str, Any] = {"annType": ann_type, "text": text}
+
+    if ann_type != "general":
+        if coords is not None:
+            if (
+                    isinstance(coords, list)
+                    and len(coords) >= 2
+                    and isinstance(coords[0], int)
+                    and isinstance(coords[1], int)
+            ):
+                ann["coords"] = [coords[0], coords[1]]
+            else:
+                raise HTTPException(status_code=400, detail="coords must be [x,y] integers")
+
+    if "id" in body and isinstance(body["id"], str) and body["id"].strip() != "":
+        ann["id"] = body["id"].strip()
+
+    return ann
+
+
+# ===== LOG VIEWER ENDPOINTS =====
+
+@app.get("/logs")
+async def logs_page(request: Request):
+    """Serve logs viewer page"""
+    try:
+        log_file = "/app/logs/redpen-api.log"
+        logs_data = []
+
+        if os.path.exists(log_file):
+            with open(log_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            for line in lines[-500:]:
+                if line.strip():
+                    logs_data.append(parse_log_line(line))
+
+        return templates.TemplateResponse("logs.html", {
+            "request": request,
+            "data": logs_data,
+            "log_type": "API Logs"
+        })
+    except Exception as e:
+        logger.exception("failed to render logs page")
+        return HTMLResponse(f"<h1>Error loading logs</h1><p>{str(e)}</p>", status_code=500)
+
+
+@app.get("/api/logs")
+async def get_logs_json(lines: int = 100):
+    """Return logs as JSON"""
+    try:
+        log_file = "/app/logs/redpen-api.log"
+        logs_data = []
+
+        if os.path.exists(log_file):
+            with open(log_file, "r", encoding="utf-8") as f:
+                all_lines = f.readlines()
+
+            for line in all_lines[-lines:]:
+                if line.strip():
+                    logs_data.append(parse_log_line(line))
+
+        return {
+            "total_lines": len(all_lines) if os.path.exists(log_file) else 0,
+            "returned_lines": len(logs_data),
+            "logs": logs_data
+        }
+    except Exception as e:
+        logger.exception("failed to read log file")
+        return {"error": str(e), "logs": []}
 
 
 @app.get("/api/health")
@@ -286,51 +430,6 @@ async def store(request: Request):
     logger.info("stored file=%s size=%d", rel_path, data_size)
     return {"status": "stored", "path": rel_path}
 
-
-# ---------------- Pages Endpoints ----------------
-
-def _serialize_size(obj: Dict[str, Any]) -> int:
-    try:
-        s = json.dumps(obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-        return len(s.encode("utf-8"))
-    except Exception:
-        return 0
-
-
-def _parse_annotation_body(body: Dict[str, Any]) -> Dict[str, Any]:
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="body must be a JSON object")
-    ann_type = body.get("annType")
-    text = body.get("text")
-    coords = body.get("coords", None)
-
-    if not isinstance(ann_type, str) or ann_type.strip() == "":
-        raise HTTPException(status_code=400, detail="annType must be a string")
-    if not isinstance(text, str):
-        raise HTTPException(status_code=400, detail="text must be a string")
-
-    ann: Dict[str, Any] = {"annType": ann_type, "text": text}
-
-    if ann_type != "general":
-        if coords is not None:
-            if (
-                isinstance(coords, list)
-                and len(coords) >= 2
-                and isinstance(coords[0], int)
-                and isinstance(coords[1], int)
-            ):
-                ann["coords"] = [coords[0], coords[1]]
-            else:
-                raise HTTPException(status_code=400, detail="coords must be [x,y] integers")
-    # else ignore coords for general
-
-    # Optional id in POST body
-    if "id" in body and isinstance(body["id"], str) and body["id"].strip() != "":
-        ann["id"] = body["id"].strip()
-
-    return ann
-
-
 @app.get("/api/pages/{pageId}")
 async def get_page(pageId: str):
     page = storage.load_page(config.STORAGE_DIR, pageId)
@@ -503,7 +602,9 @@ async def rebuild_annotation_page(bookSlug: str, pageId: str):
 
 
 # Allow running with `python main.py` for local dev
+
 if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=False, workers=1, proxy_headers=True)
+
