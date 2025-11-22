@@ -1,4 +1,11 @@
 (function(){
+  // ============================================
+  // RedPen Editor Bootstrap v2.0.1
+  // Last updated: 2025-11-22
+  // ============================================
+  var REDPEN_EDITOR_VERSION = '2.0.1';
+  console.log('[RedPen Editor] Version: ' + REDPEN_EDITOR_VERSION);
+  
   // Checks if editor mode is enabled
   function hasEditorFlag(){
     try {
@@ -55,10 +62,95 @@
     return s === '' ? undefined : s;
   }
 
-  function findGeneralOnPage(){
-    // Preferred: from page annotations
-    try {
-      var anns = (window.RedPenPage && Array.isArray(window.RedPenPage.annotations)) ? window.RedPenPage.annotations
+  function init(){
+    console.log('[RedPen Editor] Initializing editor mode (v' + REDPEN_EDITOR_VERSION + ')');
+    
+    // Initialize global state if missing
+    if (!window.RedPenEditor) window.RedPenEditor = {};
+    if (!window.RedPenEditor.state) {
+      window.RedPenEditor.state = {
+        editorMode: true,
+        ui: { selectedAnnotationId: null, lastAutoGeneralContent: undefined },
+        draft: { id: undefined, annType: 'comment', content: '', coords: undefined },
+        cache: { general: null },
+        editing: { mode: 'none' },
+        baseline: null,
+        flags: { allowCoordChangeWithoutPrompt: false, mock: (window.REDPEN_MOCKS === true) },
+        autoContent: { general: undefined },
+        auth: { isAuthenticated: false, userId: undefined, username: undefined, csrfToken: undefined },
+        page: { pageId: undefined, serverPageSha: undefined, origW: undefined, origH: undefined, annotations: [] }
+      };
+    } else {
+      // ensure cache exists
+      window.RedPenEditor.state.editorMode = true;
+      if (!window.RedPenEditor.state.cache) window.RedPenEditor.state.cache = { general: null };
+      if (!window.RedPenEditor.state.ui) window.RedPenEditor.state.ui = { selectedAnnotationId: null, lastAutoGeneralContent: undefined };
+      if (typeof window.RedPenEditor.state.ui.lastAutoGeneralContent === 'undefined') {
+        window.RedPenEditor.state.ui.lastAutoGeneralContent = undefined;
+      }
+      if (!window.RedPenEditor.state.editing) window.RedPenEditor.state.editing = { mode: 'none' };
+      if (!('baseline' in window.RedPenEditor.state)) window.RedPenEditor.state.baseline = null;
+      if (!window.RedPenEditor.state.flags) window.RedPenEditor.state.flags = { allowCoordChangeWithoutPrompt: false, mock: (window.REDPEN_MOCKS === true) };
+      if (typeof window.RedPenEditor.state.flags.mock === 'undefined') window.RedPenEditor.state.flags.mock = (window.REDPEN_MOCKS === true);
+      if (!window.RedPenEditor.state.autoContent) window.RedPenEditor.state.autoContent = { general: undefined };
+      if (!window.RedPenEditor.state.auth) window.RedPenEditor.state.auth = { isAuthenticated: false, userId: undefined, username: undefined, csrfToken: undefined };
+      if (!window.RedPenEditor.state.page) window.RedPenEditor.state.page = { pageId: undefined, serverPageSha: undefined, origW: undefined, origH: undefined, annotations: [] };
+    }
+
+    // ===== HELPER FUNCTIONS - DEFINED EARLY =====
+    // These must be defined before any code that uses them
+    
+    function snapshotFromDraft(d){
+      if (!d) d = {};
+      var id = (d.id || '').trim ? (d.id || '').trim() : d.id;
+      id = (id === '' || typeof id === 'undefined') ? undefined : id;
+      var res = { id: id, annType: d.annType || 'comment', content: typeof d.content === 'string' ? d.content : '' };
+      if (Array.isArray(d.coords) && d.coords.length === 2 && Number.isFinite(d.coords[0]) && Number.isFinite(d.coords[1])) {
+        res.coords = [d.coords[0], d.coords[1]];
+      }
+      return res;
+    }
+    
+    function isDirty(current, baseline){
+      if (!baseline) return false;
+      if (!current) return false;
+      if (current.annType !== baseline.annType) return true;
+      if ((current.content || '') !== (baseline.content || '')) return true;
+      if (current.annType === 'general') return false;
+      var c1 = current.coords, c2 = baseline.coords;
+      if (!c1 && !c2) return false;
+      if (!c1 || !c2) return true;
+      return !(c1[0] === c2[0] && c1[1] === c2[1]);
+    }
+    
+    function confirmLoseChanges(){
+      return window.confirm('У вас есть несохранённые изменения. Отменить их?');
+    }
+    
+    function beginEditingExisting(data){
+      console.log('[RedPen Editor] beginEditingExisting called');
+      var snap = snapshotFromDraft(data);
+      window.RedPenEditor.state.editing.mode = 'existing';
+      window.RedPenEditor.state.baseline = snap;
+      window.RedPenEditor.state.flags.allowCoordChangeWithoutPrompt = false;
+    }
+    
+    function beginCreatingNew(initialDraft){
+      console.log('[RedPen Editor] beginCreatingNew called');
+      var snap = snapshotFromDraft(initialDraft);
+      window.RedPenEditor.state.editing.mode = 'new';
+      window.RedPenEditor.state.baseline = snap;
+      window.RedPenEditor.state.flags.allowCoordChangeWithoutPrompt = true;
+    }
+
+    // Expose utilities for panel usage
+    window.RedPenEditor.clearSelection = clearSelection;
+
+    // Find right block container
+    var container = document.getElementById('global-comment-container');
+    if (!container) return;
+
+    // ... existing code ...
                 : (Array.isArray(window.allAnns) ? window.allAnns : null);
       if (anns && anns.length){
         for (var i=0;i<anns.length;i++){
