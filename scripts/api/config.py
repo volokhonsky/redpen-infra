@@ -22,6 +22,8 @@ def _parse_cors_origins(value: str) -> Union[List[str], List[str]]:
         return ["*"]
     # split by comma
     parts = [p.strip() for p in val.split(",") if p.strip()]
+    # Remove duplicates while preserving order
+    parts = list(dict.fromkeys(parts))
     return parts or ["*"]
 
 
