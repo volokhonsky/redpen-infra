@@ -7,7 +7,7 @@ from uuid import uuid4
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 import os
@@ -86,38 +86,28 @@ async def health():
     return {"status": "ok"}
 
 
-@app.get("/api/auth/csrf")
-async def get_csrf(request: Request, response: Response):
-    """Issue CSRF token for POST requests"""
-    csrf_token = f"csrf-{secrets.token_hex(16)}"
-    response.set_cookie(
-        "csrf_token", 
-        csrf_token, 
-        httponly=True, 
-        samesite="lax"
-    )
-    logger.info("CSRF token issued")
-    return {"csrfToken": csrf_token}
-
-
 @app.post("/api/auth/login")
 async def login(request: Request, response: Response):
     """Accept personal token and create session"""
     try:
         body = await request.json()
-    except Exception:
+    except Exception as e:
+        logger.error("login: failed to parse JSON body: %s", str(e))
         raise HTTPException(status_code=400, detail="body must be a JSON object")
     
     token = body.get("token", "").strip()
     
+    logger.info("login: attempt with token length=%d", len(token))
+    
     if not token:
-        logger.warning("login attempt with empty token")
+        logger.warning("login: empty token provided")
         raise HTTPException(status_code=401, detail="empty token")
     
     # Check if token is valid
     username = VALID_TOKENS.get(token)
     if not username:
-        logger.warning("login attempt with invalid token: %s", token[:8] + "...")
+        logger.warning("login: invalid token (first 8 chars): %s...", token[:8])
+        logger.debug("login: available tokens: %s", list(VALID_TOKENS.keys()))
         raise HTTPException(status_code=401, detail="invalid token")
     
     # Create session
@@ -139,8 +129,22 @@ async def login(request: Request, response: Response):
         max_age=86400 * 7  # 7 days
     )
     
-    logger.info("user logged in: username=%s", username)
+    logger.info("login: success username=%s userId=%s sessionId=%s", username, user_id, session_id)
     return {"userId": user_id, "username": username}
+
+
+@app.get("/api/auth/csrf")
+async def get_csrf(request: Request, response: Response):
+    """Issue CSRF token for POST requests"""
+    csrf_token = f"csrf-{secrets.token_hex(16)}"
+    response.set_cookie(
+        "csrf_token", 
+        csrf_token, 
+        httponly=True, 
+        samesite="lax"
+    )
+    logger.info("csrf: token issued csrfToken=%s", csrf_token[:16] + "...")
+    return {"csrfToken": csrf_token}
 
 
 @app.get("/api/auth/me")
@@ -149,12 +153,14 @@ async def get_me(request: Request):
     # Get session cookie
     session_id = request.cookies.get("redpen_session")
     
+    logger.debug("auth/me: session_id from cookie=%s", session_id[:8] + "..." if session_id else "None")
+    
     if not session_id or session_id not in _session_store:
-        logger.warning("auth/me called without valid session")
+        logger.warning("auth/me: invalid or missing session_id")
         raise HTTPException(status_code=401, detail="not authenticated")
     
     user_data = _session_store[session_id]
-    logger.info("user info retrieved: username=%s", user_data["username"])
+    logger.info("auth/me: success username=%s", user_data["username"])
     return {
         "userId": user_data["userId"],
         "username": user_data["username"]

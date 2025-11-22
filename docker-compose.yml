@@ -4,13 +4,40 @@ volumes:
   caddy_data:
   caddy_config:
   redpen_data:
-  # content_data:  # больше не используем общий volume для статики
+  loki_data:
+  grafana_data:
 
 networks:
   redpen:
     driver: bridge
 
 services:
+  loki:
+    image: grafana/loki:latest
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - redpen
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - loki
+    networks:
+      - redpen
+    restart: unless-stopped
+
   frontend:
     build:
       context: .
@@ -22,8 +49,11 @@ services:
     networks:
       - redpen
     restart: unless-stopped
-    # Optional resource limits (non-swarm):
-    # mem_limit: 256m
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://loki:3100/loki/api/v1/push"
+        loki-batch-size: "400"
 
   api:
     build:
@@ -40,7 +70,11 @@ services:
     networks:
       - redpen
     restart: unless-stopped
-    # mem_limit: 256m
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://loki:3100/loki/api/v1/push"
+        loki-batch-size: "400"
 
   caddy:
     image: caddy:alpine
@@ -57,13 +91,14 @@ services:
       - FRONTEND_ORIGIN=${FRONTEND_ORIGIN}
     volumes:
       - /root/apps/redpen/infra/caddy:/etc/caddy:ro
-#      - caddy_data:/data
-#      - caddy_config:/config
-#      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
     networks:
       - redpen
     restart: unless-stopped
-    # mem_limit: 256m
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://loki:3100/loki/api/v1/push"
+        loki-batch-size: "400"
 
   content-sync:
     env_file:
@@ -84,5 +119,8 @@ services:
     expose:
       - "9000"
     restart: unless-stopped
-
-# Load .env from the project root (default behavior of docker compose).
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://loki:3100/loki/api/v1/push"
+        loki-batch-size: "400"
