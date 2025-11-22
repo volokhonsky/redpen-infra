@@ -84,11 +84,10 @@ _annotation_converter_spec.loader.exec_module(annotation_converter)  # type: ign
 # CORS configuration
 allow_origins = config.CORS_ALLOW_ORIGINS or ["*"]
 
-# Ensure allow_origins is always a list and remove duplicates
-if isinstance(allow_origins, str):
-    allow_origins = [allow_origins]
-elif isinstance(allow_origins, list):
-    allow_origins = list(dict.fromkeys(allow_origins))  # Remove duplicates while preserving order
+# Ensure no duplicates
+if isinstance(allow_origins, list):
+    allow_origins = list(dict.fromkeys(allow_origins))  # Remove duplicates, preserve order
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
