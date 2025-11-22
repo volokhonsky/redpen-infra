@@ -6,7 +6,6 @@ RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# Create app user and dirs
 RUN useradd -m -u 10001 app
 WORKDIR /app
 
@@ -17,9 +16,8 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 # Copy application code
 COPY . /app/
 
-# Create data dirs and set ownership for non-root runtime
-RUN mkdir -p /data /var/redpen-data /app/logs \
-    && chown -R app:app /data /var/redpen-data /app
+# Create logs directory with proper permissions BEFORE user switch
+RUN mkdir -p /app/logs && chown app:app /app/logs
 
 USER app
 EXPOSE 8080

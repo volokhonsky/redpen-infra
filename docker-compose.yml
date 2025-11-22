@@ -34,7 +34,6 @@ services:
       - redpen_data:/var/redpen-data:rw
       - ./redpen-content:/app/redpen-content:rw
       - ./redpen-publish:/app/redpen-publish:rw
-      - ./logs:/app/logs:rw
     networks:
       - redpen
     restart: unless-stopped
