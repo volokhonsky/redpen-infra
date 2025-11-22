@@ -53,6 +53,8 @@ services:
       - FRONTEND_ORIGIN=${FRONTEND_ORIGIN}
     volumes:
       - /root/apps/redpen/infra/caddy:/etc/caddy:ro
+      - caddy_data:/data
+      - caddy_config:/config
     networks:
       - redpen
     restart: unless-stopped
