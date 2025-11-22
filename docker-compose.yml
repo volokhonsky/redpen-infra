@@ -4,40 +4,12 @@ volumes:
   caddy_data:
   caddy_config:
   redpen_data:
-  loki_data:
-  grafana_data:
 
 networks:
   redpen:
     driver: bridge
 
 services:
-  loki:
-    image: grafana/loki:latest
-    ports:
-      - "3100:3100"
-    volumes:
-      - loki_data:/loki
-    command: -config.file=/etc/loki/local-config.yaml
-    networks:
-      - redpen
-    restart: unless-stopped
-
-  grafana:
-    image: grafana/grafana:latest
-    ports:
-      - "3000:3000"
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_SECURITY_ADMIN_USER=admin
-    volumes:
-      - grafana_data:/var/lib/grafana
-    depends_on:
-      - loki
-    networks:
-      - redpen
-    restart: unless-stopped
-
   frontend:
     build:
       context: .
@@ -49,12 +21,7 @@ services:
     networks:
       - redpen
     restart: unless-stopped
-    logging:
-      driver: loki
-      options:
-        loki-url: "http://loki:3100/loki/api/v1/push"
-        loki-batch-size: "400"
-
+ 
   api:
     build:
       context: .
@@ -67,14 +34,10 @@ services:
       - redpen_data:/var/redpen-data:rw
       - ./redpen-content:/app/redpen-content:rw
       - ./redpen-publish:/app/redpen-publish:rw
+      - ./logs:/app/logs:rw
     networks:
       - redpen
     restart: unless-stopped
-    logging:
-      driver: loki
-      options:
-        loki-url: "http://loki:3100/loki/api/v1/push"
-        loki-batch-size: "400"
 
   caddy:
     image: caddy:alpine
@@ -94,11 +57,6 @@ services:
     networks:
       - redpen
     restart: unless-stopped
-    logging:
-      driver: loki
-      options:
-        loki-url: "http://loki:3100/loki/api/v1/push"
-        loki-batch-size: "400"
 
   content-sync:
     env_file:
@@ -119,8 +77,3 @@ services:
     expose:
       - "9000"
     restart: unless-stopped
-    logging:
-      driver: loki
-      options:
-        loki-url: "http://loki:3100/loki/api/v1/push"
-        loki-batch-size: "400"

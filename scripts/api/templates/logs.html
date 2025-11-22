@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Logs ({{ log_type }}) - RedPen API</title>
+    <link href="https://unpkg.com/tabulator-tables@4.9.3/dist/css/tabulator.min.css" rel="stylesheet">
+    <script type="text/javascript" src="https://oss.sheetjs.com/sheetjs/xlsx.full.min.js"></script>
+    <script type="text/javascript" src="https://unpkg.com/tabulator-tables@4.9.3/dist/js/tabulator.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 10px; }
+        .controls { margin-bottom: 10px; }
+        button { 
+            padding: 8px 15px; 
+            margin-right: 10px; 
+            background: #0e639c; 
+            color: white; 
+            border: none; 
+            border-radius: 3px; 
+            cursor: pointer;
+        }
+        button:hover { background: #1177bb; }
+    </style>
+</head>
+<body>
+    <h1>RedPen API Logs - {{ log_type }}</h1>
+    <div class="controls">
+        <button id="download-csv">Download CSV</button>
+        <button id="download-json">Download JSON</button>
+        <button id="download-xlsx">Download XLSX</button>
+    </div>
+    <div id="logs-table" style="position: absolute; top: 80px; right: 0; bottom: 0; left: 0;"></div>
+    <script type="text/javascript">
+        var table = new Tabulator("#logs-table", {
+            layout:"fitColumns",
+            data: {{ data|tojson }},
+            columns: [
+                {title: "Timestamp", field: "timestamp", width: 200, headerFilter:"input"},
+                {title: "Level", field: "level", width: 80, headerFilter:"input"},
+                {title: "Message", field: "message", formatter: "textarea", headerFilter:"input"}
+            ],
+        });
+        
+        document.getElementById("download-csv").addEventListener("click", function(){
+            table.download("csv", "redpen-logs.csv");
+        });
+
+        document.getElementById("download-json").addEventListener("click", function(){
+            table.download("json", "redpen-logs.json");
+        });
+
+        document.getElementById("download-xlsx").addEventListener("click", function(){
+            table.download("xlsx", "redpen-logs.xlsx", {sheetName:"Logs"});
+        });
+    </script>
+</body>
+</html>
