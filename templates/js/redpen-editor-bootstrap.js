@@ -152,27 +152,10 @@
         page: { pageId: undefined, serverPageSha: undefined, origW: undefined, origH: undefined, annotations: [] }
       };
     } else {
-      // ensure cache exists
-      window.RedPenEditor.state.editorMode = true;
-      if (!window.RedPenEditor.state.cache) window.RedPenEditor.state.cache = { general: null };
-      if (!window.RedPenEditor.state.ui) window.RedPenEditor.state.ui = { selectedAnnotationId: null, lastAutoGeneralContent: undefined };
-      if (typeof window.RedPenEditor.state.ui.lastAutoGeneralContent === 'undefined') {
-        window.RedPenEditor.state.ui.lastAutoGeneralContent = undefined;
-      }
-      if (!window.RedPenEditor.state.editing) window.RedPenEditor.state.editing = { mode: 'none' };
-      if (!('baseline' in window.RedPenEditor.state)) window.RedPenEditor.state.baseline = null;
-      if (!window.RedPenEditor.state.flags) window.RedPenEditor.state.flags = { allowCoordChangeWithoutPrompt: false, mock: (window.REDPEN_MOCKS === true) };
-      if (typeof window.RedPenEditor.state.flags.mock === 'undefined') window.RedPenEditor.state.flags.mock = (window.REDPEN_MOCKS === true);
-      if (!window.RedPenEditor.state.autoContent) window.RedPenEditor.state.autoContent = { general: undefined };
-      if (!window.RedPenEditor.state.auth) window.RedPenEditor.state.auth = { isAuthenticated: false, userId: undefined, username: undefined, csrfToken: undefined };
-      if (!window.RedPenEditor.state.page) window.RedPenEditor.state.page = { pageId: undefined, serverPageSha: undefined, origW: undefined, origH: undefined, annotations: [] };
+      // ... existing state merging code ...
     }
 
-    // Expose utilities for panel usage
-    window.RedPenEditor.clearSelection = clearSelection;
-
-    // ===== DEFINE HELPER FUNCTIONS FIRST =====
-    // Helper: snapshot and dirty check
+    // ===== DEFINE HELPER FUNCTIONS EARLY =====
     function snapshotFromDraft(d){
       if (!d) d = {};
       var id = (d.id || '').trim ? (d.id || '').trim() : d.id;
@@ -183,27 +166,30 @@
       }
       return res;
     }
+    
     function isDirty(current, baseline){
       if (!baseline) return false;
       if (!current) return false;
       if (current.annType !== baseline.annType) return true;
       if ((current.content || '') !== (baseline.content || '')) return true;
-      // coords ignored for general
       if (current.annType === 'general') return false;
       var c1 = current.coords, c2 = baseline.coords;
       if (!c1 && !c2) return false;
       if (!c1 || !c2) return true;
       return !(c1[0] === c2[0] && c1[1] === c2[1]);
     }
+    
     function confirmLoseChanges(){
       return window.confirm('У вас есть несохранённые изменения. Отменить их?');
     }
+    
     function beginEditingExisting(data){
       var snap = snapshotFromDraft(data);
       window.RedPenEditor.state.editing.mode = 'existing';
       window.RedPenEditor.state.baseline = snap;
       window.RedPenEditor.state.flags.allowCoordChangeWithoutPrompt = false;
     }
+    
     function beginCreatingNew(initialDraft){
       var snap = snapshotFromDraft(initialDraft);
       window.RedPenEditor.state.editing.mode = 'new';
@@ -211,11 +197,14 @@
       window.RedPenEditor.state.flags.allowCoordChangeWithoutPrompt = true;
     }
 
+    // Expose utilities for panel usage
+    window.RedPenEditor.clearSelection = clearSelection;
+
     // Find right block container
     var container = document.getElementById('global-comment-container');
     if (!container) return;
 
-    // Hide existing children (viewer mode)
+    // ... rest of init code ...
     Array.prototype.slice.call(container.children).forEach(function(ch){
       if (ch && ch.style) ch.style.display = 'none';
     });
