@@ -171,6 +171,46 @@
     // Expose utilities for panel usage
     window.RedPenEditor.clearSelection = clearSelection;
 
+    // ===== DEFINE HELPER FUNCTIONS FIRST =====
+    // Helper: snapshot and dirty check
+    function snapshotFromDraft(d){
+      if (!d) d = {};
+      var id = (d.id || '').trim ? (d.id || '').trim() : d.id;
+      id = (id === '' || typeof id === 'undefined') ? undefined : id;
+      var res = { id: id, annType: d.annType || 'comment', content: typeof d.content === 'string' ? d.content : '' };
+      if (Array.isArray(d.coords) && d.coords.length === 2 && Number.isFinite(d.coords[0]) && Number.isFinite(d.coords[1])) {
+        res.coords = [d.coords[0], d.coords[1]];
+      }
+      return res;
+    }
+    function isDirty(current, baseline){
+      if (!baseline) return false;
+      if (!current) return false;
+      if (current.annType !== baseline.annType) return true;
+      if ((current.content || '') !== (baseline.content || '')) return true;
+      // coords ignored for general
+      if (current.annType === 'general') return false;
+      var c1 = current.coords, c2 = baseline.coords;
+      if (!c1 && !c2) return false;
+      if (!c1 || !c2) return true;
+      return !(c1[0] === c2[0] && c1[1] === c2[1]);
+    }
+    function confirmLoseChanges(){
+      return window.confirm('У вас есть несохранённые изменения. Отменить их?');
+    }
+    function beginEditingExisting(data){
+      var snap = snapshotFromDraft(data);
+      window.RedPenEditor.state.editing.mode = 'existing';
+      window.RedPenEditor.state.baseline = snap;
+      window.RedPenEditor.state.flags.allowCoordChangeWithoutPrompt = false;
+    }
+    function beginCreatingNew(initialDraft){
+      var snap = snapshotFromDraft(initialDraft);
+      window.RedPenEditor.state.editing.mode = 'new';
+      window.RedPenEditor.state.baseline = snap;
+      window.RedPenEditor.state.flags.allowCoordChangeWithoutPrompt = true;
+    }
+
     // Find right block container
     var container = document.getElementById('global-comment-container');
     if (!container) return;
@@ -647,7 +687,11 @@
     window.RedPenEditor.onSave = function(){ try { window.RedPenEditor.onPreview(); } catch(e) {} };
 
     // --- Auth / HTTP client (editorMode only) ---
-    function apiBase(path){ return path; }
+    function apiBase(path){ 
+      // Используйте абсолютный URL если на другом хосте
+      var baseUrl = window.REDPEN_API_BASE || 'https://api.medinsky.net';
+      return baseUrl + path;
+    }
     function withJsonHeaders(headers){
       headers = headers || {};
       headers['Content-Type'] = 'application/json';
