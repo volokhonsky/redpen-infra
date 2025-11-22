@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY . /app/
 
 # Create data dirs and set ownership for non-root runtime
-RUN mkdir -p /data /var/redpen-data \
+RUN mkdir -p /data /var/redpen-data /app/logs \
     && chown -R app:app /data /var/redpen-data /app
 
 USER app
