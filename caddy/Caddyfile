@@ -55,18 +55,22 @@
     }
   }
 }
-# API host: просто проксируем, CORS обрабатывает FastAPI
+# API host: Caddy handles CORS
 {$API_HOST} {
 	encode zstd gzip
 
 	header {
-		# Temporarily disabled for staging cert testing
-		# Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-		
+	#	Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "no-referrer-when-downgrade"
 		X-Frame-Options "DENY"
 		Permissions-Policy "geolocation=(), camera=(), microphone=()"
+		
+		# CORS headers - Caddy handles all CORS
+		Access-Control-Allow-Origin {$FRONTEND_ORIGIN}
+		Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+		Access-Control-Allow-Headers "Content-Type, X-CSRF-Token, Authorization"
+		Access-Control-Allow-Credentials "true"
 	}
 
 	# Быстрый preflight
