@@ -1,5 +1,6 @@
 {
 	# Use Let's Encrypt staging (no rate limits for testing)
+	# don't forget to uncomment Strict-Transport-Security
 	acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
 }
 
@@ -14,7 +15,8 @@
   encode zstd gzip
 
   header {
-    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+   # Temporarily disable HSTS for staging certificate testing
+   # Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
     X-Content-Type-Options "nosniff"
     Referrer-Policy "no-referrer-when-downgrade"
     X-Frame-Options "DENY"
@@ -59,7 +61,7 @@
 
 	# Security headers (без CORS)
 	header {
-		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+	    # Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "no-referrer-when-downgrade"
 		X-Frame-Options "DENY"
