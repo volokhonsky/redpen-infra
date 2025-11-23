@@ -67,13 +67,7 @@
 		Permissions-Policy "geolocation=(), camera=(), microphone=()"
 	}
 
-	# Быстрый preflight
-	@preflight {
-		method OPTIONS
-		path /api/*
-	}
-
-	# Быстрый preflight
+	# Быстрый preflight с явными CORS заголовками
 	@preflight {
 		method OPTIONS
 		path /api/*
@@ -89,9 +83,8 @@
 
 	# Проксирование всех остальных /api/* в бекенд
 	reverse_proxy api:8080 {
+		# Убедимся, что заголовки добавляются и к обычным ответам
 		header_up Access-Control-Allow-Origin "{$DOMAIN}"
 		header_up Access-Control-Allow-Credentials "true"
-		header_up Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
-		header_up Access-Control-Allow-Headers "Content-Type, Authorization, X-CSRF-Token"
 	}
 }
