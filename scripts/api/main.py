@@ -82,19 +82,19 @@ assert _annotation_converter_spec is not None and _annotation_converter_spec.loa
 _annotation_converter_spec.loader.exec_module(annotation_converter)  # type: ignore
 
 # CORS configuration
-allow_origins = config.CORS_ALLOW_ORIGINS or ["*"]
+# NOTE: CORS is now handled by Caddy reverse proxy
+# Disable FastAPI CORS middleware to avoid conflicts
 
-# Ensure no duplicates
-if isinstance(allow_origins, list):
-    allow_origins = list(dict.fromkeys(allow_origins))  # Remove duplicates, preserve order
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allow_origins,
-    allow_credentials=True,  # ← ИЗМЕНИТЕ НА True!
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# allow_origins = config.CORS_ALLOW_ORIGINS or ["*"]
+# if isinstance(allow_origins, list):
+#     allow_origins = list(dict.fromkeys(allow_origins))
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=allow_origins,
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
 
 # Setup Jinja2 templates
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
