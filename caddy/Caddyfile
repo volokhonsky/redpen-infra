@@ -73,7 +73,7 @@
 		path /api/*
 	}
 	handle @preflight {
-		header Access-Control-Allow-Origin "{$DOMAIN}"
+		header Access-Control-Allow-Origin "https://{$DOMAIN}"
 		header Access-Control-Allow-Credentials "true"
 		header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
 		header Access-Control-Allow-Headers "Content-Type, Authorization, X-CSRF-Token"
@@ -84,7 +84,7 @@
 	# Проксирование всех остальных /api/* в бекенд
 	reverse_proxy api:8080 {
 		# Убедимся, что заголовки добавляются и к обычным ответам
-		header_up Access-Control-Allow-Origin "{$DOMAIN}"
+		header_up Access-Control-Allow-Origin "https://{$DOMAIN}"
 		header_up Access-Control-Allow-Credentials "true"
 	}
 }
