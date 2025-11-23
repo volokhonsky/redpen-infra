@@ -65,12 +65,6 @@
 		Referrer-Policy "no-referrer-when-downgrade"
 		X-Frame-Options "DENY"
 		Permissions-Policy "geolocation=(), camera=(), microphone=()"
-		
-		# CORS headers - Caddy handles all CORS
-		Access-Control-Allow-Origin {$FRONTEND_ORIGIN}
-		Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
-		Access-Control-Allow-Headers "Content-Type, X-CSRF-Token, Authorization"
-		Access-Control-Allow-Credentials "true"
 	}
 
 	# Быстрый preflight
