@@ -91,7 +91,7 @@ if isinstance(allow_origins, list):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
-    allow_credentials=False,
+    allow_credentials=True,  # ← ИЗМЕНИТЕ НА True!
     allow_methods=["*"],
     allow_headers=["*"],
 )
