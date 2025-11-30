@@ -605,10 +605,134 @@ async def rebuild_annotation_page(bookSlug: str, pageId: str):
     }
 
 
+# ===== HELPER: Construct page file key =====
+def _build_page_key(doc_id: str, page_num: int) -> str:
+    """
+    Construct page key: docId="medinsky11klass", pageNum=6 → "medinsky11klass_page_006"
+    """
+    return f"{doc_id}_page_{str(page_num).zfill(3)}"
+
+
+def _validate_doc_id(doc_id: str) -> bool:
+    """Validate docId: alphanumeric, underscore, hyphen"""
+    return bool(re.fullmatch(r"[a-z0-9_-]+", doc_id or ""))
+
+
+def _validate_page_num(page_num) -> bool:
+    """Validate page number: 1-999"""
+    try:
+        p = int(page_num)
+        return 1 <= p <= 999
+    except (TypeError, ValueError):
+        return False
+
+
+# ===== NEW ENDPOINTS =====
+
+@app.get("/api/editor/{docId}/{pageNum}")
+async def get_editor_page(docId: str, pageNum: str):
+    """GET page data for editor"""
+    if not _validate_doc_id(docId):
+        raise HTTPException(status_code=400, detail="invalid docId")
+    if not _validate_page_num(pageNum):
+        raise HTTPException(status_code=400, detail="invalid pageNum")
+    
+    pageNum = int(pageNum)
+    page_key = _build_page_key(docId, pageNum)
+    page = storage.load_page(config.STORAGE_DIR, page_key)
+    
+    if not page.get("serverPageSha"):
+        page_sha = storage.compute_sha(page)
+        page["serverPageSha"] = page_sha
+        try:
+            storage.save_page(config.STORAGE_DIR, page_key)
+        except Exception:
+            logger.exception("failed to persist serverPageSha docId=%s pageNum=%d", docId, pageNum)
+    
+    size = _serialize_size(page)
+    anns = page.get("annotations")
+    ann_count = len(anns) if isinstance(anns, list) else 0
+    logger.info("GET editor docId=%s pageNum=%d anns=%d size=%d", docId, pageNum, ann_count, size)
+    return page
+
+
+@app.post("/api/editor/{docId}/{pageNum}")
+async def post_editor_annotation(docId: str, pageNum: str, request: Request):
+    """POST new annotation"""
+    if not _validate_doc_id(docId):
+        raise HTTPException(status_code=400, detail="invalid docId")
+    if not _validate_page_num(pageNum):
+        raise HTTPException(status_code=400, detail="invalid pageNum")
+    
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+
+    ann = _parse_annotation_body(body if isinstance(body, dict) else {})
+
+    if not ann.get("id"):
+        ann["id"] = f"srv-{int(time.time())}-{uuid4().hex[:6]}"
+
+    pageNum = int(pageNum)
+    page_key = _build_page_key(docId, pageNum)
+    page = storage.load_page(config.STORAGE_DIR, page_key)
+    storage.upsert_annotation(page, ann)
+
+    try:
+        sha = storage.save_page(config.STORAGE_DIR, page_key)
+    except Exception:
+        logger.exception("failed to save page docId=%s pageNum=%d", docId, pageNum)
+        raise HTTPException(status_code=500, detail="failed to save page")
+
+    anns = page.get("annotations")
+    ann_count = len(anns) if isinstance(anns, list) else 0
+    size = _serialize_size(page)
+    logger.info("POST editor docId=%s pageNum=%d anns=%d size=%d", docId, pageNum, ann_count, size)
+    
+    return {"id": ann["id"], "serverPageSha": sha}
+
+
+@app.put("/api/editor/{docId}/{pageNum}/{annId}")
+async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: Request):
+    """PUT update annotation"""
+    if not _validate_doc_id(docId):
+        raise HTTPException(status_code=400, detail="invalid docId")
+    if not _validate_page_num(pageNum):
+        raise HTTPException(status_code=400, detail="invalid pageNum")
+    
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+
+    parsed = _parse_annotation_body(body if isinstance(body, dict) else {})
+    parsed["id"] = annId
+
+    pageNum = int(pageNum)
+    page_key = _build_page_key(docId, pageNum)
+    page = storage.load_page(config.STORAGE_DIR, page_key)
+    updated = storage.update_annotation(page, annId, parsed)
+    if not updated:
+        storage.upsert_annotation(page, parsed)
+
+    try:
+        sha = storage.save_page(config.STORAGE_DIR, page_key)
+    except Exception:
+        logger.exception("failed to save page docId=%s pageNum=%d annId=%s", docId, pageNum, annId)
+        raise HTTPException(status_code=500, detail="failed to save page")
+
+    anns = page.get("annotations")
+    ann_count = len(anns) if isinstance(anns, list) else 0
+    size = _serialize_size(page)
+    logger.info("PUT editor docId=%s pageNum=%d annId=%s anns=%d size=%d", docId, pageNum, annId, ann_count, size)
+
+    return {"id": annId, "serverPageSha": sha}
+
+
 # Allow running with `python main.py` for local dev
 
 if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=False, workers=1, proxy_headers=True)
-
