@@ -659,36 +659,51 @@ async def get_editor_page(docId: str, pageNum: str):
 @app.post("/api/editor/{docId}/{pageNum}")
 async def post_editor_annotation(docId: str, pageNum: str, request: Request):
     """POST new annotation"""
+    print(f"[POST /api/editor] START docId={docId} pageNum={pageNum}")  # ✅ STDOUT ЛОГ
+    logger.info("POST editor START docId=%s pageNum=%s", docId, pageNum)  # ✅ FILE ЛОГ
+    
     if not _validate_doc_id(docId):
+        logger.warning("POST editor invalid docId=%s", docId)
         raise HTTPException(status_code=400, detail="invalid docId")
     if not _validate_page_num(pageNum):
+        logger.warning("POST editor invalid pageNum=%s", pageNum)
         raise HTTPException(status_code=400, detail="invalid pageNum")
     
     try:
         body = await request.json()
-    except Exception:
+        logger.debug("POST editor body=%s", body)
+    except Exception as e:
+        logger.error("POST editor failed to parse body: %s", str(e))
         raise HTTPException(status_code=400, detail="body must be a JSON object")
 
     ann = _parse_annotation_body(body if isinstance(body, dict) else {})
+    logger.debug("POST editor parsed annotation=%s", ann)
 
     if not ann.get("id"):
         ann["id"] = f"srv-{int(time.time())}-{uuid4().hex[:6]}"
+        logger.debug("POST editor generated id=%s", ann["id"])
 
     pageNum = int(pageNum)
     page_key = _build_page_key(docId, pageNum)
+    logger.debug("POST editor page_key=%s", page_key)
+    
     page = storage.load_page(config.STORAGE_DIR, page_key)
     storage.upsert_annotation(page, ann)
 
     try:
         sha = storage.save_page(config.STORAGE_DIR, page_key)
-    except Exception:
+        logger.debug("POST editor saved with sha=%s", sha)
+    except Exception as e:
         logger.exception("failed to save page docId=%s pageNum=%d", docId, pageNum)
         raise HTTPException(status_code=500, detail="failed to save page")
 
     anns = page.get("annotations")
     ann_count = len(anns) if isinstance(anns, list) else 0
     size = _serialize_size(page)
-    logger.info("POST editor docId=%s pageNum=%d anns=%d size=%d", docId, pageNum, ann_count, size)
+    
+    logger.info("POST editor SUCCESS docId=%s pageNum=%d annId=%s anns=%d size=%d", 
+                docId, pageNum, ann["id"], ann_count, size)
+    print(f"[POST /api/editor] SUCCESS annId={ann['id']}")  # ✅ STDOUT ЛОГ
     
     return {"id": ann["id"], "serverPageSha": sha}
 
