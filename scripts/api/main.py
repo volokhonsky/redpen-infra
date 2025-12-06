@@ -645,7 +645,7 @@ async def get_editor_page(docId: str, pageNum: str):
         page_sha = storage.compute_sha(page)
         page["serverPageSha"] = page_sha
         try:
-            storage.save_page(config.STORAGE_DIR, page_key)
+            storage.save_page(config.STORAGE_DIR, page)
         except Exception:
             logger.exception("failed to persist serverPageSha docId=%s pageNum=%d", docId, pageNum)
     
@@ -700,7 +700,7 @@ async def post_editor_annotation(docId: str, pageNum: str, request: Request):
         storage.upsert_annotation(page, ann)
         logger.debug("POST editor upserted annotation id=%s", ann["id"])
         
-        sha = storage.save_page(config.STORAGE_DIR, page_key)
+        sha = storage.save_page(config.STORAGE_DIR, page)
         logger.debug("POST editor saved page with sha=%s", sha)
     except Exception as e:
         logger.exception("POST editor failed to save page docId=%s pageNum=%d: %s", docId, pageNum_int, str(e))
@@ -761,7 +761,7 @@ async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: R
         else:
             logger.debug("PUT editor updated existing annotation id=%s", annId)
         
-        sha = storage.save_page(config.STORAGE_DIR, page_key)
+        sha = storage.save_page(config.STORAGE_DIR, page)
         logger.debug("PUT editor saved page with sha=%s", sha)
     except Exception as e:
         logger.exception("PUT editor failed to save page docId=%s pageNum=%d annId=%s: %s", 
