@@ -4,10 +4,13 @@ import os
 import tempfile
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
+import config
 
-# ---------------- Inbox storage (from step 1) ----------------
+# Storage base directory (constant from config)
+STORAGE_BASE_DIR = config.STORAGE_DIR
+
 
 def sanitize_bucket(candidate: str, for_page_id: bool = False, max_len: int = 120, max_depth: int = 3) -> str:
     """Sanitize bucket name or derived value from pageId.
@@ -59,23 +62,21 @@ def sanitize_bucket(candidate: str, for_page_id: bool = False, max_len: int = 12
         s = s.replace("//", "/")
     return s
 
-def get_inbox_dir(base_dir: str) -> str:
-    """Return absolute path to base_dir/inbox/YYYYMMDD (UTC)."""
+def get_inbox_dir() -> str:
+    """Return absolute path to STORAGE_BASE_DIR/inbox/YYYYMMDD (UTC)."""
     today = datetime.utcnow().strftime("%Y%m%d")
-    return os.path.join(base_dir, "inbox", today)
+    return os.path.join(STORAGE_BASE_DIR, "inbox", today)
 
 
 essential_json_kwargs = dict(ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
-from typing import Optional
-
-def save_inbox(obj: Any, base_dir: str, bucket: Optional[str] = None, filename: Optional[str] = None) -> str:
+def save_inbox(obj: Any, bucket: Optional[str] = None, filename: Optional[str] = None) -> str:
     """
-    Save given Python object as JSON into base_dir/inbox/YYYYMMDD[/bucket]/<uuid>.json atomically.
+    Save given Python object as JSON into STORAGE_BASE_DIR/inbox/YYYYMMDD[/bucket]/<uuid>.json atomically.
     Returns the relative path like: inbox/YYYYMMDD[/bucket]/<uuid>.json
     """
-    inbox_abs = get_inbox_dir(base_dir)
+    inbox_abs = get_inbox_dir()
     if bucket:
         inbox_abs = os.path.join(inbox_abs, bucket)
     os.makedirs(inbox_abs, exist_ok=True)
@@ -103,7 +104,7 @@ def save_inbox(obj: Any, base_dir: str, bucket: Optional[str] = None, filename: 
             pass
 
     # Return relative path
-    today = os.path.basename(get_inbox_dir(base_dir))
+    today = os.path.basename(get_inbox_dir())
     parts = ["inbox", today]
     if bucket:
         parts.append(bucket)
@@ -112,14 +113,19 @@ def save_inbox(obj: Any, base_dir: str, bucket: Optional[str] = None, filename: 
     return rel_path
 
 
-# ---------------- Pages storage ----------------
+# ===== Pages storage =====
 
-def get_pages_dir(base_dir: str) -> str:
-    return os.path.join(base_dir, "pages")
-
-
-def page_path(base_dir: str, page_id: str) -> str:
-    return os.path.join(get_pages_dir(base_dir), f"{page_id}.json")
+def page_path(doc_id: str, page_num: str) -> str:
+    """
+    Construct path for page file.
+    
+    Args:
+        doc_id: Document ID (e.g., "medinsky11klass")
+        page_num: Page number as string (e.g., "006")
+    
+    Returns: /var/redpen-data/medinsky11klass/annotations/page_006.json
+    """
+    return os.path.join(STORAGE_BASE_DIR, doc_id, "annotations", f"page_{page_num}.json")
 
 
 def _default_page(page_id: str) -> Dict[str, Any]:
@@ -133,16 +139,27 @@ def _default_page(page_id: str) -> Dict[str, Any]:
     }
 
 
-def load_page(base_dir: str, page_id: str) -> Dict[str, Any]:
-    """Load page JSON or return default structure if not exists."""
-    p = page_path(base_dir, page_id)
+def load_page(doc_id: str, page_num: str) -> Dict[str, Any]:
+    """Load page JSON or return default structure if not exists.
+    
+    Args:
+        doc_id: Document ID
+        page_num: Page number as string
+    
+    Returns: Page object with annotations
+    """
+    page_id = f"{doc_id}_page_{page_num}"
+    p = page_path(doc_id, page_num)
+    
     if not os.path.exists(p):
         return _default_page(page_id)
+    
     try:
         with open(p, "r", encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, dict):
             return _default_page(page_id)
+        
         # ensure required fields
         data.setdefault("pageId", page_id)
         data.setdefault("imageUrl", "")
@@ -166,21 +183,35 @@ def compute_sha(page_obj: Dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def save_page(base_dir: str, page_obj: Dict[str, Any]) -> str:
-    """Atomically write page to /data/pages/{pageId}.json.
-    Before write, compute serverPageSha (excluding that field) and set it. Return the sha.
+def save_page(doc_id: str, page_num: str, page_obj: Dict[str, Any]) -> str:
+    """Atomically write page to docId/annotations/page_NNN.json.
+    
+    Before write, compute serverPageSha (excluding that field) and set it.
+    
+    Args:
+        doc_id: Document ID
+        page_num: Page number as string
+        page_obj: Page object to save
+    
+    Returns: SHA256 hash of page content
     """
-    page_id = str(page_obj.get("pageId") or "").strip()
-    if not page_id:
-        raise ValueError("pageId is required to save page")
-
-    # ensure directory exists
-    pages_dir = get_pages_dir(base_dir)
-    os.makedirs(pages_dir, exist_ok=True)
+    # Ensure required fields
+    if not doc_id or not page_num:
+        raise ValueError("doc_id and page_num are required")
+    
+    page_id = f"{doc_id}_page_{page_num}"
+    
+    # Get target path
+    target = page_path(doc_id, page_num)
+    target_dir = os.path.dirname(target)
+    
+    # Ensure directory exists
+    os.makedirs(target_dir, exist_ok=True)
 
     # compute sha and set
     sha = compute_sha(page_obj)
     page_obj = dict(page_obj)
+    page_obj["pageId"] = page_id
     page_obj["serverPageSha"] = sha
 
     # serialize
@@ -188,15 +219,12 @@ def save_page(base_dir: str, page_obj: Dict[str, Any]) -> str:
     data_bytes = data_str.encode("utf-8")
 
     # atomic write
-    target = page_path(base_dir, page_id)
-    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(target) or ".", prefix=f"._tmp_{page_id}_", suffix=".json")
+    fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=f"._tmp_{page_id}_", suffix=".json")
     try:
         with os.fdopen(fd, "wb") as tmp:
             tmp.write(data_bytes)
             tmp.flush()
             os.fsync(tmp.fileno())
-        # Ensure target dir exists (again) before replace
-        os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
         os.replace(tmp_path, target)
     finally:
         try:
