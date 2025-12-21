@@ -3,7 +3,6 @@ name: redpen
 volumes:
   caddy_data:
   caddy_config:
-  redpen_data:
 
 networks:
   redpen:
@@ -31,9 +30,8 @@ services:
       - LOG_LEVEL=${LOG_LEVEL}
       - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS}
     volumes:
-      - redpen_data:/var/redpen-data:rw
+      - ./redpen-publish:/var/redpen-data:rw
       - ./redpen-content:/app/redpen-content:rw
-      - ./redpen-publish:/app/redpen-publish:rw
     networks:
       - redpen
     restart: unless-stopped
