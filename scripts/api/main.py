@@ -373,7 +373,7 @@ async def store_raw(request: Request):
     uid = uuid4().hex
     filename = f"{uid}.json"
     try:
-        rel_path = storage.save_inbox(payload, config.STORAGE_DIR, bucket=bucket, filename=filename)
+        rel_path = storage.save_inbox(payload, bucket=bucket, filename=filename)
     except Exception:
         logger.exception("failed to store incoming payload")
         raise HTTPException(status_code=500, detail="failed to store")
@@ -426,7 +426,7 @@ async def store(request: Request):
     data_size = len(data_str.encode("utf-8"))
 
     try:
-        rel_path = storage.save_inbox(payload, config.STORAGE_DIR)
+        rel_path = storage.save_inbox(payload)
     except Exception:
         logger.exception("failed to store incoming payload")
         raise HTTPException(status_code=500, detail="failed to store")
@@ -436,16 +436,23 @@ async def store(request: Request):
 
 @app.get("/api/pages/{pageId}")
 async def get_page(pageId: str):
-    page = storage.load_page(config.STORAGE_DIR, pageId)
+    """GET page data by pageId (legacy endpoint, for backwards compatibility)"""
+    # pageId format: "medinsky11klass_page_006"
+    parts = pageId.rsplit("_page_", 1)
+    if len(parts) != 2:
+        raise HTTPException(status_code=400, detail="invalid pageId format")
+    
+    doc_id, page_num = parts
+    page = storage.load_page(doc_id, page_num)
+    
     if not page.get("serverPageSha"):
-        # compute and persist once
         page_sha = storage.compute_sha(page)
         page["serverPageSha"] = page_sha
         try:
-            storage.save_page(config.STORAGE_DIR, page)
+            storage.save_page(doc_id, page_num, page)
         except Exception:
             logger.exception("failed to persist serverPageSha for pageId=%s", pageId)
-            # still return calculated one in response
+    
     size = _serialize_size(page)
     anns = page.get("annotations")
     ann_count = len(anns) if isinstance(anns, list) else 0
@@ -638,14 +645,14 @@ async def get_editor_page(docId: str, pageNum: str):
         raise HTTPException(status_code=400, detail="invalid pageNum")
     
     pageNum = int(pageNum)
-    page_key = _build_page_key(docId, pageNum)
-    page = storage.load_page(config.STORAGE_DIR, page_key)
+    page_num_str = str(pageNum).zfill(3)
+    page = storage.load_page(docId, page_num_str)
     
     if not page.get("serverPageSha"):
         page_sha = storage.compute_sha(page)
         page["serverPageSha"] = page_sha
         try:
-            storage.save_page(config.STORAGE_DIR, page)
+            storage.save_page(docId, page_num_str, page)
         except Exception:
             logger.exception("failed to persist serverPageSha docId=%s pageNum=%d", docId, pageNum)
     
@@ -690,17 +697,17 @@ async def post_editor_annotation(docId: str, pageNum: str, request: Request):
         logger.debug("POST editor generated id=%s", ann["id"])
 
     pageNum_int = int(pageNum)
-    page_key = _build_page_key(docId, pageNum_int)
-    logger.debug("POST editor page_key=%s", page_key)
+    page_num_str = str(pageNum_int).zfill(3)
+    logger.debug("POST editor docId=%s page_num=%s", docId, page_num_str)
     
     try:
-        page = storage.load_page(config.STORAGE_DIR, page_key)
+        page = storage.load_page(docId, page_num_str)
         logger.debug("POST editor loaded page with %d existing annotations", len(page.get("annotations", [])))
         
         storage.upsert_annotation(page, ann)
         logger.debug("POST editor upserted annotation id=%s", ann["id"])
         
-        sha = storage.save_page(config.STORAGE_DIR, page)
+        sha = storage.save_page(docId, page_num_str, page)
         logger.debug("POST editor saved page with sha=%s", sha)
     except Exception as e:
         logger.exception("POST editor failed to save page docId=%s pageNum=%d: %s", docId, pageNum_int, str(e))
@@ -747,11 +754,11 @@ async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: R
     logger.debug("PUT editor parsed annotation with id=%s", annId)
 
     pageNum_int = int(pageNum)
-    page_key = _build_page_key(docId, pageNum_int)
-    logger.debug("PUT editor page_key=%s", page_key)
+    page_num_str = str(pageNum_int).zfill(3)
+    logger.debug("PUT editor docId=%s page_num=%s", docId, page_num_str)
     
     try:
-        page = storage.load_page(config.STORAGE_DIR, page_key)
+        page = storage.load_page(docId, page_num_str)
         logger.debug("PUT editor loaded page with %d existing annotations", len(page.get("annotations", [])))
         
         updated = storage.update_annotation(page, annId, parsed)
@@ -761,7 +768,7 @@ async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: R
         else:
             logger.debug("PUT editor updated existing annotation id=%s", annId)
         
-        sha = storage.save_page(config.STORAGE_DIR, page)
+        sha = storage.save_page(docId, page_num_str, page)
         logger.debug("PUT editor saved page with sha=%s", sha)
     except Exception as e:
         logger.exception("PUT editor failed to save page docId=%s pageNum=%d annId=%s: %s", 

@@ -19,10 +19,6 @@ COPY . /app/
 # Create logs directory with proper permissions BEFORE user switch
 RUN mkdir -p /app/logs && chown app:app /app/logs
 
-# Fix permissions on mounted volumes (will be applied when they're mounted)
-# This ensures the app user can write to /var/redpen-data
-RUN mkdir -p /var/redpen-data && chown -R app:app /var/redpen-data && chmod -R 755 /var/redpen-data
-
 USER app
 EXPOSE 8080
 
