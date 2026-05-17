@@ -3,6 +3,7 @@ name: redpen
 volumes:
   caddy_data:
   caddy_config:
+  redpen_public:
 
 networks:
   redpen:
@@ -16,7 +17,7 @@ services:
     environment:
       - API_BASE_URL=${API_BASE_URL}
     volumes:
-      - ./redpen-publish:/usr/share/nginx/html:ro
+      - redpen_public:/usr/share/nginx/html:ro
     networks:
       - redpen
     restart: unless-stopped
@@ -50,7 +51,7 @@ services:
       - API_HOST=${API_HOST}
       - FRONTEND_ORIGIN=${FRONTEND_ORIGIN}
     volumes:
-      - /root/apps/redpen/infra/caddy:/etc/caddy:ro
+      - /root/apps/redpen/config/caddy:/etc/caddy:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:
@@ -67,10 +68,11 @@ services:
       - GIT_REF=${CONTENT_GIT_REF}
       - API_BASE_URL=${API_BASE_URL}
       - GIT_SSH_COMMAND=ssh -o BatchMode=yes -o IdentitiesOnly=yes -o UserKnownHostsFile=/root/.ssh/known_hosts -i /root/.ssh/id_ed25519
-      - PUBLIC_DIR=/srv/repo/redpen-publish
+      - PUBLIC_DIR=/srv/public
     volumes:
-      - ./:/srv/repo:rw
-      - ../secrets/content-ssh:/root/.ssh:ro
+      - /root/apps/redpen/data/redpen-content:/srv/repo:rw
+      - /root/apps/redpen/secrets/content-ssh:/root/.ssh:ro
+      - redpen_public:/srv/public:rw
     networks:
       - redpen
     expose:
