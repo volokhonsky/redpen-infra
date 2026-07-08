@@ -359,8 +359,11 @@ def test_get_legacy_pages_remains_public():
 # Auth
 # ---------------------------------------------------------------------------
 
-def test_login_with_valid_token_sets_session(client):
-    r = client.post("/api/auth/login", json={"token": "dev-token-123"})
+def test_login_with_valid_token_sets_session():
+    # Fresh client: logging in again on the shared `client` fixture would
+    # replace its session and strand its already-issued CSRF token.
+    c = TestClient(main.app)
+    r = c.post("/api/auth/login", json={"token": "dev-token-123"})
     assert r.status_code == 200
     assert r.json()["username"] == "john_doe"
     assert "redpen_session" in r.cookies
@@ -458,3 +461,66 @@ def test_cors_preflight_reflects_explicit_origin():
         )
         assert r.headers.get("access-control-allow-origin") == "https://medinsky.net"
         assert r.headers.get("access-control-allow-credentials") == "true"
+
+
+# ---------------------------------------------------------------------------
+# Optimistic locking (stage 0.6)
+# ---------------------------------------------------------------------------
+
+def test_missing_client_page_sha_is_accepted_transitionally(client):
+    doc, page = "medinsky11klass", "40"
+    r = client.post(f"/api/editor/{doc}/{page}", json={"annType": "comment", "text": "no sha", "coords": [1, 1]})
+    assert r.status_code == 200
+
+
+def test_stale_client_page_sha_returns_409(client):
+    doc, page = "medinsky11klass", "41"
+
+    initial = client.get(f"/api/editor/{doc}/{page}").json()
+    stale_sha = initial["serverPageSha"]
+
+    # First writer succeeds and advances serverPageSha.
+    first = client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "first", "coords": [1, 2], "clientPageSha": stale_sha},
+    )
+    assert first.status_code == 200
+    assert first.json()["serverPageSha"] != stale_sha
+
+    # Second writer still holds the old sha -> conflict.
+    second = client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "second", "coords": [3, 4], "clientPageSha": stale_sha},
+    )
+    assert second.status_code == 409
+    body = second.json()
+    assert body["detail"] == "conflict"
+    assert body["serverPageSha"] == first.json()["serverPageSha"]
+
+    # Re-reading the page and retrying with the fresh sha succeeds.
+    refreshed = client.get(f"/api/editor/{doc}/{page}").json()
+    third = client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "second retry", "coords": [3, 4], "clientPageSha": refreshed["serverPageSha"]},
+    )
+    assert third.status_code == 200
+
+
+def test_stale_client_page_sha_returns_409_on_put(client):
+    doc, page = "medinsky11klass", "42"
+    created = client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "first", "coords": [1, 2]},
+    ).json()
+    ann_id = created["id"]
+    stale_sha = created["serverPageSha"]
+
+    # Someone else updates the page, advancing serverPageSha.
+    client.post(f"/api/editor/{doc}/{page}", json={"annType": "comment", "text": "other", "coords": [9, 9]})
+
+    r = client.put(
+        f"/api/editor/{doc}/{page}/{ann_id}",
+        json={"annType": "main", "text": "updated", "coords": [3, 4], "clientPageSha": stale_sha},
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"] == "conflict"

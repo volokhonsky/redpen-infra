@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -192,6 +192,24 @@ async def require_csrf(request: Request, user: Dict[str, str] = Depends(require_
     if not header_token or not session_csrf or not secrets.compare_digest(header_token, session_csrf):
         raise HTTPException(status_code=403, detail="invalid csrf token")
     return user
+
+
+def _check_optimistic_lock(body: Dict[str, Any], page: Dict[str, Any], docId: str, pageNum: int) -> Optional[Response]:
+    """
+    Compare the client's clientPageSha against the page's current
+    serverPageSha. Returns a 409 Response if they conflict, else None.
+    Missing clientPageSha is accepted (transitional) but logged.
+    """
+    client_sha = body.get("clientPageSha") if isinstance(body, dict) else None
+    if not isinstance(client_sha, str) or not client_sha.strip():
+        logger.warning("docId=%s pageNum=%d: clientPageSha missing (transitional)", docId, pageNum)
+        return None
+
+    server_sha = page.get("serverPageSha")
+    if server_sha and client_sha != server_sha:
+        logger.info("docId=%s pageNum=%d: optimistic lock conflict", docId, pageNum)
+        return JSONResponse(status_code=409, content={"detail": "conflict", "serverPageSha": server_sha})
+    return None
 
 
 def _parse_annotation_body(body: Dict[str, Any]) -> Dict[str, Any]:
@@ -740,7 +758,11 @@ async def post_editor_annotation(docId: str, pageNum: str, request: Request, use
     try:
         page = storage.load_page(docId, page_num_str)
         logger.debug("POST editor loaded page with %d existing annotations", len(page.get("annotations", [])))
-        
+
+        conflict = _check_optimistic_lock(body if isinstance(body, dict) else {}, page, docId, pageNum_int)
+        if conflict is not None:
+            return conflict
+
         storage.upsert_annotation(page, ann)
         logger.debug("POST editor upserted annotation id=%s", ann["id"])
         
@@ -797,7 +819,11 @@ async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: R
     try:
         page = storage.load_page(docId, page_num_str)
         logger.debug("PUT editor loaded page with %d existing annotations", len(page.get("annotations", [])))
-        
+
+        conflict = _check_optimistic_lock(body if isinstance(body, dict) else {}, page, docId, pageNum_int)
+        if conflict is not None:
+            return conflict
+
         updated = storage.update_annotation(page, annId, parsed)
         if not updated:
             logger.debug("PUT editor annotation id=%s not found, upserting as new", annId)

@@ -54,10 +54,16 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 - `GET /api/editor/{docId}/{pageNum}` — вернуть страницу (создаёт и сохраняет
   `serverPageSha`, если его не было). `pageNum` — 1..999.
 - 🔒 `POST /api/editor/{docId}/{pageNum}` — добавить/обновить аннотацию.
-  Тело: `{annType, text, coords?[x,y], id?}`. Для `annType != "general"` можно
-  передать целочисленные `coords`. Ответ: `{id, serverPageSha}`.
+  Тело: `{annType, text, coords?[x,y], id?, clientPageSha?}`. Для
+  `annType != "general"` можно передать целочисленные `coords`. Ответ:
+  `{id, serverPageSha}`.
 - 🔒 `PUT /api/editor/{docId}/{pageNum}/{annId}` — обновить аннотацию по id
-  (если не найдена — добавляется как новая). Ответ: `{id, serverPageSha}`.
+  (если не найдена — добавляется как новая). То же тело/ответ.
+
+Оптимистичная блокировка: если `clientPageSha` передан, не пуст и не
+совпадает с текущим `serverPageSha` страницы — ответ `409`
+`{"detail": "conflict", "serverPageSha": "<текущий>"}`. Если `clientPageSha`
+не передан, запрос принимается (переходный режим, пишется предупреждение в лог).
 
 Пересборка JSON из Markdown:
 - 🔒 `POST /api/rebuild/{bookSlug}/annotations/{pageId}` — конвертирует
