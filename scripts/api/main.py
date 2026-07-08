@@ -218,7 +218,7 @@ def _parse_annotation_body(body: Dict[str, Any]) -> Dict[str, Any]:
 # ===== LOG VIEWER ENDPOINTS =====
 
 @app.get("/logs")
-async def logs_page(request: Request):
+async def logs_page(request: Request, user: Dict[str, str] = Depends(require_user)):
     """Serve logs viewer page"""
     try:
         log_file = LOG_FILE
@@ -243,7 +243,7 @@ async def logs_page(request: Request):
 
 
 @app.get("/api/logs")
-async def get_logs_json(lines: int = 100):
+async def get_logs_json(lines: int = 100, user: Dict[str, str] = Depends(require_user)):
     """Return logs as JSON"""
     try:
         log_file = LOG_FILE
@@ -355,7 +355,7 @@ async def hello():
 
 
 @app.post("/api/store-raw")
-async def store_raw(request: Request):
+async def store_raw(request: Request, user: Dict[str, str] = Depends(require_user)):
     # New endpoint that supports optional bucket/pageId and enhanced response
     try:
         body_any: Any = await request.json()
@@ -427,7 +427,7 @@ async def store_raw(request: Request):
 
 
 @app.post("/api/store")
-async def store(request: Request):
+async def store(request: Request, user: Dict[str, str] = Depends(require_user)):
     try:
         body: Any = await request.json()
     except Exception:
@@ -558,7 +558,7 @@ async def get_page(pageId: str):
 
 
 @app.post("/api/rebuild/{bookSlug}/annotations/{pageId}")
-async def rebuild_annotation_page(bookSlug: str, pageId: str):
+async def rebuild_annotation_page(bookSlug: str, pageId: str, user: Dict[str, str] = Depends(require_user)):
     started = time.time()
 
     # Validate bookSlug
@@ -695,7 +695,7 @@ async def get_editor_page(docId: str, pageNum: str):
 
 
 @app.post("/api/editor/{docId}/{pageNum}")
-async def post_editor_annotation(docId: str, pageNum: str, request: Request):
+async def post_editor_annotation(docId: str, pageNum: str, request: Request, user: Dict[str, str] = Depends(require_user)):
     """POST new annotation"""
     logger.info("POST editor START docId=%s pageNum=%s", docId, pageNum)
     
@@ -755,7 +755,7 @@ async def post_editor_annotation(docId: str, pageNum: str, request: Request):
 
 
 @app.put("/api/editor/{docId}/{pageNum}/{annId}")
-async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: Request):
+async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: Request, user: Dict[str, str] = Depends(require_user)):
     """PUT update annotation"""
     logger.info("PUT editor START docId=%s pageNum=%s annId=%s", docId, pageNum, annId)
     

@@ -21,12 +21,6 @@ import config  # noqa: E402  (imported after conftest sets env vars)
 import main  # noqa: E402  (imported after conftest sets env vars)
 
 
-@pytest.fixture(scope="module")
-def client():
-    with TestClient(main.app) as c:
-        yield c
-
-
 @pytest.fixture(autouse=True, scope="module")
 def _editor_tokens():
     original = dict(config.EDITOR_TOKENS)
@@ -35,6 +29,18 @@ def _editor_tokens():
     yield
     config.EDITOR_TOKENS.clear()
     config.EDITOR_TOKENS.update(original)
+
+
+@pytest.fixture(scope="module")
+def client(_editor_tokens):
+    # Write endpoints require an authenticated session (stage 0.3); log in
+    # once so the shared client can exercise them without repeating this in
+    # every test. Tests that specifically check anonymous/401 behavior use
+    # their own throwaway TestClient instead of this fixture.
+    with TestClient(main.app) as c:
+        login = c.post("/api/auth/login", json={"token": "dev-token-123"})
+        assert login.status_code == 200
+        yield c
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +250,74 @@ def test_rebuild_invalid_page_id(client):
 def test_rebuild_missing_markdown(client):
     r = client.post("/api/rebuild/nonexistentbook/annotations/page_999")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Write endpoints require an authenticated session (stage 0.3)
+# ---------------------------------------------------------------------------
+
+def test_anonymous_post_editor_annotation_is_rejected():
+    anon = TestClient(main.app)
+    r = anon.post(
+        "/api/editor/medinsky11klass/30",
+        json={"annType": "comment", "text": "x", "coords": [1, 2]},
+    )
+    assert r.status_code == 401
+
+
+def test_anonymous_put_editor_annotation_is_rejected():
+    anon = TestClient(main.app)
+    r = anon.put(
+        "/api/editor/medinsky11klass/30/some-id",
+        json={"annType": "comment", "text": "x", "coords": [1, 2]},
+    )
+    assert r.status_code == 401
+
+
+def test_authenticated_post_editor_annotation_succeeds():
+    c = TestClient(main.app)
+    c.post("/api/auth/login", json={"token": "dev-token-123"})
+    r = c.post(
+        "/api/editor/medinsky11klass/31",
+        json={"annType": "comment", "text": "x", "coords": [1, 2]},
+    )
+    assert r.status_code == 200
+
+
+def test_anonymous_rebuild_is_rejected():
+    anon = TestClient(main.app)
+    r = anon.post("/api/rebuild/medinsky11klass/annotations/page_007")
+    assert r.status_code == 401
+
+
+def test_anonymous_store_is_rejected():
+    anon = TestClient(main.app)
+    r = anon.post("/api/store", json={"foo": 1})
+    assert r.status_code == 401
+
+
+def test_anonymous_store_raw_is_rejected():
+    anon = TestClient(main.app)
+    r = anon.post("/api/store-raw", json={"foo": 1})
+    assert r.status_code == 401
+
+
+def test_anonymous_logs_page_is_rejected():
+    anon = TestClient(main.app)
+    assert anon.get("/logs").status_code == 401
+    assert anon.get("/api/logs").status_code == 401
+
+
+def test_get_editor_page_remains_public():
+    anon = TestClient(main.app)
+    r = anon.get("/api/editor/medinsky11klass/32")
+    assert r.status_code == 200
+
+
+def test_get_legacy_pages_remains_public():
+    anon = TestClient(main.app)
+    r = anon.get("/api/pages/medinsky11klass_page_032")
+    assert r.status_code == 200
 
 
 # ---------------------------------------------------------------------------
