@@ -409,3 +409,52 @@ def test_expired_session_is_rejected():
     r = c.get("/api/auth/me")
     assert r.status_code == 401
     assert session_id not in main._session_store
+
+
+# ---------------------------------------------------------------------------
+# CORS (stage 0.5)
+# ---------------------------------------------------------------------------
+
+def test_cors_settings_disables_credentials_for_wildcard():
+    origins, allow_credentials = config.cors_settings(["*"])
+    assert origins == ["*"]
+    assert allow_credentials is False
+
+
+def test_cors_settings_enables_credentials_for_explicit_origins():
+    origins, allow_credentials = config.cors_settings(["https://medinsky.net"])
+    assert origins == ["https://medinsky.net"]
+    assert allow_credentials is True
+
+
+def test_cors_preflight_reflects_explicit_origin():
+    # main.app is built once with CORS_ALLOW_ORIGINS="*" (set by conftest), so
+    # exercise the same middleware setup with an explicit origin directly
+    # instead of mutating the shared app.
+    from fastapi import FastAPI
+    from fastapi.middleware.cors import CORSMiddleware
+
+    origins, allow_credentials = config.cors_settings(["https://medinsky.net"])
+    app = FastAPI()
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=allow_credentials,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "X-CSRF-Token"],
+    )
+
+    @app.get("/probe")
+    async def probe():
+        return {"ok": True}
+
+    with TestClient(app) as c:
+        r = c.options(
+            "/probe",
+            headers={
+                "Origin": "https://medinsky.net",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert r.headers.get("access-control-allow-origin") == "https://medinsky.net"
+        assert r.headers.get("access-control-allow-credentials") == "true"
