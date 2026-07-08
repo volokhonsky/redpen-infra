@@ -16,8 +16,10 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 # Copy application code
 COPY . /app/
 
-# Create logs directory with proper permissions BEFORE user switch
-RUN mkdir -p /app/logs && chown app:app /app/logs
+# Create logs/db directories with proper permissions BEFORE user switch.
+# /var/redpen-db is where the DB_PATH SQLite file lives (see db.py); a fresh
+# named volume inherits the mountpoint's owner, so this must happen here.
+RUN mkdir -p /app/logs /var/redpen-db && chown app:app /app/logs /var/redpen-db
 
 USER app
 EXPOSE 8080

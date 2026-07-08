@@ -4,6 +4,7 @@ volumes:
   caddy_data:
   caddy_config:
   redpen_public:
+  redpen_db:
 
 networks:
   redpen:
@@ -30,9 +31,14 @@ services:
       - STORAGE_DIR=/var/redpen-data
       - LOG_LEVEL=${LOG_LEVEL}
       - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS}
+      - DB_PATH=/var/redpen-db/redpen.db
+      - EDITOR_TOKENS=${EDITOR_TOKENS}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - ADMIN_EMAILS=${ADMIN_EMAILS}
     volumes:
       - ./redpen-publish:/var/redpen-data:rw
       - ./redpen-content:/app/redpen-content:rw
+      - redpen_db:/var/redpen-db
     networks:
       - redpen
     restart: unless-stopped
