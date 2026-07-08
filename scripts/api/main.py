@@ -193,6 +193,27 @@ async def require_csrf(request: Request, user: Dict[str, str] = Depends(require_
     return user
 
 
+async def require_editor(user: Dict[str, Any] = Depends(require_csrf)) -> Dict[str, Any]:
+    """FastAPI dependency: authenticated + CSRF-checked + editor/admin role."""
+    if user.get("role") not in ("editor", "admin"):
+        raise HTTPException(status_code=403, detail="editor role required")
+    return user
+
+
+async def require_admin(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
+    """FastAPI dependency: authenticated + admin role (no CSRF; GET-only usage)."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="admin role required")
+    return user
+
+
+async def require_admin_csrf(user: Dict[str, Any] = Depends(require_csrf)) -> Dict[str, Any]:
+    """FastAPI dependency: authenticated + CSRF-checked + admin role."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="admin role required")
+    return user
+
+
 def _check_optimistic_lock(body: Dict[str, Any], page: Dict[str, Any], docId: str, pageNum: int) -> Optional[Response]:
     """
     Compare the client's clientPageSha against the page's current
@@ -246,7 +267,7 @@ def _parse_annotation_body(body: Dict[str, Any]) -> Dict[str, Any]:
 # ===== LOG VIEWER ENDPOINTS =====
 
 @app.get("/logs")
-async def logs_page(request: Request, user: Dict[str, str] = Depends(require_user)):
+async def logs_page(request: Request, user: Dict[str, str] = Depends(require_admin)):
     """Serve logs viewer page"""
     try:
         log_file = LOG_FILE
@@ -271,7 +292,7 @@ async def logs_page(request: Request, user: Dict[str, str] = Depends(require_use
 
 
 @app.get("/api/logs")
-async def get_logs_json(lines: int = 100, user: Dict[str, str] = Depends(require_user)):
+async def get_logs_json(lines: int = 100, user: Dict[str, str] = Depends(require_admin)):
     """Return logs as JSON"""
     try:
         log_file = LOG_FILE
@@ -407,6 +428,41 @@ async def auth_google(request: Request, response: Response):
     }
 
 
+# ===== ADMIN: EDITOR ALLOWLIST =====
+
+@app.get("/api/admin/allowlist")
+async def get_allowlist(user: Dict[str, Any] = Depends(require_admin)):
+    return {"allowlist": db.list_allowlist()}
+
+
+@app.post("/api/admin/allowlist")
+async def upsert_allowlist_entry(request: Request, user: Dict[str, Any] = Depends(require_admin_csrf)):
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+
+    email = body.get("email") if isinstance(body, dict) else None
+    role = body.get("role") if isinstance(body, dict) else None
+    if not isinstance(email, str) or not email.strip():
+        raise HTTPException(status_code=400, detail="email is required")
+    if role not in ("editor", "admin"):
+        raise HTTPException(status_code=400, detail="role must be 'editor' or 'admin'")
+
+    db.upsert_allowlist(email.strip(), role, user.get("email"))
+    logger.info("admin: allowlist upsert email=%s role=%s by=%s", email, role, user.get("email"))
+    return {"allowlist": db.list_allowlist()}
+
+
+@app.delete("/api/admin/allowlist/{email}")
+async def delete_allowlist_entry(email: str, user: Dict[str, Any] = Depends(require_admin_csrf)):
+    removed = db.delete_allowlist(email)
+    if not removed:
+        raise HTTPException(status_code=404, detail="not found")
+    logger.info("admin: allowlist delete email=%s by=%s", email, user.get("email"))
+    return {"allowlist": db.list_allowlist()}
+
+
 @app.get("/api/hello")
 async def hello():
     # Minimal Hello endpoint for local smoke tests
@@ -416,7 +472,7 @@ async def hello():
 
 
 @app.post("/api/store-raw")
-async def store_raw(request: Request, user: Dict[str, str] = Depends(require_csrf)):
+async def store_raw(request: Request, user: Dict[str, str] = Depends(require_editor)):
     # New endpoint that supports optional bucket/pageId and enhanced response
     try:
         body_any: Any = await request.json()
@@ -488,7 +544,7 @@ async def store_raw(request: Request, user: Dict[str, str] = Depends(require_csr
 
 
 @app.post("/api/store")
-async def store(request: Request, user: Dict[str, str] = Depends(require_csrf)):
+async def store(request: Request, user: Dict[str, str] = Depends(require_editor)):
     try:
         body: Any = await request.json()
     except Exception:
@@ -619,7 +675,7 @@ async def get_page(pageId: str):
 
 
 @app.post("/api/rebuild/{bookSlug}/annotations/{pageId}")
-async def rebuild_annotation_page(bookSlug: str, pageId: str, user: Dict[str, str] = Depends(require_csrf)):
+async def rebuild_annotation_page(bookSlug: str, pageId: str, user: Dict[str, str] = Depends(require_editor)):
     started = time.time()
 
     # Validate bookSlug
@@ -756,7 +812,7 @@ async def get_editor_page(docId: str, pageNum: str):
 
 
 @app.post("/api/editor/{docId}/{pageNum}")
-async def post_editor_annotation(docId: str, pageNum: str, request: Request, user: Dict[str, str] = Depends(require_csrf)):
+async def post_editor_annotation(docId: str, pageNum: str, request: Request, user: Dict[str, str] = Depends(require_editor)):
     """POST new annotation"""
     logger.info("POST editor START docId=%s pageNum=%s", docId, pageNum)
     
@@ -820,7 +876,7 @@ async def post_editor_annotation(docId: str, pageNum: str, request: Request, use
 
 
 @app.put("/api/editor/{docId}/{pageNum}/{annId}")
-async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: Request, user: Dict[str, str] = Depends(require_csrf)):
+async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: Request, user: Dict[str, str] = Depends(require_editor)):
     """PUT update annotation"""
     logger.info("PUT editor START docId=%s pageNum=%s annId=%s", docId, pageNum, annId)
     
