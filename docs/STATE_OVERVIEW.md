@@ -21,12 +21,12 @@
     - В режиме создания (new) смена координат по клику разрешена без подтверждения.
   - «Показать» и «Отправить»:
     - «Показать» — локально применяет изменения: создаёт/обновляет маркер, поп‑ап, поддерживает hover, обновляет правый блок для general, синхронизирует baseline (форма становится «чистой»).
-    - «Отправить» — заглушка для будущего сервера: в текущей реализации предусмотрены клиентские заглушки/моки; при реальном сервере будет POST/PUT к API, обработка 401/409, обновление serverPageSha.
+    - «Отправить» — реальный POST/PUT к `/api/editor/{docId}/{pageNum}[/{annId}]` (с сессией + CSRF-токеном); обрабатывает 401 (показывает вход), 403 с ролью viewer («недостаточно прав»), 403 CSRF (тихий ретрай с новым токеном), 409 (конфликт версий, предлагает перечитать страницу).
 
-- Бэкенд API (шаг 1/5 готов, в Docker):
-  - Лёгкий HTTP‑сервис на FastAPI/Uvicorn, принимает JSON и складывает в файлы (`/data/inbox/YYYYMMDD/uuid.json`), есть health‑check.
-  - Создаётся экономичный Docker‑образ для выката на Vultr.
-  - В планах (шаг 2/5): эндпоинты страниц/аннотаций (GET/POST/PUT), `serverPageSha`; далее — аутентификация, CSRF, optimistic locking.
+- Бэкенд API (этапы 0 и 1 из `docs/editor-improvement-plan.md` выполнены, в Docker):
+  - FastAPI/Uvicorn; инбокс (`/api/store*`), редактор аннотаций (`/api/editor/...`, файлы `<docId>/annotations/page_NNN.json` в `STORAGE_DIR`), пересборка из Markdown (`/api/rebuild/...`).
+  - Аутентификация и роли — см. раздел «Аутентификация и роли» ниже.
+  - В планах (этап 2): аннотации в БД как источник правды + публикация JSON-снапшотов сразу в `redpen_public` (см. план).
 
 ## Где что лежит (ключевые файлы и их роли)
 
@@ -96,10 +96,41 @@
 - Валидация для кнопок: content обязателен; coords обязательны для `main`/`comment` и запрещены для `general`.
 - «Показать» обновляет и изначально загруженные комментарии (их кружки/поп‑апы) — единая точка upsert.
 
+## Аутентификация и роли
+
+- Вход: личный токен (`POST /api/auth/login`, dev-fallback через `EDITOR_TOKENS`,
+  роль всегда `editor`) или Google Sign-In (`POST /api/auth/google`, GIS
+  ID-token, верификация `google-auth`, `audience=GOOGLE_CLIENT_ID`).
+- Пользователи и сессии — в SQLite (`db.py`, `DB_PATH`, том `redpen_db`), не
+  в памяти: переживают рестарт контейнера. `POST /api/auth/logout` удаляет
+  сессию и cookie; сессии истекают через 30 дней.
+- Роли: `viewer` (по умолчанию после входа через Google) `< editor < admin`.
+  `admin` — email в `ADMIN_EMAILS`; `editor` — email в таблице
+  `editor_allowlist` (управляется через `GET/POST /api/admin/allowlist`,
+  `DELETE /api/admin/allowlist/{email}`, только для `admin`); роль
+  пересчитывается при каждом входе. Токен-вход — всегда `editor`.
+- CSRF: `GET /api/auth/csrf` (требует сессию) выдаёт токен, привязанный к
+  записи сессии в БД; все write-эндпоинты сверяют заголовок `X-CSRF-Token`
+  с ним (кроме `login`, для которого сессии ещё не существует).
+- Права на эндпоинты: `require_user` (есть сессия) → `require_editor`
+  (+ CSRF, роль editor/admin) для записи аннотаций/inbox/rebuild;
+  `require_admin` для `/logs`, `/api/logs`, allowlist-эндпоинтов.
+- Фронтенд: кнопка Google (`redpen-editor-bootstrap.js`, GIS-скрипт
+  подключается динамически только в editor-режиме) + опциональный
+  токен-фоллбэк за флагом `window.REDPEN_DEV_TOKEN_LOGIN`; шапка панели
+  редактора (`redpen-editor-panel.js`, `#redpen-auth-status`) показывает
+  аватар/имя/роль и кнопку «Выйти».
+- Подробности и порядок реализации — `docs/editor-improvement-plan.md`,
+  `docs/agent-instructions-stage-0-1.md`.
+
 ## Связанные файлы конфигурации/оркестрации
-- `docker-compose.yml` — сервисы `frontend`, `api`, `caddy`, `content-sync`; тома `content_data` (статические артефакты) и `redpen_data` (инбокс API); переменные окружения для CORS/доменов.
+- `docker-compose.yml` — сервисы `frontend`, `api`, `caddy`, `content-sync`; тома
+  `redpen_public` (статика сайта), `redpen_data`/`redpen-publish` (инбокс + аннотации
+  API) и `redpen_db` (SQLite users/sessions/allowlist); переменные окружения для
+  CORS/доменов и аутентификации (`GOOGLE_CLIENT_ID`, `ADMIN_EMAILS`, `EDITOR_TOKENS`).
 - `caddy/` — конфигурация реверс‑прокси (внешний каталог, путь проброшен в контейнер `caddy`).
 
 ## Примечания по состоянию интеграции
-- Режим «Отправить» в редакторе сейчас работает в «мок»‑режиме, готов к подключению к API шагов 2–5: аутентификация, CSRF, эндпоинты страниц/аннотаций, optimistic locking.
+- Режим «Отправить» в редакторе ходит в реальный API (не мок): аутентификация,
+  CSRF, роли и optimistic locking (409) реализованы — см. «Аутентификация и роли».
 - Все функции просмотра не зависят от редактора: без `?editor=1` редакторский код не активен.
