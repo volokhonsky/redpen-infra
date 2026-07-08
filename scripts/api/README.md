@@ -36,13 +36,15 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 
 ## Эндпоинты
 
-> Эндпоинты, помеченные 🔒, требуют аутентифицированную сессию (cookie
-> `redpen_session`) — иначе `401`. Читающие эндпоинты остаются публичными.
+> 🔒 = требует сессию с ролью `editor`/`admin` + заголовок `X-CSRF-Token`
+> (иначе `401`/`403`). ⛔ = требует роль `admin` (⛔🔒 дополнительно требует
+> CSRF). Читающие эндпоинты остаются публичными. Роли: `viewer` (по умолчанию
+> после входа через Google) `< editor < admin` — см. раздел «Роли» ниже.
 
 Служебные:
 - `GET /api/health` → `{"status":"ok"}`
 - `GET /api/hello` → `{message, version, now}` (smoke-тест)
-- 🔒 `GET /logs` → HTML-просмотр лога; 🔒 `GET /api/logs?lines=N` → JSON
+- ⛔ `GET /logs` → HTML-просмотр лога; ⛔ `GET /api/logs?lines=N` → JSON
 
 Приём данных (inbox):
 - 🔒 `POST /api/store` — сохраняет JSON-объект в `${STORAGE_DIR}/inbox/YYYYMMDD/<uuid>.json`.
@@ -74,6 +76,22 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
   `redpen-content/{bookSlug}/annotations/{pageId}.md` →
   `redpen-publish/{bookSlug}/annotations/{pageId}.json`. `bookSlug`:
   `[a-z0-9_-]+`; `pageId`: `page_NNN` (три цифры). 404, если Markdown нет.
+
+Администрирование (allowlist редакторов):
+- ⛔ `GET /api/admin/allowlist` → `{"allowlist": [{email, role, addedBy, addedAt}, …]}`
+- ⛔🔒 `POST /api/admin/allowlist` `{email, role: "editor"|"admin"}` → upsert,
+  возвращает обновлённый список
+- ⛔🔒 `DELETE /api/admin/allowlist/{email}` → удаляет запись (404, если не было)
+
+### Роли
+
+Вход через Google доступен кому угодно, но роль определяется на сервере
+(`resolve_role`, пересчитывается при каждом входе):
+- `admin` — email в `ADMIN_EMAILS`;
+- `editor` — email в таблице `editor_allowlist` (роль там же может быть `admin`);
+- `viewer` — все остальные (может читать, не может писать).
+
+Токен-вход (`EDITOR_TOKENS`) — dev-fallback, роль всегда `editor`.
 
 Аутентификация (пользователи и сессии — в SQLite, `DB_PATH`):
 - `POST /api/auth/login` `{token}` — dev-fallback, токены из `EDITOR_TOKENS`,
