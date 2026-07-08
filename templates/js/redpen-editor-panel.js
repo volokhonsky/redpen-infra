@@ -9,6 +9,7 @@
 
     // Panel markup
     editor.innerHTML = ''+
+      '<div id="redpen-auth-status" style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:13px;"></div>'+
       '<h2>Редактор аннотаций</h2>'+
       '<div class="redpen-editor-row">'+
         '<label for="redpen-type" style="display:block;margin-bottom:4px;">Тип аннотации</label>'+
@@ -102,6 +103,44 @@
         }
       });
     }
+
+    setAuthState(null);
+  }
+
+  var ROLE_LABELS = { viewer: 'читатель', editor: 'редактор', admin: 'админ' };
+
+  // user: {name, email, picture, role} | null. Renders the "who am I" strip
+  // above the panel title; bootstrap.js calls this after login/logout/apiMe.
+  function setAuthState(user){
+    var host = document.getElementById('redpen-auth-status');
+    if (!host) return;
+
+    if (!user) {
+      host.innerHTML = '<span>Вы не вошли</span>'+
+        '<button id="redpen-auth-login-btn" type="button">Войти</button>';
+      var loginBtn = document.getElementById('redpen-auth-login-btn');
+      if (loginBtn) loginBtn.onclick = function(){
+        if (window.RedPenEditor && typeof window.RedPenEditor.onLoginClick === 'function') {
+          window.RedPenEditor.onLoginClick();
+        }
+      };
+      return;
+    }
+
+    var roleLabel = ROLE_LABELS[user.role] || user.role || '';
+    var nameHtml = (user.name || user.username || user.email || '').replace(/</g, '&lt;');
+    var avatarHtml = user.picture
+      ? '<img src="'+user.picture+'" width="24" height="24" style="border-radius:50%;" alt="" />'
+      : '';
+    host.innerHTML = avatarHtml+
+      '<span>'+nameHtml+' ('+roleLabel+')</span>'+
+      '<button id="redpen-auth-logout-btn" type="button">Выйти</button>';
+    var logoutBtn = document.getElementById('redpen-auth-logout-btn');
+    if (logoutBtn) logoutBtn.onclick = function(){
+      if (window.RedPenEditor && typeof window.RedPenEditor.onLogoutClick === 'function') {
+        window.RedPenEditor.onLogoutClick();
+      }
+    };
   }
 
   function toggleCoordVisibilityByType(annType){
@@ -236,6 +275,7 @@
     showErrors: showErrors,
     setPreviewEnabled: setPreviewEnabled,
     setSubmitEnabled: setSubmitEnabled,
-    revalidate: revalidate
+    revalidate: revalidate,
+    setAuthState: setAuthState
   };
 })();
