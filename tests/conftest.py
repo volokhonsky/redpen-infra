@@ -23,5 +23,6 @@ sys.path.insert(0, os.path.join(ROOT, "scripts", "api"))
 _TMP_ROOT = tempfile.mkdtemp(prefix="redpen_pytest_")
 os.environ.setdefault("STORAGE_DIR", os.path.join(_TMP_ROOT, "data"))
 os.environ.setdefault("LOG_DIR", os.path.join(_TMP_ROOT, "logs"))
+os.environ.setdefault("DB_PATH", os.path.join(_TMP_ROOT, "db", "redpen.db"))
 # Keep CORS permissive for tests unless the environment says otherwise.
 os.environ.setdefault("CORS_ALLOW_ORIGINS", "*")

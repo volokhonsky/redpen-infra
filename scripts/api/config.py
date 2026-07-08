@@ -72,3 +72,14 @@ CORS_ALLOW_ORIGINS = _parse_cors_origins(CORS_ALLOW_ORIGINS_RAW)
 # Editor access tokens: "token1:username1,token2:username2" -> {token: username}.
 # Empty/missing -> {} (token login disabled).
 EDITOR_TOKENS: Dict[str, str] = _parse_editor_tokens(os.getenv("EDITOR_TOKENS", ""))
+
+# SQLite database for users/sessions/allowlist (stage 1). Deliberately NOT
+# under STORAGE_DIR: that path is the mounted redpen-publish working copy, and
+# the DB file must not end up inside the publication git repo.
+DEFAULT_DB_PATH = "/var/redpen-db/redpen.db"
+DB_PATH: str = os.getenv("DB_PATH", DEFAULT_DB_PATH)
+
+# Emails granted the admin role unconditionally (comma-separated).
+ADMIN_EMAILS: List[str] = [
+    e.strip() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()
+]

@@ -3,3 +3,5 @@ uvicorn[standard]==0.30.6
 pydantic~=2.8
 python-dotenv~=1.0
 jinja2~=3.0
+google-auth~=2.30
+requests~=2.32
