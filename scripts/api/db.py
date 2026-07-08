@@ -5,6 +5,7 @@ No ORM: a single module-level connection (check_same_thread=False, guarded by
 a lock) is enough since the API runs as a single uvicorn worker.
 """
 
+import json
 import os
 import secrets
 import sqlite3
@@ -63,6 +64,32 @@ def init_db() -> None:
               role TEXT NOT NULL DEFAULT 'editor',
               added_by TEXT,
               added_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS annotations (
+              rowid_pk INTEGER PRIMARY KEY AUTOINCREMENT,
+              ann_id TEXT NOT NULL,
+              doc_id TEXT NOT NULL,
+              page_num TEXT NOT NULL,
+              ann_type TEXT NOT NULL,
+              text TEXT NOT NULL,
+              coord_x INTEGER,
+              coord_y INTEGER,
+              status TEXT NOT NULL DEFAULT 'published',
+              author_id INTEGER REFERENCES users(id),
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              UNIQUE(doc_id, page_num, ann_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_annotations_page ON annotations(doc_id, page_num);
+            CREATE TABLE IF NOT EXISTS annotation_history (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              doc_id TEXT NOT NULL,
+              page_num TEXT NOT NULL,
+              ann_id TEXT NOT NULL,
+              action TEXT NOT NULL,
+              snapshot TEXT NOT NULL,
+              author_id INTEGER,
+              created_at TEXT NOT NULL
             );
             """
         )
@@ -256,3 +283,174 @@ def delete_allowlist(email: str) -> bool:
         cur = conn.execute("DELETE FROM editor_allowlist WHERE email = ?", (email,))
         conn.commit()
         return cur.rowcount > 0
+
+
+# ===== Annotations (stage 2: SQLite is the canonical store) =====
+
+
+def _annotation_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "rowidPk": row["rowid_pk"],
+        "annId": row["ann_id"],
+        "docId": row["doc_id"],
+        "pageNum": row["page_num"],
+        "annType": row["ann_type"],
+        "text": row["text"],
+        "coordX": row["coord_x"],
+        "coordY": row["coord_y"],
+        "status": row["status"],
+        "authorId": row["author_id"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def _insert_history(
+    conn: sqlite3.Connection,
+    doc_id: str,
+    page_num: str,
+    ann_id: str,
+    action: str,
+    snapshot: Dict[str, Any],
+    author_id: Optional[int],
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO annotation_history (doc_id, page_num, ann_id, action, snapshot, author_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (doc_id, page_num, ann_id, action, json.dumps(snapshot, ensure_ascii=False), author_id, _now_iso()),
+    )
+
+
+def add_history(
+    doc_id: str,
+    page_num: str,
+    ann_id: str,
+    action: str,
+    snapshot: Dict[str, Any],
+    author_id: Optional[int] = None,
+) -> None:
+    conn = get_connection()
+    with _lock:
+        _insert_history(conn, doc_id, page_num, ann_id, action, snapshot, author_id)
+        conn.commit()
+
+
+def list_page_annotations(doc_id: str, page_num: str, include_deleted: bool = False) -> List[Dict[str, Any]]:
+    conn = get_connection()
+    with _lock:
+        if include_deleted:
+            rows = conn.execute(
+                "SELECT * FROM annotations WHERE doc_id = ? AND page_num = ? ORDER BY rowid_pk",
+                (doc_id, page_num),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM annotations WHERE doc_id = ? AND page_num = ? AND status = 'published' ORDER BY rowid_pk",
+                (doc_id, page_num),
+            ).fetchall()
+    return [_annotation_row_to_dict(row) for row in rows]
+
+
+def get_annotation(doc_id: str, page_num: str, ann_id: str) -> Optional[Dict[str, Any]]:
+    conn = get_connection()
+    with _lock:
+        row = conn.execute(
+            "SELECT * FROM annotations WHERE doc_id = ? AND page_num = ? AND ann_id = ?",
+            (doc_id, page_num, ann_id),
+        ).fetchone()
+    return _annotation_row_to_dict(row) if row else None
+
+
+def upsert_annotation_db(
+    doc_id: str,
+    page_num: str,
+    ann_id: str,
+    ann_type: str,
+    text: str,
+    coord_x: Optional[int] = None,
+    coord_y: Optional[int] = None,
+    status: str = "published",
+    author_id: Optional[int] = None,
+    action: str = "update",
+) -> Dict[str, Any]:
+    """Insert or update an annotation by (doc_id, page_num, ann_id) and record
+    the resulting state in annotation_history, in the same transaction."""
+    conn = get_connection()
+    now = _now_iso()
+    with _lock:
+        conn.execute(
+            """
+            INSERT INTO annotations
+              (ann_id, doc_id, page_num, ann_type, text, coord_x, coord_y, status, author_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(doc_id, page_num, ann_id) DO UPDATE SET
+              ann_type = excluded.ann_type,
+              text = excluded.text,
+              coord_x = excluded.coord_x,
+              coord_y = excluded.coord_y,
+              status = excluded.status,
+              author_id = excluded.author_id,
+              updated_at = excluded.updated_at
+            """,
+            (ann_id, doc_id, page_num, ann_type, text, coord_x, coord_y, status, author_id, now, now),
+        )
+        row = conn.execute(
+            "SELECT * FROM annotations WHERE doc_id = ? AND page_num = ? AND ann_id = ?",
+            (doc_id, page_num, ann_id),
+        ).fetchone()
+        ann = _annotation_row_to_dict(row)
+        _insert_history(conn, doc_id, page_num, ann_id, action, ann, author_id)
+        conn.commit()
+    return ann
+
+
+def soft_delete_annotation(doc_id: str, page_num: str, ann_id: str, author_id: Optional[int] = None) -> bool:
+    """Mark a published annotation as deleted and record history. Returns False
+    if the annotation doesn't exist or is already deleted."""
+    conn = get_connection()
+    now = _now_iso()
+    with _lock:
+        row = conn.execute(
+            "SELECT * FROM annotations WHERE doc_id = ? AND page_num = ? AND ann_id = ?",
+            (doc_id, page_num, ann_id),
+        ).fetchone()
+        if row is None or row["status"] == "deleted":
+            return False
+        conn.execute(
+            "UPDATE annotations SET status = 'deleted', updated_at = ? WHERE doc_id = ? AND page_num = ? AND ann_id = ?",
+            (now, doc_id, page_num, ann_id),
+        )
+        row = conn.execute(
+            "SELECT * FROM annotations WHERE doc_id = ? AND page_num = ? AND ann_id = ?",
+            (doc_id, page_num, ann_id),
+        ).fetchone()
+        ann = _annotation_row_to_dict(row)
+        _insert_history(conn, doc_id, page_num, ann_id, "delete", ann, author_id)
+        conn.commit()
+    return True
+
+
+def list_pages(doc_id: Optional[str] = None) -> List[Tuple[str, str]]:
+    """Distinct (doc_id, page_num) pairs that have at least one annotation row
+    (any status)."""
+    conn = get_connection()
+    with _lock:
+        if doc_id:
+            rows = conn.execute(
+                "SELECT DISTINCT doc_id, page_num FROM annotations WHERE doc_id = ? ORDER BY doc_id, page_num",
+                (doc_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT DISTINCT doc_id, page_num FROM annotations ORDER BY doc_id, page_num"
+            ).fetchall()
+    return [(row["doc_id"], row["page_num"]) for row in rows]
+
+
+def list_doc_ids() -> List[str]:
+    conn = get_connection()
+    with _lock:
+        rows = conn.execute("SELECT DISTINCT doc_id FROM annotations ORDER BY doc_id").fetchall()
+    return [row["doc_id"] for row in rows]
