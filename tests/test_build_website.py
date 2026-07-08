@@ -1,159 +1,119 @@
-#!/usr/bin/env python3
 """
-Test script for the build_website.py script with a target directory.
+Tests for ``scripts/build_website.py``.
 
-This script tests the build_website.py script by running it with a temporary
-target directory and verifying that the website is built correctly.
+The build script is hard-wired to ``<project_root>/redpen-content`` and
+``<project_root>/templates``. To keep the test fast and independent of the real
+(400-page) content repo, we point ``build_website.project_root`` at a temporary
+directory containing a minimal synthetic book, and symlink the real templates.
+
+These tests assert the CURRENT publish layout, where each document is published
+into ``<target>/<doc>/{annotations,images,text}`` (not flat at the target root,
+which is what the previous version of this test incorrectly expected).
 """
 
-import os
-import sys
-import tempfile
-import shutil
 import importlib.util
-import argparse
+import os
 
-# Add the project root to the Python path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.append(project_root)
+import pytest
 
-def import_module_from_file(module_name, file_path):
-    """Import a module from a file path"""
-    spec = importlib.util.spec_from_file_location(module_name, file_path)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DOC = "medinsky11klass"
+
+# A tiny valid PNG (1x1) so PIL can open/resize it for cover generation.
+_PNG_1x1 = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
+    b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+_SAMPLE_MD = """~~~meta
+type: main
+id: ann-1
+target: page_007_line003
+~~~
+
+Main annotation.
+
+~~~meta
+type: general
+~~~
+
+General comment.
+"""
+
+
+def _load_build_website():
+    path = os.path.join(ROOT, "scripts", "build_website.py")
+    spec = importlib.util.spec_from_file_location("build_website", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
-def test_build_website():
-    """Test the build_website.py script with a target directory"""
-    print("\n=== Testing build_website.py with a target directory ===")
 
-    # Create a temporary directory for the build output
-    temp_dir = tempfile.mkdtemp(prefix="redpen_test_build_")
-    print(f"Created temporary directory: {temp_dir}")
+@pytest.fixture()
+def synthetic_project(tmp_path):
+    """Create a temp project root with one minimal book and real templates."""
+    content = tmp_path / "redpen-content" / DOC
+    (content / "annotations").mkdir(parents=True)
+    (content / "images").mkdir()
+    (content / "text").mkdir()
 
-    try:
-        # Import the build_website module
-        build_website_path = os.path.join(project_root, 'scripts', 'build_website.py')
-        build_website = import_module_from_file("build_website", build_website_path)
+    (content / "annotations" / "page_007.md").write_text(_SAMPLE_MD, encoding="utf-8")
+    (content / "text" / "page_007.json").write_text("[]", encoding="utf-8")
+    (content / "images" / "page_007.png").write_bytes(_PNG_1x1)
+    (content / "meta.json").write_text('{"title": "Test Book"}', encoding="utf-8")
 
-        # Run the build steps with the temporary directory
-        print(f"Converting annotations to {temp_dir}...")
-        if not build_website.convert_annotations(temp_dir):
-            print("Failed to convert annotations")
-            return False
+    # Reuse the real templates directory (CSS/JS/favicon/document_index.html).
+    os.symlink(os.path.join(ROOT, "templates"), tmp_path / "templates")
 
-        print(f"Publishing website data to {temp_dir}...")
-        if not build_website.publish_website_data(temp_dir):
-            print("Failed to publish website data")
-            return False
+    build = _load_build_website()
+    build.project_root = str(tmp_path)
+    return build, tmp_path
 
-        # Verify that the website was built correctly
-        print("\n=== Verifying build output ===")
 
-        # Check for annotations directory
-        annotations_dir = os.path.join(temp_dir, 'annotations')
-        if not os.path.exists(annotations_dir):
-            print(f"Error: Annotations directory not found: {annotations_dir}")
-            return False
+def test_build_produces_per_document_layout(synthetic_project, tmp_path):
+    build, _ = synthetic_project
+    target = tmp_path / "out"
 
-        # Check for images directory
-        images_dir = os.path.join(temp_dir, 'images')
-        if not os.path.exists(images_dir):
-            print(f"Error: Images directory not found: {images_dir}")
-            return False
+    assert build.convert_annotations(str(target)) is True
+    assert build.publish_website_data(str(target)) is True
+    build.create_index_page(str(target))
 
-        # Check for text directory
-        text_dir = os.path.join(temp_dir, 'text')
-        if not os.path.exists(text_dir):
-            print(f"Error: Text directory not found: {text_dir}")
-            return False
+    doc_dir = target / DOC
+    # Per-document content lives under <target>/<doc>/...
+    assert (doc_dir / "annotations" / "page_007.json").is_file()
+    assert (doc_dir / "images" / "page_007.png").is_file()
+    assert (doc_dir / "text" / "page_007.json").is_file()
+    assert (doc_dir / "index.html").is_file()
+    assert (doc_dir / "metadata.json").is_file()
 
-        # Check for at least one annotation file
-        annotation_files = os.listdir(annotations_dir)
-        if not annotation_files:
-            print(f"Error: No annotation files found in {annotations_dir}")
-            return False
+    # Shared assets are copied to the target root.
+    assert (target / "css").is_dir() and any((target / "css").iterdir())
+    assert (target / "js").is_dir() and any((target / "js").iterdir())
+    assert (target / "favicon.svg").is_file()
+    assert (target / "index.html").is_file()
 
-        print(f"Found {len(annotation_files)} annotation files")
 
-        # Check for at least one image file
-        image_files = os.listdir(images_dir)
-        if not image_files:
-            print(f"Error: No image files found in {images_dir}")
-            return False
+def test_converted_annotation_json_is_valid(synthetic_project, tmp_path):
+    build, _ = synthetic_project
+    target = tmp_path / "out"
+    build.convert_annotations(str(target))
 
-        print(f"Found {len(image_files)} image files")
+    import json
 
-        # Check for at least one text file
-        text_files = os.listdir(text_dir)
-        if not text_files:
-            print(f"Error: No text files found in {text_dir}")
-            return False
+    data = json.loads((target / DOC / "annotations" / "page_007.json").read_text("utf-8"))
+    assert isinstance(data, list) and len(data) == 2
+    assert data[0]["annType"] == "main"
+    assert data[0]["targetBlock"] == "page_007_line003"
+    assert data[1]["annType"] == "general"
 
-        print(f"Found {len(text_files)} text files")
 
-        # Check for CSS directory
-        css_dir = os.path.join(temp_dir, 'css')
-        if not os.path.exists(css_dir):
-            print(f"Error: CSS directory not found: {css_dir}")
-            return False
+def test_index_page_lists_document_title(synthetic_project, tmp_path):
+    build, _ = synthetic_project
+    target = tmp_path / "out"
+    build.publish_website_data(str(target))
+    build.create_index_page(str(target))
 
-        # Check for at least one CSS file
-        css_files = os.listdir(css_dir)
-        if not css_files:
-            print(f"Error: No CSS files found in {css_dir}")
-            return False
-
-        print(f"Found {len(css_files)} CSS files")
-
-        # Check for JS directory
-        js_dir = os.path.join(temp_dir, 'js')
-        if not os.path.exists(js_dir):
-            print(f"Error: JS directory not found: {js_dir}")
-            return False
-
-        # Check for at least one JS file
-        js_files = os.listdir(js_dir)
-        if not js_files:
-            print(f"Error: No JS files found in {js_dir}")
-            return False
-
-        print(f"Found {len(js_files)} JS files")
-
-        # Check for index.html
-        index_html = os.path.join(temp_dir, 'index.html')
-        if not os.path.exists(index_html):
-            print(f"Error: index.html not found: {index_html}")
-            return False
-
-        print("Found index.html")
-
-        # Check for favicon.svg
-        favicon_svg = os.path.join(temp_dir, 'favicon.svg')
-        if not os.path.exists(favicon_svg):
-            print(f"Error: favicon.svg not found: {favicon_svg}")
-            return False
-
-        print("Found favicon.svg")
-
-        print("\n=== Build verification successful ===")
-        return True
-
-    finally:
-        # Clean up the temporary directory
-        print(f"Cleaning up temporary directory: {temp_dir}")
-        shutil.rmtree(temp_dir)
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Test the build_website.py script")
-    args = parser.parse_args()
-
-    success = test_build_website()
-
-    if success:
-        print("\n=== Test completed successfully ===")
-        sys.exit(0)
-    else:
-        print("\n=== Test failed ===")
-        sys.exit(1)
+    index_html = (target / "index.html").read_text("utf-8")
+    assert "Test Book" in index_html          # title from meta.json
+    assert f"{DOC}/index.html" in index_html   # link to the document

@@ -1,4 +1,15 @@
-# Requirements for annotation positioning tests
-playwright==1.35.0
+# Test dependencies for RedPen.
+#
+# Core suite (pytest, runs without a browser): converter, sanitize, storage,
+# API (via FastAPI TestClient), and build-layout tests.
 pytest==7.3.1
+fastapi==0.115.0
+starlette==0.38.6
+httpx>=0.27
+jinja2~=3.0
+Pillow>=8.0.0
+
+# End-to-end Playwright scripts (optional; require a browser + published site):
+# annotation_position_tests.py, editor_mode_tests.py, simple_test.py.
+playwright==1.35.0
 pytest-playwright==0.3.3
