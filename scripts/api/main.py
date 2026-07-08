@@ -38,11 +38,16 @@ VALID_TOKENS = {
 }
 
 
+# Absolute path of the log file, derived from the configurable log directory.
+LOG_FILE = os.path.join(config.LOG_DIR, "redpen-api.log")
+
+
 def setup_logger() -> logging.Logger:
     logger = logging.getLogger("redpen.api")
     if not logger.handlers:
-        # Ensure logs directory exists
-        logs_dir = "/app/logs"
+        # Ensure logs directory exists (configurable so the service runs and can
+        # be tested outside the container where /app is read-only)
+        logs_dir = config.LOG_DIR
         os.makedirs(logs_dir, exist_ok=True)
         
         # Console handler (stdout)
@@ -52,7 +57,7 @@ def setup_logger() -> logging.Logger:
         logger.addHandler(console_handler)
         
         # File handler (logs/redpen-api.log)
-        file_handler = logging.FileHandler(os.path.join(logs_dir, "redpen-api.log"))
+        file_handler = logging.FileHandler(LOG_FILE)
         file_fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s", "%Y-%m-%dT%H:%M:%S%z")
         file_handler.setFormatter(file_fmt)
         logger.addHandler(file_handler)
@@ -183,7 +188,7 @@ def _parse_annotation_body(body: Dict[str, Any]) -> Dict[str, Any]:
 async def logs_page(request: Request):
     """Serve logs viewer page"""
     try:
-        log_file = "/app/logs/redpen-api.log"
+        log_file = LOG_FILE
         logs_data = []
 
         if os.path.exists(log_file):
@@ -208,7 +213,7 @@ async def logs_page(request: Request):
 async def get_logs_json(lines: int = 100):
     """Return logs as JSON"""
     try:
-        log_file = "/app/logs/redpen-api.log"
+        log_file = LOG_FILE
         logs_data = []
 
         if os.path.exists(log_file):

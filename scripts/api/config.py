@@ -27,8 +27,13 @@ def _parse_cors_origins(value: str) -> Union[List[str], List[str]]:
     return parts or ["*"]
 
 
+# Default directory for application log files. Overridable via LOG_DIR so the
+# service can run (and be tested) outside the container, where /app is absent.
+DEFAULT_LOG_DIR = "/app/logs"
+
 # Public config values
 STORAGE_DIR: str = os.getenv("STORAGE_DIR", DEFAULT_STORAGE_DIR)
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", DEFAULT_LOG_LEVEL).upper()
+LOG_DIR: str = os.getenv("LOG_DIR", DEFAULT_LOG_DIR)
 CORS_ALLOW_ORIGINS_RAW: str = os.getenv("CORS_ALLOW_ORIGINS", DEFAULT_CORS_ENV)
 CORS_ALLOW_ORIGINS = _parse_cors_origins(CORS_ALLOW_ORIGINS_RAW)
