@@ -352,6 +352,28 @@
       } catch(e){ /* noop */ }
     }
 
+    // Lightweight variant of fetchPageFromServer: only learns serverPageSha
+    // so the first save can send a real clientPageSha, without touching the
+    // DOM markers/general comment (those come from the normal page load).
+    async function syncServerPageSha(){
+      var st = window.RedPenEditor.state;
+      if (st.flags && st.flags.mock === true) {
+        st.page.serverPageSha = st.page.serverPageSha || ('mock-sha-'+Date.now().toString(36));
+        return;
+      }
+      var docId = st.page && st.page.docId;
+      var pageNum = st.page && st.page.pageNum;
+      if (!docId || !pageNum) return;
+      try {
+        const res = await fetch(apiBase('/api/editor/'+encodeURIComponent(docId)+'/'+encodeURIComponent(pageNum)), { credentials: 'include' });
+        if (!res.ok) return;
+        const data = await res.json();
+        st.page.serverPageSha = data.serverPageSha;
+      } catch (error) {
+        console.error('[RedPen Editor] Failed to sync serverPageSha:', error);
+      }
+    }
+
     async function saveAnnotationToServer(draft){
       var st = window.RedPenEditor.state;
       
@@ -859,6 +881,7 @@
     };
 
     setTimeout(function(){ try { snapshotDomMarkersToState(); } catch(e){} }, 1000);
+    syncServerPageSha();
   }
 
   window.RedPenEditor = window.RedPenEditor || {};
