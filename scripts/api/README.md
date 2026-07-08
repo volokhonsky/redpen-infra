@@ -67,7 +67,8 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 
 Аутентификация (сессии в памяти; токены — из `EDITOR_TOKENS`):
 - `POST /api/auth/login` `{token}` → `{userId, username}` + cookie `redpen_session`
-- `GET /api/auth/csrf` → `{csrfToken}`
+- `GET /api/auth/csrf` (требует сессию) → `{csrfToken}`, привязанный к сессии;
+  отправляйте его в заголовке `X-CSRF-Token` на все 🔒-эндпоинты, кроме `login`
 - `GET /api/auth/me` → текущий пользователь (401 без валидной сессии)
 - `POST /api/auth/logout` → удаляет сессию, очищает cookie, `{"ok": true}`
 
@@ -82,13 +83,14 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 curl -s http://localhost:8080/api/health
 curl -s http://localhost:8080/api/editor/medinsky11klass/7   # чтение, без сессии
 
-# Запись требует сессию (см. EDITOR_TOKENS):
+# Запись требует сессию (см. EDITOR_TOKENS) + CSRF-токен, привязанный к ней:
 curl -s -c /tmp/redpen.cookies -X POST http://localhost:8080/api/auth/login \
   -H 'Content-Type: application/json' -d '{"token":"<значение из EDITOR_TOKENS>"}'
+CSRF=$(curl -s -b /tmp/redpen.cookies http://localhost:8080/api/auth/csrf | python3 -c 'import sys,json;print(json.load(sys.stdin)["csrfToken"])')
 curl -s -b /tmp/redpen.cookies -X POST http://localhost:8080/api/store \
-  -H 'Content-Type: application/json' -d '{"hello":"world"}'
+  -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d '{"hello":"world"}'
 curl -s -b /tmp/redpen.cookies -X POST http://localhost:8080/api/editor/medinsky11klass/7 \
-  -H 'Content-Type: application/json' \
+  -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" \
   -d '{"annType":"comment","text":"Текст","coords":[100,200]}'
 ```
 

@@ -31,15 +31,22 @@ def _editor_tokens():
     config.EDITOR_TOKENS.update(original)
 
 
+def _login_with_csrf(c: TestClient, token: str = "dev-token-123") -> None:
+    login = c.post("/api/auth/login", json={"token": token})
+    assert login.status_code == 200
+    csrf = c.get("/api/auth/csrf")
+    assert csrf.status_code == 200
+    c.headers.update({"X-CSRF-Token": csrf.json()["csrfToken"]})
+
+
 @pytest.fixture(scope="module")
 def client(_editor_tokens):
-    # Write endpoints require an authenticated session (stage 0.3); log in
-    # once so the shared client can exercise them without repeating this in
-    # every test. Tests that specifically check anonymous/401 behavior use
-    # their own throwaway TestClient instead of this fixture.
+    # Write endpoints require an authenticated session + CSRF header (stage
+    # 0.3/0.4); log in once so the shared client can exercise them without
+    # repeating this in every test. Tests that specifically check
+    # anonymous/401/403 behavior use their own throwaway TestClient instead.
     with TestClient(main.app) as c:
-        login = c.post("/api/auth/login", json={"token": "dev-token-123"})
-        assert login.status_code == 200
+        _login_with_csrf(c)
         yield c
 
 
@@ -253,7 +260,7 @@ def test_rebuild_missing_markdown(client):
 
 
 # ---------------------------------------------------------------------------
-# Write endpoints require an authenticated session (stage 0.3)
+# Write endpoints require an authenticated session (stage 0.3) + CSRF (0.4)
 # ---------------------------------------------------------------------------
 
 def test_anonymous_post_editor_annotation_is_rejected():
@@ -275,13 +282,41 @@ def test_anonymous_put_editor_annotation_is_rejected():
 
 
 def test_authenticated_post_editor_annotation_succeeds():
+    # Full cycle: login -> csrf -> POST -> 200.
     c = TestClient(main.app)
-    c.post("/api/auth/login", json={"token": "dev-token-123"})
+    _login_with_csrf(c)
     r = c.post(
         "/api/editor/medinsky11klass/31",
         json={"annType": "comment", "text": "x", "coords": [1, 2]},
     )
     assert r.status_code == 200
+
+
+def test_session_without_csrf_header_is_rejected():
+    c = TestClient(main.app)
+    c.post("/api/auth/login", json={"token": "dev-token-123"})
+    r = c.post(
+        "/api/editor/medinsky11klass/33",
+        json={"annType": "comment", "text": "x", "coords": [1, 2]},
+    )
+    assert r.status_code == 403
+
+
+def test_session_with_wrong_csrf_header_is_rejected():
+    c = TestClient(main.app)
+    _login_with_csrf(c)
+    c.headers.update({"X-CSRF-Token": "csrf-wrong-value"})
+    r = c.post(
+        "/api/editor/medinsky11klass/34",
+        json={"annType": "comment", "text": "x", "coords": [1, 2]},
+    )
+    assert r.status_code == 403
+
+
+def test_csrf_endpoint_requires_session():
+    anon = TestClient(main.app)
+    r = anon.get("/api/auth/csrf")
+    assert r.status_code == 401
 
 
 def test_anonymous_rebuild_is_rejected():
