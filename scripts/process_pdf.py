@@ -17,13 +17,32 @@ Example:
 
 import os
 import sys
+import glob
+import json
 import argparse
 import tempfile
 import shutil
 from extract_images import extract_images
 from extract_text import extract_text
-from generate_annotations import generate_annotations
 from publish_data import publish_data
+
+
+def generate_annotation_templates(text_dir, annotations_dir):
+    """
+    Create an empty annotation template (``[]``) for every extracted text page.
+
+    The former standalone ``generate_annotations`` module was removed when
+    annotations moved to hand-authored Markdown (see ``annotation_converter.py``
+    and ``build_website.py``). This inline helper keeps ``process_pdf`` working
+    end to end by emitting one empty JSON array per page, ready to be filled in.
+    """
+    os.makedirs(annotations_dir, exist_ok=True)
+    for text_file in sorted(glob.glob(os.path.join(text_dir, "page_*.json"))):
+        name = os.path.basename(text_file)
+        out_path = os.path.join(annotations_dir, name)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump([], f, ensure_ascii=False, indent=2)
+        print(f"[+] Wrote empty annotation template {out_path}")
 
 def process_pdf(pdf_path, zoom=2, output_dir=None, artifacts_repo=None):
     """
@@ -63,7 +82,7 @@ def process_pdf(pdf_path, zoom=2, output_dir=None, artifacts_repo=None):
         
         # Step 3: Generate annotation templates
         print("\n=== Generating annotation templates ===")
-        generate_annotations(text_dir, annotations_dir)
+        generate_annotation_templates(text_dir, annotations_dir)
         
         # Step 4: Publish data to artifacts repository
         if artifacts_repo:
