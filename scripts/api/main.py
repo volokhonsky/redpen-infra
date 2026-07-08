@@ -4,10 +4,10 @@ import sys
 import time
 import secrets
 from uuid import uuid4
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,8 +27,39 @@ except Exception:
 import config
 import storage
 
-# Store for session tokens (in-memory for now)
+# Store for session tokens (in-memory for now; moves to SQLite in stage 1)
 _session_store: Dict[str, Dict[str, str]] = {}
+SESSION_TTL_SECONDS = 86400 * 7  # 7 days, matches cookie max_age
+
+
+def _create_session(user_id: str, username: str) -> str:
+    session_id = secrets.token_hex(16)
+    now = datetime.utcnow()
+    _session_store[session_id] = {
+        "userId": user_id,
+        "username": username,
+        "createdAt": now.isoformat(),
+        "expiresAt": (now + timedelta(seconds=SESSION_TTL_SECONDS)).isoformat(),
+    }
+    return session_id
+
+
+def _get_session(session_id: Optional[str]) -> Optional[Dict[str, str]]:
+    """Look up a session by id, evicting it if expired or malformed."""
+    if not session_id:
+        return None
+    session = _session_store.get(session_id)
+    if not session:
+        return None
+    expires_at = session.get("expiresAt")
+    try:
+        if not expires_at or datetime.fromisoformat(expires_at) < datetime.utcnow():
+            _session_store.pop(session_id, None)
+            return None
+    except ValueError:
+        _session_store.pop(session_id, None)
+        return None
+    return session
 
 
 # Absolute path of the log file, derived from the configurable log directory.
@@ -141,6 +172,15 @@ def _serialize_size(obj: Dict[str, Any]) -> int:
         return len(s.encode("utf-8"))
     except Exception:
         return 0
+
+
+async def require_user(request: Request) -> Dict[str, str]:
+    """FastAPI dependency: return session user data or raise 401."""
+    session_id = request.cookies.get("redpen_session")
+    session = _get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    return session
 
 
 def _parse_annotation_body(body: Dict[str, Any]) -> Dict[str, Any]:
@@ -256,24 +296,18 @@ async def login(request: Request, response: Response):
         raise HTTPException(status_code=401, detail="invalid token")
     
     # Create session
-    session_id = secrets.token_hex(16)
     user_id = f"user-{abs(hash(username)) % 100000}"
-    
-    _session_store[session_id] = {
-        "userId": user_id,
-        "username": username,
-        "token": token
-    }
-    
+    session_id = _create_session(user_id, username)
+
     # Set session cookie
     response.set_cookie(
         "redpen_session",
         session_id,
         httponly=True,
         samesite="lax",
-        max_age=86400 * 7  # 7 days
+        max_age=SESSION_TTL_SECONDS,
     )
-    
+
     logger.info("login: success username=%s userId=%s", username, user_id)
     return {"userId": user_id, "username": username}
 
@@ -293,23 +327,23 @@ async def get_csrf(request: Request, response: Response):
 
 
 @app.get("/api/auth/me")
-async def get_me(request: Request):
+async def get_me(user: Dict[str, str] = Depends(require_user)):
     """Return current user info from session"""
-    # Get session cookie
-    session_id = request.cookies.get("redpen_session")
-    
-    logger.debug("auth/me: session cookie present=%s", bool(session_id))
-    
-    if not session_id or session_id not in _session_store:
-        logger.warning("auth/me: invalid or missing session_id")
-        raise HTTPException(status_code=401, detail="not authenticated")
-    
-    user_data = _session_store[session_id]
-    logger.info("auth/me: success username=%s", user_data["username"])
+    logger.info("auth/me: success username=%s", user["username"])
     return {
-        "userId": user_data["userId"],
-        "username": user_data["username"]
+        "userId": user["userId"],
+        "username": user["username"]
     }
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request, response: Response):
+    """Delete the current session and clear its cookie"""
+    session_id = request.cookies.get("redpen_session")
+    if session_id:
+        _session_store.pop(session_id, None)
+    response.delete_cookie("redpen_session")
+    return {"ok": True}
 
 
 @app.get("/api/hello")

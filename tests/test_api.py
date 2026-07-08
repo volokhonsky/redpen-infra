@@ -271,3 +271,32 @@ def test_auth_me_requires_session(client):
     fresh = TestClient(main.app)  # no cookies
     r = fresh.get("/api/auth/me")
     assert r.status_code == 401
+
+
+def test_logout_clears_session():
+    c = TestClient(main.app)
+    c.post("/api/auth/login", json={"token": "dev-token-123"})
+    assert c.get("/api/auth/me").status_code == 200
+
+    r = c.post("/api/auth/logout")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+    assert c.get("/api/auth/me").status_code == 401
+
+
+def test_expired_session_is_rejected():
+    c = TestClient(main.app)
+    c.post("/api/auth/login", json={"token": "dev-token-123"})
+    session_id = c.cookies.get("redpen_session")
+    assert session_id
+
+    # Force expiry directly in the in-memory store.
+    from datetime import datetime, timedelta
+    main._session_store[session_id]["expiresAt"] = (
+        datetime.utcnow() - timedelta(seconds=1)
+    ).isoformat()
+
+    r = c.get("/api/auth/me")
+    assert r.status_code == 401
+    assert session_id not in main._session_store
