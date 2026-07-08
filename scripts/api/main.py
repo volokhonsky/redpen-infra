@@ -111,16 +111,18 @@ assert _annotation_converter_spec is not None and _annotation_converter_spec.loa
 _annotation_converter_spec.loader.exec_module(annotation_converter)  # type: ignore
 
 # CORS configuration
+#
+# "*" + allow_credentials=True is an invalid combination (and browsers reject
+# it): wildcard origins can't carry cookies, so only allow credentials when a
+# real, explicit origin list is configured.
 
-allow_origins = config.CORS_ALLOW_ORIGINS or ["*"]
-if isinstance(allow_origins, list):
-    allow_origins = list(dict.fromkeys(allow_origins))
+allow_origins, allow_credentials = config.cors_settings(config.CORS_ALLOW_ORIGINS or ["*"])
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=allow_credentials,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-CSRF-Token"],
 )
 
 # Setup Jinja2 templates

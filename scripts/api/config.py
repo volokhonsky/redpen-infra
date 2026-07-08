@@ -28,6 +28,17 @@ def _parse_editor_tokens(value: str) -> Dict[str, str]:
     return tokens
 
 
+def cors_settings(origins: List[str]):
+    """
+    Given a parsed origins list, return (origins, allow_credentials).
+    "*" + allow_credentials=True is an invalid/rejected combination, so
+    credentials are only allowed alongside an explicit origin list.
+    """
+    origins = list(dict.fromkeys(origins))
+    allow_credentials = origins != ["*"]
+    return origins, allow_credentials
+
+
 def _parse_cors_origins(value: str) -> Union[List[str], List[str]]:
     """
     Parse CORS_ALLOW_ORIGINS environment value into a list for CORSMiddleware.
