@@ -277,7 +277,8 @@
         st.auth.isAuthenticated = true;
         st.auth.username = st.auth.username || 'mockuser';
         st.auth.userId = st.auth.userId || 'mock-'+Math.random().toString(36).slice(2,6);
-        return { userId: st.auth.userId, username: st.auth.username };
+        st.auth.role = st.auth.role || 'editor';
+        return { userId: st.auth.userId, username: st.auth.username, role: st.auth.role };
       }
       try {
         const res = await fetch(apiBase('/api/auth/me'), { credentials: 'include' });
@@ -290,10 +291,78 @@
         st.auth.isAuthenticated = true;
         st.auth.userId = data.userId;
         st.auth.username = data.username;
+        st.auth.email = data.email;
+        st.auth.name = data.name;
+        st.auth.picture = data.picture;
+        st.auth.role = data.role;
         return data;
       } catch (error) {
         console.error('[RedPen Editor] Auth error:', error);
         throw error;
+      }
+    }
+
+    // Fetch /api/auth/me (401 is a normal "not logged in", not an error) and
+    // reflect the result in the panel's auth-status header.
+    async function refreshAuthUi(){
+      var data = null;
+      try { data = await apiMe(); } catch (error) { data = null; }
+      if (window.RedPenEditorPanel && window.RedPenEditorPanel.setAuthState) {
+        window.RedPenEditorPanel.setAuthState(data);
+      }
+      return data;
+    }
+
+    var _gisLoadPromise = null;
+    function loadGoogleIdentityServices(){
+      if (_gisLoadPromise) return _gisLoadPromise;
+      _gisLoadPromise = new Promise(function(resolve){
+        if (window.google && window.google.accounts && window.google.accounts.id) { resolve(); return; }
+        var script = document.createElement('script');
+        script.src = 'https://accounts.google.com/gsi/client';
+        script.async = true;
+        script.defer = true;
+        script.onload = function(){ resolve(); };
+        script.onerror = function(){
+          console.error('[RedPen Editor] Failed to load Google Identity Services');
+          resolve();
+        };
+        document.head.appendChild(script);
+      });
+      return _gisLoadPromise;
+    }
+
+    async function onGoogleCredential(credentialResponse){
+      var errEl = document.getElementById('redpen-login-error');
+      try {
+        const res = await fetch(apiBase('/api/auth/google'), {
+          method: 'POST',
+          headers: withJsonHeaders(),
+          body: JSON.stringify({ credential: credentialResponse.credential }),
+          credentials: 'include'
+        });
+        if (!res.ok) throw new Error('google_login_failed');
+        await refreshAuthUi();
+        var host = document.getElementById('redpen-login');
+        if (host) host.style.display = 'none';
+      } catch (error) {
+        console.error('[RedPen Editor] Google login error:', error);
+        if (errEl) errEl.textContent = 'Не удалось войти через Google';
+      }
+    }
+
+    function renderGoogleButton(){
+      try {
+        if (!window.google || !window.google.accounts || !window.google.accounts.id) return;
+        var el = document.getElementById('redpen-google-btn');
+        if (!el) return;
+        window.google.accounts.id.initialize({
+          client_id: window.REDPEN_GOOGLE_CLIENT_ID,
+          callback: onGoogleCredential
+        });
+        window.google.accounts.id.renderButton(el, { theme: 'outline', size: 'medium' });
+      } catch (error) {
+        console.error('[RedPen Editor] Google button error:', error);
       }
     }
 
@@ -413,7 +482,11 @@
       });
 
       if (res.status === 401) { throw Object.assign(new Error('unauthorized'), { code: 401 }); }
-      if (res.status === 403) { throw Object.assign(new Error('forbidden'), { code: 403 }); }
+      if (res.status === 403) {
+        var forbiddenDetail;
+        try { forbiddenDetail = (await res.json()).detail; } catch (e) { forbiddenDetail = undefined; }
+        throw Object.assign(new Error('forbidden'), { code: 403, detail: forbiddenDetail });
+      }
       if (res.status === 409) { throw Object.assign(new Error('conflict'), { code: 409 }); }
       if (!res.ok) throw new Error('save_failed');
       const data = await res.json();
@@ -425,13 +498,24 @@
       var host = document.getElementById('redpen-login');
       if (!host) return;
       host.style.display = '';
-      host.innerHTML = '<div style="font-weight:bold;margin-bottom:6px;">Требуется вход</div>'+
+
+      var html = '<div style="font-weight:bold;margin-bottom:6px;">Требуется вход</div>'+
         (message ? '<div style="color:#DC143C;margin-bottom:6px;">'+message+'</div>' : '')+
-        '<input id="redpen-login-token" type="text" placeholder="Личный токен" style="width:100%;margin-bottom:6px;" />'+
-        '<div style="display:flex;gap:8px;">'+
-          '<button id="redpen-login-do">Войти</button>'+
-          '<span id="redpen-login-error" style="color:#DC143C;font-size:12px;"></span>'+
+        '<div id="redpen-google-btn" style="margin-bottom:8px;"></div>'+
+        '<span id="redpen-login-error" style="color:#DC143C;font-size:12px;"></span>';
+      if (window.REDPEN_DEV_TOKEN_LOGIN === true) {
+        html += '<div style="margin-top:8px;">'+
+          '<input id="redpen-login-token" type="text" placeholder="Личный токен" style="width:100%;margin-bottom:6px;" />'+
+          '<button id="redpen-login-do">Войти токеном</button>'+
         '</div>';
+      }
+      host.innerHTML = html;
+
+      // Renders as soon as GIS is available; if it's still loading, the
+      // .then() fires once it is (loadGoogleIdentityServices resolves once
+      // and is cached, so repeated calls here are cheap).
+      loadGoogleIdentityServices().then(renderGoogleButton);
+
       var btn = document.getElementById('redpen-login-do');
       if (btn) btn.onclick = async function(){
         var inp = document.getElementById('redpen-login-token');
@@ -440,7 +524,7 @@
         if (!token) { if (errEl) errEl.textContent = 'Введите токен'; return; }
         try {
           await loginWithToken(token);
-          await apiMe();
+          await refreshAuthUi();
           host.style.display = 'none';
         } catch(e){ if (errEl) errEl.textContent = 'Проверьте токен'; }
       };
@@ -777,6 +861,11 @@
         } catch(err) {
           console.error('[RedPen Editor] Save error:', err);
           if (err && err.code === 401) { showLoginModal('Сессия истекла, войдите заново'); return; }
+          if (err && err.code === 403 && err.detail && err.detail.indexOf('role required') !== -1) {
+            // Authenticated but insufficient role (viewer) — not a login problem.
+            window.alert('Недостаточно прав, обратитесь к администратору');
+            return;
+          }
           if (err && err.code === 403) {
             // CSRF token stale/rejected: drop it, fetch a fresh one, retry once.
             st.auth.csrfToken = undefined;
@@ -851,8 +940,28 @@
       } catch(e){ console.error('[RedPen Editor] Cancel error:', e); }
     };
 
+    window.RedPenEditor.onLoginClick = function(){
+      showLoginModal();
+    };
+
+    window.RedPenEditor.onLogoutClick = async function(){
+      var st = window.RedPenEditor.state;
+      try {
+        await fetch(apiBase('/api/auth/logout'), { method: 'POST', credentials: 'include' });
+      } catch (error) {
+        console.error('[RedPen Editor] Logout error:', error);
+      }
+      st.auth = { isAuthenticated: false, userId: undefined, username: undefined, csrfToken: undefined,
+        email: undefined, name: undefined, picture: undefined, role: undefined };
+      if (window.RedPenEditorPanel && window.RedPenEditorPanel.setAuthState) {
+        window.RedPenEditorPanel.setAuthState(null);
+      }
+    };
+
     setTimeout(function(){ try { snapshotDomMarkersToState(); } catch(e){} }, 1000);
     syncServerPageSha();
+    loadGoogleIdentityServices();
+    refreshAuthUi();
   }
 
   window.RedPenEditor = window.RedPenEditor || {};
