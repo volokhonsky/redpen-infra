@@ -30,13 +30,6 @@ import storage
 # Store for session tokens (in-memory for now)
 _session_store: Dict[str, Dict[str, str]] = {}
 
-# Hardcoded valid tokens for editor access
-VALID_TOKENS = {
-    "dev-token-123": "john_doe",
-    "demo-token-456": "demo_user",
-    "tokentoken":"user12"
-}
-
 
 # Absolute path of the log file, derived from the configurable log directory.
 LOG_FILE = os.path.join(config.LOG_DIR, "redpen-api.log")
@@ -249,18 +242,17 @@ async def login(request: Request, response: Response):
         raise HTTPException(status_code=400, detail="body must be a JSON object")
     
     token = body.get("token", "").strip()
-    
+
     logger.info("login: attempt with token length=%d", len(token))
-    
+
     if not token:
         logger.warning("login: empty token provided")
         raise HTTPException(status_code=401, detail="empty token")
-    
+
     # Check if token is valid
-    username = VALID_TOKENS.get(token)
+    username = config.EDITOR_TOKENS.get(token)
     if not username:
-        logger.warning("login: invalid token (first 8 chars): %s...", token[:8])
-        logger.debug("login: available tokens: %s", list(VALID_TOKENS.keys()))
+        logger.warning("login: invalid token (length=%d)", len(token))
         raise HTTPException(status_code=401, detail="invalid token")
     
     # Create session
@@ -282,7 +274,7 @@ async def login(request: Request, response: Response):
         max_age=86400 * 7  # 7 days
     )
     
-    logger.info("login: success username=%s userId=%s sessionId=%s", username, user_id, session_id)
+    logger.info("login: success username=%s userId=%s", username, user_id)
     return {"userId": user_id, "username": username}
 
 
@@ -296,7 +288,7 @@ async def get_csrf(request: Request, response: Response):
         httponly=True, 
         samesite="lax"
     )
-    logger.info("csrf: token issued csrfToken=%s", csrf_token[:16] + "...")
+    logger.info("csrf: token issued length=%d", len(csrf_token))
     return {"csrfToken": csrf_token}
 
 
@@ -306,7 +298,7 @@ async def get_me(request: Request):
     # Get session cookie
     session_id = request.cookies.get("redpen_session")
     
-    logger.debug("auth/me: session_id from cookie=%s", session_id[:8] + "..." if session_id else "None")
+    logger.debug("auth/me: session cookie present=%s", bool(session_id))
     
     if not session_id or session_id not in _session_store:
         logger.warning("auth/me: invalid or missing session_id")

@@ -17,6 +17,7 @@ pytest.importorskip("jinja2")
 
 from fastapi.testclient import TestClient
 
+import config  # noqa: E402  (imported after conftest sets env vars)
 import main  # noqa: E402  (imported after conftest sets env vars)
 
 
@@ -24,6 +25,16 @@ import main  # noqa: E402  (imported after conftest sets env vars)
 def client():
     with TestClient(main.app) as c:
         yield c
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _editor_tokens():
+    original = dict(config.EDITOR_TOKENS)
+    config.EDITOR_TOKENS.clear()
+    config.EDITOR_TOKENS.update({"dev-token-123": "john_doe"})
+    yield
+    config.EDITOR_TOKENS.clear()
+    config.EDITOR_TOKENS.update(original)
 
 
 # ---------------------------------------------------------------------------

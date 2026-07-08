@@ -11,6 +11,7 @@ FastAPI-сервис для хранения входящих данных и р
 | `LOG_DIR` | `/app/logs` | Каталог для файла лога `redpen-api.log` |
 | `LOG_LEVEL` | `INFO` | Уровень логирования |
 | `CORS_ALLOW_ORIGINS` | `_` (→ `*`) | Список origin через запятую; `_`/`*` = разрешить все |
+| `EDITOR_TOKENS` | (пусто) | Токены личного входа: `token1:username1,token2:username2`. Пусто = вход по токену отключён |
 
 > `LOG_DIR` вынесен в конфиг, чтобы сервис можно было запускать и тестировать
 > вне контейнера (где `/app` недоступен для записи).
@@ -61,7 +62,7 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
   `redpen-publish/{bookSlug}/annotations/{pageId}.json`. `bookSlug`:
   `[a-z0-9_-]+`; `pageId`: `page_NNN` (три цифры). 404, если Markdown нет.
 
-Аутентификация (сессии в памяти; токены захардкожены в `main.py`):
+Аутентификация (сессии в памяти; токены — из `EDITOR_TOKENS`):
 - `POST /api/auth/login` `{token}` → `{userId, username}` + cookie `redpen_session`
 - `GET /api/auth/csrf` → `{csrfToken}`
 - `GET /api/auth/me` → текущий пользователь (401 без валидной сессии)
