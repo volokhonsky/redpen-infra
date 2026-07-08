@@ -197,7 +197,7 @@ def setup_test_content():
         f.write(DEFAULT_ANNOTATION_MD)
 
     # Copy a test image from the project
-    source_image = os.path.join(project_root, 'redpen-content', 'images', 'page_007.png')
+    source_image = os.path.join(project_root, 'redpen-content', 'medinsky11klass', 'images', 'page_007.png')
     if os.path.exists(source_image):
         shutil.copy(source_image, os.path.join(temp_content_dir, 'images', 'page_007.png'))
     else:
@@ -449,7 +449,7 @@ def run_tests(update_baseline=False):
 def test_desktop_width(p, port):
     """Test annotation positioning at desktop width (1280px)"""
     print("Starting test_desktop_width...")
-    browser = p.chromium.launch(headless=False)
+    browser = p.chromium.launch(headless=True)
     context = browser.new_context(
         viewport={'width': DESKTOP_WIDTH, 'height': DESKTOP_HEIGHT}
     )
@@ -545,7 +545,7 @@ def test_desktop_width(p, port):
 def test_mobile_width(p, port):
     """Test annotation positioning at mobile width (800px)"""
     print("Starting test_mobile_width...")
-    browser = p.chromium.launch(headless=False)
+    browser = p.chromium.launch(headless=True)
     context = browser.new_context(
         viewport={'width': MOBILE_WIDTH, 'height': MOBILE_HEIGHT}
     )
@@ -617,7 +617,7 @@ def test_mobile_width(p, port):
 def test_resize_desktop_to_mobile(p, port):
     """Test annotation positioning when resizing from desktop to mobile"""
     print("Starting test_resize_desktop_to_mobile...")
-    browser = p.chromium.launch(headless=False)
+    browser = p.chromium.launch(headless=True)
     context = browser.new_context(
         viewport={'width': DESKTOP_WIDTH, 'height': DESKTOP_HEIGHT}
     )
@@ -699,7 +699,7 @@ def test_resize_desktop_to_mobile(p, port):
 def test_resize_mobile_to_desktop(p, port):
     """Test annotation positioning when resizing from mobile to desktop"""
     print("Starting test_resize_mobile_to_desktop...")
-    browser = p.chromium.launch(headless=False)
+    browser = p.chromium.launch(headless=True)
     context = browser.new_context(
         viewport={'width': MOBILE_WIDTH, 'height': MOBILE_HEIGHT}
     )
