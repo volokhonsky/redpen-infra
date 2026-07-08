@@ -83,3 +83,11 @@ DB_PATH: str = os.getenv("DB_PATH", DEFAULT_DB_PATH)
 ADMIN_EMAILS: List[str] = [
     e.strip() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()
 ]
+
+# Google Identity Services OAuth client id (audience for ID-token verification).
+# Empty -> POST /api/auth/google responds 503 (not configured).
+GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
+
+# Whether the session cookie gets the Secure flag. Defaults to true (prod is
+# HTTPS); set to false for local http development.
+COOKIE_SECURE: bool = os.getenv("COOKIE_SECURE", "true").strip().lower() not in ("0", "false", "no")
