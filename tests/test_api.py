@@ -18,6 +18,7 @@ pytest.importorskip("jinja2")
 from fastapi.testclient import TestClient
 
 import config  # noqa: E402  (imported after conftest sets env vars)
+import db  # noqa: E402  (imported after conftest sets env vars)
 import main  # noqa: E402  (imported after conftest sets env vars)
 
 
@@ -403,15 +404,16 @@ def test_expired_session_is_rejected():
     session_id = c.cookies.get("redpen_session")
     assert session_id
 
-    # Force expiry directly in the in-memory store.
+    # Force expiry directly in the DB-backed session store.
     from datetime import datetime, timedelta
-    main._session_store[session_id]["expiresAt"] = (
-        datetime.utcnow() - timedelta(seconds=1)
-    ).isoformat()
+    conn = db.get_connection()
+    past = (datetime.utcnow() - timedelta(seconds=1)).isoformat()
+    conn.execute("UPDATE sessions SET expires_at = ? WHERE id = ?", (past, session_id))
+    conn.commit()
 
     r = c.get("/api/auth/me")
     assert r.status_code == 401
-    assert session_id not in main._session_store
+    assert db.get_session(session_id) is None
 
 
 # ---------------------------------------------------------------------------

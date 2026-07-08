@@ -4,7 +4,7 @@ import sys
 import time
 import secrets
 from uuid import uuid4
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -25,41 +25,28 @@ except Exception:
     pass
 
 import config
+import db
 import storage
 
-# Store for session tokens (in-memory for now; moves to SQLite in stage 1)
-_session_store: Dict[str, Dict[str, str]] = {}
-SESSION_TTL_SECONDS = 86400 * 7  # 7 days, matches cookie max_age
+
+def _set_session_cookie(response: Response, session_id: str) -> None:
+    response.set_cookie(
+        "redpen_session",
+        session_id,
+        httponly=True,
+        samesite="lax",
+        secure=config.COOKIE_SECURE,
+        max_age=db.SESSION_TTL_SECONDS,
+    )
 
 
-def _create_session(user_id: str, username: str) -> str:
-    session_id = secrets.token_hex(16)
-    now = datetime.utcnow()
-    _session_store[session_id] = {
-        "userId": user_id,
-        "username": username,
-        "createdAt": now.isoformat(),
-        "expiresAt": (now + timedelta(seconds=SESSION_TTL_SECONDS)).isoformat(),
-    }
-    return session_id
+def verify_google_token(credential: str) -> Dict[str, Any]:
+    """Verify a Google ID-token (JWT) and return its claims. Wrapped in its
+    own function so tests can monkeypatch it instead of hitting the network."""
+    from google.oauth2 import id_token
+    from google.auth.transport import requests as google_requests
 
-
-def _get_session(session_id: Optional[str]) -> Optional[Dict[str, str]]:
-    """Look up a session by id, evicting it if expired or malformed."""
-    if not session_id:
-        return None
-    session = _session_store.get(session_id)
-    if not session:
-        return None
-    expires_at = session.get("expiresAt")
-    try:
-        if not expires_at or datetime.fromisoformat(expires_at) < datetime.utcnow():
-            _session_store.pop(session_id, None)
-            return None
-    except ValueError:
-        _session_store.pop(session_id, None)
-        return None
-    return session
+    return id_token.verify_oauth2_token(credential, google_requests.Request(), config.GOOGLE_CLIENT_ID)
 
 
 # Absolute path of the log file, derived from the configurable log directory.
@@ -133,7 +120,8 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    logger.info("service started LOG_LEVEL=%s storage_dir=%s", config.LOG_LEVEL, config.STORAGE_DIR)
+    db.init_db()
+    logger.info("service started LOG_LEVEL=%s storage_dir=%s db_path=%s", config.LOG_LEVEL, config.STORAGE_DIR, config.DB_PATH)
 
 
 # ===== HELPER FUNCTIONS =====
@@ -176,13 +164,24 @@ def _serialize_size(obj: Dict[str, Any]) -> int:
         return 0
 
 
-async def require_user(request: Request) -> Dict[str, str]:
-    """FastAPI dependency: return session user data or raise 401."""
+async def require_user(request: Request) -> Dict[str, Any]:
+    """FastAPI dependency: return the session+user data or raise 401."""
     session_id = request.cookies.get("redpen_session")
-    session = _get_session(session_id)
-    if not session:
+    result = db.get_session(session_id) if session_id else None
+    if not result:
         raise HTTPException(status_code=401, detail="not authenticated")
-    return session
+    session, user = result
+    return {
+        "sessionId": session["id"],
+        "csrf": session["csrf"],
+        "userId": user["id"],
+        "email": user["email"],
+        "name": user["name"],
+        "pictureUrl": user["pictureUrl"],
+        "role": user["role"],
+        # username: kept for the token-login/legacy frontend shape.
+        "username": user["name"] or user["email"] or str(user["id"]),
+    }
 
 
 async def require_csrf(request: Request, user: Dict[str, str] = Depends(require_user)) -> Dict[str, str]:
@@ -323,35 +322,27 @@ async def login(request: Request, response: Response):
     if not username:
         logger.warning("login: invalid token (length=%d)", len(token))
         raise HTTPException(status_code=401, detail="invalid token")
-    
-    # Create session
-    user_id = f"user-{abs(hash(username)) % 100000}"
-    session_id = _create_session(user_id, username)
 
-    # Set session cookie
-    response.set_cookie(
-        "redpen_session",
-        session_id,
-        httponly=True,
-        samesite="lax",
-        max_age=SESSION_TTL_SECONDS,
-    )
+    # Dev-fallback: token users always get the editor role (see db.get_or_create_user_token).
+    user = db.get_or_create_user_token(username)
+    session_id = db.create_session(user["id"])
+    _set_session_cookie(response, session_id)
 
-    logger.info("login: success username=%s userId=%s", username, user_id)
-    return {"userId": user_id, "username": username}
+    logger.info("login: success username=%s userId=%s", username, user["id"])
+    return {"userId": user["id"], "username": username}
 
 
 @app.get("/api/auth/csrf")
-async def get_csrf(user: Dict[str, str] = Depends(require_user)):
+async def get_csrf(user: Dict[str, Any] = Depends(require_user)):
     """Issue a CSRF token bound to the current session (requires login)"""
     csrf_token = f"csrf-{secrets.token_hex(16)}"
-    user["csrf"] = csrf_token
+    db.set_session_csrf(user["sessionId"], csrf_token)
     logger.info("csrf: token issued length=%d", len(csrf_token))
     return {"csrfToken": csrf_token}
 
 
 @app.get("/api/auth/me")
-async def get_me(user: Dict[str, str] = Depends(require_user)):
+async def get_me(user: Dict[str, Any] = Depends(require_user)):
     """Return current user info from session"""
     logger.info("auth/me: success username=%s", user["username"])
     return {
@@ -365,9 +356,55 @@ async def logout(request: Request, response: Response):
     """Delete the current session and clear its cookie"""
     session_id = request.cookies.get("redpen_session")
     if session_id:
-        _session_store.pop(session_id, None)
+        db.delete_session(session_id)
     response.delete_cookie("redpen_session")
     return {"ok": True}
+
+
+@app.post("/api/auth/google")
+async def auth_google(request: Request, response: Response):
+    """Verify a Google ID-token (GIS) and create a session for the user"""
+    if not config.GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="google auth is not configured")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+
+    credential = body.get("credential") if isinstance(body, dict) else None
+    if not isinstance(credential, str) or not credential.strip():
+        raise HTTPException(status_code=400, detail="credential is required")
+
+    try:
+        claims = verify_google_token(credential)
+    except Exception as e:
+        logger.warning("google auth: token verification failed: %s", type(e).__name__)
+        raise HTTPException(status_code=401, detail="invalid credential")
+
+    if not claims.get("email_verified"):
+        logger.warning("google auth: email not verified")
+        raise HTTPException(status_code=401, detail="email not verified")
+
+    sub = claims.get("sub")
+    email = claims.get("email")
+    if not sub or not email:
+        raise HTTPException(status_code=401, detail="invalid credential")
+    name = claims.get("name") or email.split("@")[0]
+    picture = claims.get("picture")
+
+    user = db.get_or_create_user_google(sub, email, name, picture)
+    session_id = db.create_session(user["id"])
+    _set_session_cookie(response, session_id)
+
+    logger.info("google auth: success userId=%s role=%s", user["id"], user["role"])
+    return {
+        "userId": user["id"],
+        "email": user["email"],
+        "name": user["name"],
+        "picture": user["pictureUrl"],
+        "role": user["role"],
+    }
 
 
 @app.get("/api/hello")

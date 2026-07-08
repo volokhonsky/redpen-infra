@@ -26,3 +26,5 @@ os.environ.setdefault("LOG_DIR", os.path.join(_TMP_ROOT, "logs"))
 os.environ.setdefault("DB_PATH", os.path.join(_TMP_ROOT, "db", "redpen.db"))
 # Keep CORS permissive for tests unless the environment says otherwise.
 os.environ.setdefault("CORS_ALLOW_ORIGINS", "*")
+# TestClient talks over plain http; a Secure cookie would be dropped.
+os.environ.setdefault("COOKIE_SECURE", "false")
