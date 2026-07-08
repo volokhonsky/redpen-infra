@@ -183,6 +183,15 @@ async def require_user(request: Request) -> Dict[str, str]:
     return session
 
 
+async def require_csrf(request: Request, user: Dict[str, str] = Depends(require_user)) -> Dict[str, str]:
+    """FastAPI dependency: verify X-CSRF-Token against the session-bound token."""
+    header_token = request.headers.get("X-CSRF-Token")
+    session_csrf = user.get("csrf")
+    if not header_token or not session_csrf or not secrets.compare_digest(header_token, session_csrf):
+        raise HTTPException(status_code=403, detail="invalid csrf token")
+    return user
+
+
 def _parse_annotation_body(body: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="body must be a JSON object")
@@ -313,15 +322,10 @@ async def login(request: Request, response: Response):
 
 
 @app.get("/api/auth/csrf")
-async def get_csrf(request: Request, response: Response):
-    """Issue CSRF token for POST requests"""
+async def get_csrf(user: Dict[str, str] = Depends(require_user)):
+    """Issue a CSRF token bound to the current session (requires login)"""
     csrf_token = f"csrf-{secrets.token_hex(16)}"
-    response.set_cookie(
-        "csrf_token", 
-        csrf_token, 
-        httponly=True, 
-        samesite="lax"
-    )
+    user["csrf"] = csrf_token
     logger.info("csrf: token issued length=%d", len(csrf_token))
     return {"csrfToken": csrf_token}
 
@@ -355,7 +359,7 @@ async def hello():
 
 
 @app.post("/api/store-raw")
-async def store_raw(request: Request, user: Dict[str, str] = Depends(require_user)):
+async def store_raw(request: Request, user: Dict[str, str] = Depends(require_csrf)):
     # New endpoint that supports optional bucket/pageId and enhanced response
     try:
         body_any: Any = await request.json()
@@ -427,7 +431,7 @@ async def store_raw(request: Request, user: Dict[str, str] = Depends(require_use
 
 
 @app.post("/api/store")
-async def store(request: Request, user: Dict[str, str] = Depends(require_user)):
+async def store(request: Request, user: Dict[str, str] = Depends(require_csrf)):
     try:
         body: Any = await request.json()
     except Exception:
@@ -558,7 +562,7 @@ async def get_page(pageId: str):
 
 
 @app.post("/api/rebuild/{bookSlug}/annotations/{pageId}")
-async def rebuild_annotation_page(bookSlug: str, pageId: str, user: Dict[str, str] = Depends(require_user)):
+async def rebuild_annotation_page(bookSlug: str, pageId: str, user: Dict[str, str] = Depends(require_csrf)):
     started = time.time()
 
     # Validate bookSlug
@@ -695,7 +699,7 @@ async def get_editor_page(docId: str, pageNum: str):
 
 
 @app.post("/api/editor/{docId}/{pageNum}")
-async def post_editor_annotation(docId: str, pageNum: str, request: Request, user: Dict[str, str] = Depends(require_user)):
+async def post_editor_annotation(docId: str, pageNum: str, request: Request, user: Dict[str, str] = Depends(require_csrf)):
     """POST new annotation"""
     logger.info("POST editor START docId=%s pageNum=%s", docId, pageNum)
     
@@ -755,7 +759,7 @@ async def post_editor_annotation(docId: str, pageNum: str, request: Request, use
 
 
 @app.put("/api/editor/{docId}/{pageNum}/{annId}")
-async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: Request, user: Dict[str, str] = Depends(require_user)):
+async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: Request, user: Dict[str, str] = Depends(require_csrf)):
     """PUT update annotation"""
     logger.info("PUT editor START docId=%s pageNum=%s annId=%s", docId, pageNum, annId)
     

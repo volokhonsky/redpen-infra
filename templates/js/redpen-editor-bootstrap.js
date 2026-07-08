@@ -306,10 +306,11 @@
         return { ok: true };
       }
       try {
-        await getCsrf();
+        // No session exists yet, so /api/auth/csrf would 401 here; login is
+        // protected by the token itself + SameSite=Lax instead of CSRF.
         const res = await fetch(apiBase('/api/auth/login'), {
           method: 'POST',
-          headers: withJsonHeaders({ 'X-CSRF-Token': st.auth.csrfToken }),
+          headers: withJsonHeaders(),
           body: JSON.stringify({ token: token }),
           credentials: 'include'
         });
@@ -404,6 +405,7 @@
       console.log('[saveAnnotationToServer] Response status:', res.status); // ✅ ЛОГ J
       
       if (res.status === 401) { throw Object.assign(new Error('unauthorized'), { code: 401 }); }
+      if (res.status === 403) { throw Object.assign(new Error('forbidden'), { code: 403 }); }
       if (res.status === 409) { throw Object.assign(new Error('conflict'), { code: 409 }); }
       if (!res.ok) throw new Error('save_failed');
       const data = await res.json();
@@ -781,13 +783,25 @@
         } catch(err) {
           console.error('[RedPen Editor] Save error:', err); // ✅ ЛОГ 10
           if (err && err.code === 401) { showLoginModal('Сессия истекла, войдите заново'); return; }
-          if (err && err.code === 409) {
+          if (err && err.code === 403) {
+            // CSRF token stale/rejected: drop it, fetch a fresh one, retry once.
+            st.auth.csrfToken = undefined;
+            try {
+              await getCsrf();
+              result = await saveAnnotationToServer(draft);
+            } catch (err2) {
+              console.error('[RedPen Editor] Retry after CSRF 403 failed:', err2);
+              window.alert('Не удалось отправить. Попробуйте ещё раз.');
+              return;
+            }
+          } else if (err && err.code === 409) {
             var agree = window.confirm('Кто-то изменил страницу. Обновить данные?');
             if (agree) { await fetchPageFromServer(st.page.pageId); }
             return;
+          } else {
+            window.alert('Не удалось отправить. Попробуйте ещё раз.');
+            return;
           }
-          window.alert('Не удалось отправить. Попробуйте ещё раз.');
-          return;
         }
         
         var serverId = result && result.id ? String(result.id) : (draft.id || undefined);
