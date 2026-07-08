@@ -32,15 +32,18 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 
 ## Эндпоинты
 
+> Эндпоинты, помеченные 🔒, требуют аутентифицированную сессию (cookie
+> `redpen_session`) — иначе `401`. Читающие эндпоинты остаются публичными.
+
 Служебные:
 - `GET /api/health` → `{"status":"ok"}`
 - `GET /api/hello` → `{message, version, now}` (smoke-тест)
-- `GET /logs` → HTML-просмотр лога; `GET /api/logs?lines=N` → JSON
+- 🔒 `GET /logs` → HTML-просмотр лога; 🔒 `GET /api/logs?lines=N` → JSON
 
 Приём данных (inbox):
-- `POST /api/store` — сохраняет JSON-объект в `${STORAGE_DIR}/inbox/YYYYMMDD/<uuid>.json`.
+- 🔒 `POST /api/store` — сохраняет JSON-объект в `${STORAGE_DIR}/inbox/YYYYMMDD/<uuid>.json`.
   Ответ: `{"status":"stored","path":"inbox/YYYYMMDD/<uuid>.json"}`.
-- `POST /api/store-raw` — то же, плюс необязательные поля `bucket` и `pageId`.
+- 🔒 `POST /api/store-raw` — то же, плюс необязательные поля `bucket` и `pageId`.
   Путь: `${STORAGE_DIR}/inbox/YYYYMMDD[/bucket]/<uuid>.json`. Значение
   очищается (`sanitize_bucket`: только `[a-z0-9/_-]`, пробелы → `-`; для
   `pageId` дополнительно `:` и `.` → `-`; максимум 3 сегмента, 120 символов).
@@ -50,14 +53,14 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 Редактор аннотаций (данные в `${STORAGE_DIR}/<docId>/annotations/page_NNN.json`):
 - `GET /api/editor/{docId}/{pageNum}` — вернуть страницу (создаёт и сохраняет
   `serverPageSha`, если его не было). `pageNum` — 1..999.
-- `POST /api/editor/{docId}/{pageNum}` — добавить/обновить аннотацию.
+- 🔒 `POST /api/editor/{docId}/{pageNum}` — добавить/обновить аннотацию.
   Тело: `{annType, text, coords?[x,y], id?}`. Для `annType != "general"` можно
   передать целочисленные `coords`. Ответ: `{id, serverPageSha}`.
-- `PUT /api/editor/{docId}/{pageNum}/{annId}` — обновить аннотацию по id
+- 🔒 `PUT /api/editor/{docId}/{pageNum}/{annId}` — обновить аннотацию по id
   (если не найдена — добавляется как новая). Ответ: `{id, serverPageSha}`.
 
 Пересборка JSON из Markdown:
-- `POST /api/rebuild/{bookSlug}/annotations/{pageId}` — конвертирует
+- 🔒 `POST /api/rebuild/{bookSlug}/annotations/{pageId}` — конвертирует
   `redpen-content/{bookSlug}/annotations/{pageId}.md` →
   `redpen-publish/{bookSlug}/annotations/{pageId}.json`. `bookSlug`:
   `[a-z0-9_-]+`; `pageId`: `page_NNN` (три цифры). 404, если Markdown нет.
@@ -66,6 +69,7 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 - `POST /api/auth/login` `{token}` → `{userId, username}` + cookie `redpen_session`
 - `GET /api/auth/csrf` → `{csrfToken}`
 - `GET /api/auth/me` → текущий пользователь (401 без валидной сессии)
+- `POST /api/auth/logout` → удаляет сессию, очищает cookie, `{"ok": true}`
 
 > Легаси: `GET /api/pages/{pageId}` (формат `{docId}_page_{NNN}`, например
 > `medinsky11klass_page_006`) всё ещё работает. Старые эндпоинты
@@ -76,13 +80,16 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 
 ```bash
 curl -s http://localhost:8080/api/health
-curl -s -X POST http://localhost:8080/api/store \
+curl -s http://localhost:8080/api/editor/medinsky11klass/7   # чтение, без сессии
+
+# Запись требует сессию (см. EDITOR_TOKENS):
+curl -s -c /tmp/redpen.cookies -X POST http://localhost:8080/api/auth/login \
+  -H 'Content-Type: application/json' -d '{"token":"<значение из EDITOR_TOKENS>"}'
+curl -s -b /tmp/redpen.cookies -X POST http://localhost:8080/api/store \
   -H 'Content-Type: application/json' -d '{"hello":"world"}'
-curl -s -X POST http://localhost:8080/api/store-raw \
-  -H 'Content-Type: application/json' -d '{"bucket":"Editor Drafts","msg":"hi"}'
-curl -s http://localhost:8080/api/editor/medinsky11klass/7
-curl -s -X POST http://localhost:8080/api/editor/medinsky11klass/7 \
-  -H 'Content-Type: application/json' -d '{"annType":"comment","text":"Текст","coords":[100,200]}'
+curl -s -b /tmp/redpen.cookies -X POST http://localhost:8080/api/editor/medinsky11klass/7 \
+  -H 'Content-Type: application/json' \
+  -d '{"annType":"comment","text":"Текст","coords":[100,200]}'
 ```
 
 ## Тесты
