@@ -102,7 +102,8 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
   `{userId, email, name, picture, role}` + cookie `redpen_session`
 - `GET /api/auth/csrf` (требует сессию) → `{csrfToken}`, привязанный к сессии;
   отправляйте его в заголовке `X-CSRF-Token` на все 🔒-эндпоинты, кроме `login`
-- `GET /api/auth/me` → текущий пользователь (401 без валидной сессии)
+- `GET /api/auth/me` → `{userId, email, name, picture, role, username}`
+  (401 без валидной сессии); `username` сохранён для совместимости с фронтом
 - `POST /api/auth/logout` → удаляет сессию, очищает cookie, `{"ok": true}`
 
 > Легаси: `GET /api/pages/{pageId}` (формат `{docId}_page_{NNN}`, например

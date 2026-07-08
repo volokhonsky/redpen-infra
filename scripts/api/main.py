@@ -365,10 +365,15 @@ async def get_csrf(user: Dict[str, Any] = Depends(require_user)):
 @app.get("/api/auth/me")
 async def get_me(user: Dict[str, Any] = Depends(require_user)):
     """Return current user info from session"""
-    logger.info("auth/me: success username=%s", user["username"])
+    logger.info("auth/me: success username=%s role=%s", user["username"], user["role"])
     return {
         "userId": user["userId"],
-        "username": user["username"]
+        "email": user["email"],
+        "name": user["name"],
+        "picture": user["pictureUrl"],
+        "role": user["role"],
+        # username: kept for the existing frontend shape (token + Google logins alike).
+        "username": user["username"],
     }
 
 
