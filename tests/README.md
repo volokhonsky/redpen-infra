@@ -1,101 +1,61 @@
-# Annotation Positioning Tests
+# RedPen — тесты
 
-This directory contains automated tests to verify the positioning of annotation circles at different screen widths and during window resizing.
+Тесты делятся на два уровня: **основной набор pytest** (быстрый, без браузера)
+и **опциональные end-to-end скрипты** на Playwright.
 
-## Overview
+## Основной набор (pytest)
 
-The tests focus on page 7 of the RedPen application and verify that annotation circles are positioned correctly at different screen widths and that they reposition correctly when the window is resized.
-
-The tests measure the positions of circles at:
-- Desktop width (1280px)
-- Mobile width (800px)
-- After resizing from desktop to mobile
-- After resizing from mobile to desktop
-
-The measured positions are compared against baseline values to ensure that the positioning remains correct as the codebase evolves.
-
-## Running the Tests
-
-To run the tests, use the provided shell script:
+Запускается из корня репозитория и не требует браузера, сервера или Docker.
+Сторедж и логи автоматически перенаправляются во временный каталог
+(`tests/conftest.py`), поэтому реальные данные не затрагиваются.
 
 ```bash
-./tests/run_annotation_tests.sh
+pip install -r tests/requirements.txt
+pytest            # из корня репозитория; конфиг в pytest.ini
 ```
 
-This will:
-1. Install the required dependencies
-2. Install Playwright browsers if needed
-3. Run the tests against the existing baseline positions
-4. Generate screenshots in the `tests/results` directory
+Модули:
 
-## Test Cases
+| Файл | Что покрывает |
+|---|---|
+| `test_annotation_converter.py` | Конвертация Markdown ↔ JSON (`scripts/annotation_converter.py`), round-trip |
+| `test_sanitize_bucket.py` | Санитизация bucket/pageId (`scripts/api/storage.py`) |
+| `test_storage.py` | Хранение страниц: `load_page`/`save_page`/`compute_sha`/`upsert`/`update` |
+| `test_api.py` | Эндпоинты FastAPI через `TestClient`: health, store, store-raw, editor GET/POST/PUT, rebuild-валидация, auth |
+| `test_build_website.py` | Сборка сайта (`scripts/build_website.py`): per-document раскладка, конвертация аннотаций, индексная страница |
 
-The test suite includes the following test cases:
+`test_build_website.py` строит сайт из синтетического мини-контента во временном
+каталоге (реальный `redpen-content` не нужен), поэтому проходит за доли секунды.
 
-### Test 1: Desktop Width (1280px)
-- Loads page 7 in a browser with a 1280x800 viewport
-- Measures the positions of all annotation circles
-- Compares the positions against the baseline values
-- Generates a screenshot in `tests/results/desktop_width.png`
+## End-to-end скрипты (Playwright, опционально)
 
-### Test 2: Mobile Width (800px)
-- Loads page 7 in a browser with an 800x600 viewport
-- Measures the positions of all annotation circles
-- Compares the positions against the baseline values
-- Generates a screenshot in `tests/results/mobile_width.png`
-
-### Test 3: Resize from Desktop to Mobile
-- Loads page 7 in a browser with a 1280x800 viewport
-- Takes a screenshot before resizing
-- Resizes the viewport to 800x600
-- Measures the positions of all annotation circles after resizing
-- Compares the positions against the baseline values
-- Generates screenshots in:
-  - `tests/results/desktop_before_resize.png`
-  - `tests/results/desktop_to_mobile_after_resize.png`
-
-### Test 4: Resize from Mobile to Desktop
-- Loads page 7 in a browser with an 800x600 viewport
-- Takes a screenshot before resizing
-- Resizes the viewport to 1280x800
-- Measures the positions of all annotation circles after resizing
-- Compares the positions against the baseline values
-- Generates screenshots in:
-  - `tests/results/mobile_before_resize.png`
-  - `tests/results/mobile_to_desktop_after_resize.png`
-
-## Baseline Positions
-
-The baseline positions are stored in `tests/baseline_positions.json` and represent the expected positions of circles at different screen widths.
-
-To update the baseline positions, run:
+Эти скрипты **специально не** названы `test_*.py`, поэтому pytest их не собирает.
+Им нужен установленный браузер и, как правило, опубликованный сайт
+(`redpen-publish`). Запускаются вручную:
 
 ```bash
-./tests/run_annotation_tests.sh --update-baseline
+pip install -r tests/requirements.txt
+python -m playwright install chromium
+
+python tests/annotation_position_tests.py         # позиционирование кружков
+python tests/annotation_position_tests.py --update-baseline
+python tests/editor_mode_tests.py                 # режим редактора (?editor=1)
+python tests/simple_test.py                        # смоук рендера страницы
 ```
 
-This will run the tests and update the baseline positions with the current measured values. Use this when:
-- You've made intentional changes to the positioning logic
-- You've added or removed annotations
-- You've changed the layout of the application
+- `annotation_position_tests.py` — измеряет позиции элементов `.circle` при
+  ширине 1280px / 800px и при ресайзе, сравнивает с `baseline_positions.json`.
+  Использует синтетический `document_index.html`, а не реальное приложение —
+  это скорее проверка окружения, чем логики.
+- `editor_mode_tests.py` — проверяет, что панель редактора (`.redpen-editor`)
+  и `window.RedPenEditor.state.editorMode` появляются только с `?editor=1`.
+  Работает против опубликованного `redpen-publish/medinsky11klass/`.
+- `simple_test.py`, `reproduce_404.py` — отладочные скрипты, не тесты.
 
-## Interpreting Test Results
+`build_website.py` вызывает часть этих e2e-проверок автоматически на шаге сборки;
+пропустить их можно флагом `--skip-tests`.
 
-The tests will output:
-- The number of circles found at each screen width
-- The positions of each circle (centerX, centerY)
-- Whether the positions match the baseline values
-- An overall PASS/FAIL result
+## Известные ограничения
 
-If a test fails, check:
-1. The screenshots in the `tests/results` directory to see the actual positions
-2. The console output to see which positions don't match the baseline
-3. Whether you need to update the baseline positions due to intentional changes
-
-## Adding More Tests
-
-To add more test cases:
-1. Modify `tests/annotation_position_tests.py` to add new test functions
-2. Update the `run_tests` function to call your new test functions
-3. Update the baseline positions by running with `--update-baseline`
-4. Update this documentation to describe the new test cases
+- E2E-скрипты требуют сети (подключают `marked` с CDN в шаблоне документа).
+- `baseline_positions.json` привязан к синтетической тестовой странице.
