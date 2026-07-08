@@ -72,18 +72,16 @@
         flags: { allowCoordChangeWithoutPrompt: false, mock: (window.REDPEN_MOCKS === true) },
         autoContent: { general: undefined },
         auth: { isAuthenticated: false, userId: undefined, username: undefined, csrfToken: undefined },
-        page: { pageId: undefined, serverPageSha: undefined, origW: undefined, origH: undefined, annotations: [] }
+        page: { 
+          docId: window.currentDocId || null,
+          pageNum: window.currentPageNum || undefined,
+          pageId: undefined,
+          serverPageSha: undefined, 
+          origW: undefined, 
+          origH: undefined, 
+          annotations: [] 
+        }
       };
-    } else {
-      window.RedPenEditor.state.editorMode = true;
-      if (!window.RedPenEditor.state.cache) window.RedPenEditor.state.cache = { general: null };
-      if (!window.RedPenEditor.state.ui) window.RedPenEditor.state.ui = { selectedAnnotationId: null, lastAutoGeneralContent: undefined };
-      if (!window.RedPenEditor.state.editing) window.RedPenEditor.state.editing = { mode: 'none' };
-      if (!('baseline' in window.RedPenEditor.state)) window.RedPenEditor.state.baseline = null;
-      if (!window.RedPenEditor.state.flags) window.RedPenEditor.state.flags = { allowCoordChangeWithoutPrompt: false, mock: (window.REDPEN_MOCKS === true) };
-      if (!window.RedPenEditor.state.autoContent) window.RedPenEditor.state.autoContent = { general: undefined };
-      if (!window.RedPenEditor.state.auth) window.RedPenEditor.state.auth = { isAuthenticated: false, userId: undefined, username: undefined, csrfToken: undefined };
-      if (!window.RedPenEditor.state.page) window.RedPenEditor.state.page = { pageId: undefined, serverPageSha: undefined, origW: undefined, origH: undefined, annotations: [] };
     }
 
     // ===== HELPER FUNCTIONS (NO DUPLICATES) =====
@@ -355,34 +353,63 @@
 
     async function saveAnnotationToServer(draft){
       var st = window.RedPenEditor.state;
+      
+      console.log('[saveAnnotationToServer] Starting...'); // ✅ ЛОГ A
+      console.log('[saveAnnotationToServer] Draft:', draft); // ✅ ЛОГ B
+      console.log('[saveAnnotationToServer] State.page:', st.page); // ✅ ЛОГ C
+      
       if (st.flags && st.flags.mock === true) {
+        console.log('[saveAnnotationToServer] Mock mode enabled'); // ✅ ЛОГ D
         var id = (draft.id && String(draft.id).trim()) || undefined;
         if (!id) id = 'srv-'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
         var serverPageSha = 'mock-sha-'+Date.now().toString(36);
         return { id: id, serverPageSha: serverPageSha };
       }
+      
       await getCsrf();
-      var pageId = st.page && st.page.pageId ? st.page.pageId : undefined;
+      
+      var docId = st.page && st.page.docId ? st.page.docId : 'unknown';
+      var pageNum = st.page && st.page.pageNum ? st.page.pageNum : 1;
+      
+      console.log('[saveAnnotationToServer] docId:', docId); // ✅ ЛОГ E
+      console.log('[saveAnnotationToServer] pageNum:', pageNum); // ✅ ЛОГ F
+      
       var payload = { annType: draft.annType, text: draft.content, clientPageSha: st.page.serverPageSha };
       if (draft.annType !== 'general') payload.coords = draft.coords;
+      
       var url, method;
-      if (draft.id && String(draft.id).trim()) {
-        url = apiBase('/api/pages/'+encodeURIComponent(pageId)+'/annotations/'+encodeURIComponent(String(draft.id).trim()));
+      // ✅ ТОЛЬКО ДЛЯ ОБНОВЛЕНИЯ СУЩЕСТВУЮЩИХ АННОТАЦИЙ (не client-*)
+      var isExistingServerAnnotation = draft.id && String(draft.id).trim() && !String(draft.id).startsWith('client-');
+      
+      if (isExistingServerAnnotation) {
+        url = apiBase('/api/editor/'+encodeURIComponent(docId)+'/'+encodeURIComponent(pageNum)+'/'+encodeURIComponent(String(draft.id).trim()));
         method = 'PUT';
       } else {
-        url = apiBase('/api/pages/'+encodeURIComponent(pageId)+'/annotations');
+        // Новая аннотация — отправляем POST БЕЗ ID в URL
+        url = apiBase('/api/editor/'+encodeURIComponent(docId)+'/'+encodeURIComponent(pageNum));
         method = 'POST';
       }
+      
+      console.log('[saveAnnotationToServer] URL:', url); // ✅ ЛОГ G
+      console.log('[saveAnnotationToServer] Method:', method); // ✅ ЛОГ H
+      console.log('[saveAnnotationToServer] Payload:', payload); // ✅ ЛОГ I
+      
       const res = await fetch(url, {
         method: method,
         headers: withJsonHeaders({ 'X-CSRF-Token': st.auth.csrfToken }),
         body: JSON.stringify(payload),
         credentials: 'include'
       });
+      
+      console.log('[saveAnnotationToServer] Response status:', res.status); // ✅ ЛОГ J
+      
       if (res.status === 401) { throw Object.assign(new Error('unauthorized'), { code: 401 }); }
       if (res.status === 409) { throw Object.assign(new Error('conflict'), { code: 409 }); }
       if (!res.ok) throw new Error('save_failed');
       const data = await res.json();
+      
+      console.log('[saveAnnotationToServer] Response data:', data); // ✅ ЛОГ K
+      
       return data;
     }
 
@@ -717,17 +744,42 @@
 
     window.RedPenEditor.onSubmit = async function(){
       try {
+        console.log('[RedPen Editor] onSubmit called'); // ✅ ЛОГ 1
+        
         var st = window.RedPenEditor.state;
         var draft = (window.RedPenEditorPanel && window.RedPenEditorPanel.getDraft) ? window.RedPenEditorPanel.getDraft() : st.draft;
+        
+        console.log('[RedPen Editor] Draft:', draft); // ✅ ЛОГ 2
+        console.log('[RedPen Editor] State.page:', st.page); // ✅ ЛОГ 3
+        
         var v = window.RedPenEditorPanel && typeof window.RedPenEditorPanel.validate === 'function' ? window.RedPenEditorPanel.validate(draft) : { valid: true, errors: {} };
-        if (!v.valid) { if (window.RedPenEditorPanel && window.RedPenEditorPanel.showErrors) window.RedPenEditorPanel.showErrors(v.errors || {}); return; }
+        
+        console.log('[RedPen Editor] Validation result:', v); // ✅ ЛОГ 4
+        
+        if (!v.valid) { 
+          console.warn('[RedPen Editor] Validation failed, errors:', v.errors); // ✅ ЛОГ 5
+          if (window.RedPenEditorPanel && window.RedPenEditorPanel.showErrors) window.RedPenEditorPanel.showErrors(v.errors || {}); 
+          return; 
+        }
+        
         try { if (!st.page.pageId && typeof window.currentPageId === 'string') st.page.pageId = window.currentPageId.split('_')[1]; } catch(e) { /* noop */ }
-        if (!st.auth.isAuthenticated) { showLoginModal(); return; }
+        
+        if (!st.auth.isAuthenticated) { 
+          console.warn('[RedPen Editor] Not authenticated, showing login modal'); // ✅ ЛОГ 6
+          showLoginModal(); 
+          return; 
+        }
+        
+        console.log('[RedPen Editor] Getting CSRF token...'); // ✅ ЛОГ 7
         await getCsrf();
+        
         var result;
         try {
+          console.log('[RedPen Editor] Calling saveAnnotationToServer with draft:', draft); // ✅ ЛОГ 8
           result = await saveAnnotationToServer(draft);
+          console.log('[RedPen Editor] Save result:', result); // ✅ ЛОГ 9
         } catch(err) {
+          console.error('[RedPen Editor] Save error:', err); // ✅ ЛОГ 10
           if (err && err.code === 401) { showLoginModal('Сессия истекла, войдите заново'); return; }
           if (err && err.code === 409) {
             var agree = window.confirm('Кто-то изменил страницу. Обновить данные?');
@@ -737,11 +789,13 @@
           window.alert('Не удалось отправить. Попробуйте ещё раз.');
           return;
         }
+        
         var serverId = result && result.id ? String(result.id) : (draft.id || undefined);
         st.page.serverPageSha = result && result.serverPageSha ? result.serverPageSha : st.page.serverPageSha;
         var annType = draft.annType;
         var content = draft.content || '';
         var coords = Array.isArray(draft.coords) ? [draft.coords[0], draft.coords[1]] : undefined;
+        
         if (annType === 'general') {
           st.cache.general = { id: serverId ? serverId : undefined, content: content };
           try { var gc = document.getElementById('global-comment'); if (gc) gc.textContent = content; } catch(e){}
@@ -764,11 +818,13 @@
           st.draft = { id: idToUse, annType: annType, content: content, coords: coords };
           beginEditingExisting(st.draft);
         }
+        
+        console.log('[RedPen Editor] Submit completed successfully'); // ✅ ЛОГ 11
         if (window.RedPenEditorPanel && window.RedPenEditorPanel.setPreviewEnabled) window.RedPenEditorPanel.setPreviewEnabled(false);
         if (window.RedPenEditorPanel && window.RedPenEditorPanel.setSubmitEnabled) window.RedPenEditorPanel.setSubmitEnabled(false);
         if (window.RedPenEditorPanel && window.RedPenEditorPanel.revalidate) window.RedPenEditorPanel.revalidate();
         try { window.alert('Отправлено'); } catch(e){}
-      } catch(e){ console.error('[RedPen Editor] Submit error:', e); }
+      } catch(e){ console.error('[RedPen Editor] Submit error (top level):', e); }
     };
 
     window.RedPenEditor.onCancel = function(){
@@ -796,6 +852,10 @@
   window.RedPenEditor.onAnnotationsLoaded = function(anns){
     try {
       if (!Array.isArray(anns)) return;
+      // Editor state is only initialized in editor mode (?editor=1). In the
+      // plain viewer main.js still calls this hook, so bail out before touching
+      // state.* to avoid a caught-but-noisy TypeError on every page load.
+      if (!window.RedPenEditor.state) return;
       try {
         var cpid = (typeof window.currentPageId === 'string') ? window.currentPageId : '';
         if (cpid && cpid.indexOf('_') !== -1) {
