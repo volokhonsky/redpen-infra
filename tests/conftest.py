@@ -26,6 +26,7 @@ _TMP_ROOT = tempfile.mkdtemp(prefix="redpen_pytest_")
 os.environ.setdefault("STORAGE_DIR", os.path.join(_TMP_ROOT, "data"))
 os.environ.setdefault("LOG_DIR", os.path.join(_TMP_ROOT, "logs"))
 os.environ.setdefault("DB_PATH", os.path.join(_TMP_ROOT, "db", "redpen.db"))
+os.environ.setdefault("PUBLISH_DIR", os.path.join(_TMP_ROOT, "public"))
 # Keep CORS permissive for tests unless the environment says otherwise.
 os.environ.setdefault("CORS_ALLOW_ORIGINS", "*")
 # TestClient talks over plain http; a Secure cookie would be dropped.
