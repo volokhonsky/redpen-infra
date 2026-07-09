@@ -151,6 +151,46 @@ def test_annotations_from_md_flag_converts(synthetic_project, tmp_path, monkeypa
     assert data[0]["annType"] == "main"
 
 
+# ---------------------------------------------------------------------------
+# Page manifest generation (stage 2, B.2): wired in after publish_website_data.
+# ---------------------------------------------------------------------------
+
+def test_manifest_not_written_without_pagenumbering_section(synthetic_project, tmp_path):
+    # The synthetic fixture's meta.json has no pageNumbering section at all ->
+    # legacy mode, zero regression for documents not yet migrated.
+    import json
+
+    build, project_root_path = synthetic_project
+    target = tmp_path / "out"
+    build.publish_website_data(str(target))
+
+    assert build.generate_page_manifests(str(target)) is True
+
+    metadata = json.loads((target / DOC / "metadata.json").read_text("utf-8"))
+    assert "pages" not in metadata
+
+
+def test_manifest_written_when_pagenumbering_section_present(synthetic_project, tmp_path):
+    import json
+
+    build, project_root_path = synthetic_project
+    target = tmp_path / "out"
+    build.publish_website_data(str(target))
+
+    meta_path = os.path.join(project_root_path, "redpen-content", DOC, "meta.json")
+    with open(meta_path, encoding="utf-8") as f:
+        meta = json.load(f)
+    meta["pageNumbering"] = {"frontMatter": [], "printedStartFile": "007", "printedStartNumber": 1}
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f)
+
+    assert build.generate_page_manifests(str(target)) is True
+
+    metadata = json.loads((target / DOC / "metadata.json").read_text("utf-8"))
+    assert metadata["pages"] == [{"file": "page_007", "label": "1"}]
+    assert metadata["totalPages"] == 1
+
+
 def test_index_page_lists_document_title(synthetic_project, tmp_path):
     build, _ = synthetic_project
     target = tmp_path / "out"

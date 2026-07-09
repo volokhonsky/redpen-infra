@@ -167,6 +167,10 @@ publish_data = import_module_from_file(
     'publish_data',
     os.path.join(project_root, 'scripts', 'publish_data.py')
 )
+generate_page_manifest = import_module_from_file(
+    'generate_page_manifest',
+    os.path.join(project_root, 'scripts', 'generate_page_manifest.py')
+)
 
 def run_command(command, cwd=None):
     """Run a shell command and return the result"""
@@ -243,6 +247,33 @@ def convert_annotations(target_dir=None, document=None, specific_folders=None):
                 success = False
 
         return success
+
+def generate_page_manifests(target_dir=None, document=None, specific_folders=None):
+    """
+    Generate the `pages` manifest in metadata.json for each document (stage 2 /
+    B.2). Documents whose redpen-content/<doc>/meta.json has no
+    pageNumbering.printedStartFile/printedStartNumber section are left
+    untouched (legacy mode) -- this is the common case today, not an error.
+
+    Returns False (aborting the build) only if a document THAT HAS opted in
+    fails manifest validation.
+    """
+    documents = [document] if document else get_document_folders(specific_folders)
+    output_root = target_dir if target_dir else os.path.join(project_root, 'redpen-publish')
+
+    success = True
+    for doc in documents:
+        doc_dir = os.path.join(output_root, doc)
+        meta_path = os.path.join(project_root, 'redpen-content', doc, 'meta.json')
+        if not os.path.isdir(doc_dir) or not os.path.isfile(meta_path):
+            continue
+        try:
+            generate_page_manifest.generate(doc_dir, meta_path)
+        except generate_page_manifest.ManifestError as e:
+            print(f"Error generating page manifest for {doc}: {e}")
+            success = False
+
+    return success
 
 def run_annotation_tests(target_dir=None):
     """Run annotation position tests"""
@@ -946,6 +977,12 @@ def main():
     # Step 3: Publish data
     if not publish_website_data(target_dir, document, specific_folders):
         print("Failed to publish website data. Aborting.")
+        sys.exit(1)
+
+    # Step 3.5: Generate the page-addressing manifest (stage 2 / B.2). No-op
+    # for documents without a pageNumbering.printedStartFile section.
+    if not generate_page_manifests(target_dir, document, specific_folders):
+        print("Failed to generate page manifest. Aborting.")
         sys.exit(1)
 
     # Step 4: Create index page with document selection menu
