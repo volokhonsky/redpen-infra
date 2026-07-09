@@ -108,6 +108,49 @@ def test_converted_annotation_json_is_valid(synthetic_project, tmp_path):
     assert data[1]["annType"] == "general"
 
 
+# ---------------------------------------------------------------------------
+# --annotations-from-md (stage 2, A2.7): md->json conversion is archive-only
+# and off by default so a routine build doesn't clobber annotations/*.json
+# exported from the SQLite DB by scripts/api/export_annotations.py.
+# ---------------------------------------------------------------------------
+
+def test_default_build_does_not_touch_existing_annotations_json(synthetic_project, tmp_path, monkeypatch):
+    build, _ = synthetic_project
+    target = tmp_path / "out"
+
+    # Simulate a page_007.json already exported from the DB, distinct from
+    # what md_to_json would produce from the synthetic page_007.md.
+    ann_dir = target / DOC / "annotations"
+    ann_dir.mkdir(parents=True)
+    exported_marker = '[{"id": "from-db", "text": "exported from db", "annType": "comment"}]'
+    (ann_dir / "page_007.json").write_text(exported_marker, encoding="utf-8")
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["build_website.py", "--target-dir", str(target), "--skip-tests", "--skip-push"],
+    )
+    build.main()
+
+    assert (ann_dir / "page_007.json").read_text("utf-8") == exported_marker
+
+
+def test_annotations_from_md_flag_converts(synthetic_project, tmp_path, monkeypatch):
+    build, _ = synthetic_project
+    target = tmp_path / "out"
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["build_website.py", "--target-dir", str(target), "--skip-tests", "--skip-push", "--annotations-from-md"],
+    )
+    build.main()
+
+    import json
+
+    data = json.loads((target / DOC / "annotations" / "page_007.json").read_text("utf-8"))
+    assert isinstance(data, list) and len(data) == 2
+    assert data[0]["annType"] == "main"
+
+
 def test_index_page_lists_document_title(synthetic_project, tmp_path):
     build, _ = synthetic_project
     target = tmp_path / "out"
