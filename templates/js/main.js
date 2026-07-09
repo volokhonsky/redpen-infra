@@ -7,6 +7,7 @@
 let overlayContainer;
 let currentPageId;
 let currentPageNum = undefined;  // ✅ ДОБАВИТЬ
+let currentPageLabel;
 let currentDocId = null;
 let allAnns = [];
 let isMobile = false;
@@ -43,6 +44,9 @@ function isEditorMode() {
 }
 
 function clampPage(n) {
+  // Doubles as clampIndex(): in manifest mode metadata.totalPages is always
+  // set to metadata.pages.length (see scripts/generate_page_manifest.py), so
+  // this clamps into [1, pages.length] there and [1, totalPages] otherwise.
   const total = (metadata && metadata.totalPages) ? metadata.totalPages : 1;
   n = parseInt(n, 10);
   if (isNaN(n)) n = 1;
@@ -51,9 +55,113 @@ function clampPage(n) {
   return n;
 }
 
+/**
+ * Manifest-based addressing (docs/page-addressing-proposal.md, B.3).
+ * Active only when metadata.pages is a non-empty array; every document
+ * without it keeps the exact legacy behavior below (physicalStart math,
+ * ?page=N, no ?p=).
+ */
+function manifestMode() {
+  return !!(metadata && Array.isArray(metadata.pages) && metadata.pages.length > 0);
+}
+
+function fileForIndex(i) {
+  return metadata.pages[i - 1].file;
+}
+
+function labelForIndex(i) {
+  return metadata.pages[i - 1].label;
+}
+
+function indexForLabel(label) {
+  if (!manifestMode() || label === undefined || label === null) return -1;
+  const norm = String(label).trim().toLowerCase();
+  if (!norm) return -1;
+  for (let i = 0; i < metadata.pages.length; i++) {
+    if (String(metadata.pages[i].label).toLowerCase() === norm) return i + 1;
+  }
+  return -1;
+}
+
+function indexForFileKey(fileKey) {
+  if (!manifestMode()) return -1;
+  const file = 'page_' + fileKey;
+  for (let i = 0; i < metadata.pages.length; i++) {
+    if (metadata.pages[i].file === file) return i + 1;
+  }
+  return -1;
+}
+
+/** Old physicalStart arithmetic: legacy logical page number -> file key. */
+function legacyFileKeyForLogicalPage(n) {
+  const phys = (metadata.pageNumbering && metadata.pageNumbering.physicalStart || 1) + (n - 1);
+  return String(phys).padStart(3, '0');
+}
+
+/**
+ * Resolve a legacy ?page=N / #pageN value to a navigation index. In manifest
+ * mode this looks up the file the old arithmetic points to and returns its
+ * manifest index (so old links keep opening the same file); if that file
+ * isn't in the manifest, N is clamped and used directly as an index.
+ */
+function resolveLegacyPageNumber(n) {
+  if (!manifestMode()) return clampPage(n);
+  const idx = indexForFileKey(legacyFileKeyForLogicalPage(n));
+  return idx !== -1 ? idx : clampPage(n);
+}
+
+/** Accepts a label (manifest mode, case-insensitive) or a plain index/page
+ * number, as typed into the "go to page" input. Returns NaN if unusable. */
+function resolveIndexFromUserInput(raw) {
+  const trimmed = String(raw === undefined || raw === null ? '' : raw).trim();
+  if (!trimmed) return NaN;
+  const byLabel = indexForLabel(trimmed);
+  if (byLabel !== -1) return byLabel;
+  const n = parseInt(trimmed, 10);
+  return isNaN(n) ? NaN : n;
+}
+
+/** Resolve the initial index to load from the current URL, in priority
+ * order: ?p=<label> (manifest only) -> legacy ?page=N -> legacy #pageN ->
+ * default. Mirrors docs/page-addressing-proposal.md section 3.2. */
+function resolveStartIndex() {
+  const usp = new URLSearchParams(window.location.search || '');
+
+  if (manifestMode()) {
+    const pParam = usp.get('p');
+    if (pParam !== null && pParam !== '') {
+      const idx = indexForLabel(pParam);
+      if (idx !== -1) return idx;
+    }
+  }
+
+  const pageFromQuery = parseInt(usp.get('page'), 10);
+  if (!isNaN(pageFromQuery)) return resolveLegacyPageNumber(pageFromQuery);
+
+  const hash = window.location.hash;
+  if (hash && hash.startsWith('#page')) {
+    const hn = parseInt(hash.substring(5), 10);
+    if (!isNaN(hn)) return resolveLegacyPageNumber(hn);
+  }
+
+  if (manifestMode()) {
+    const idx = indexForLabel('1');
+    return idx !== -1 ? idx : 1;
+  }
+  if (metadata.pageNumbering && metadata.pageNumbering.logicalStart) {
+    return clampPage(metadata.pageNumbering.logicalStart);
+  }
+  return 1;
+}
+
 function buildPageUrl(n) {
   const url = new URL(window.location.href);
-  url.searchParams.set('page', String(n));
+  if (manifestMode()) {
+    url.searchParams.delete('page');
+    url.searchParams.set('p', String(labelForIndex(n)));
+  } else {
+    url.searchParams.set('page', String(n));
+  }
   if (isEditorMode()) url.searchParams.set('editor', '1'); else url.searchParams.delete('editor');
   return url.pathname + url.search + url.hash;
 }
@@ -96,34 +204,26 @@ async function init() {
     }, 250);
   });
 
-  // Determine initial page from query (?page) then hash (#page)
-  const usp = new URLSearchParams(window.location.search || '');
-  const pageFromQuery = parseInt(usp.get('page'), 10);
-  let startPage = !isNaN(pageFromQuery) ? pageFromQuery : undefined;
-  if (typeof startPage === 'undefined') {
-    const hash = window.location.hash;
-    if (hash && hash.startsWith('#page')) {
-      const pageNum = parseInt(hash.substring(5), 10);
-      if (!isNaN(pageNum)) startPage = pageNum;
+  // Determine initial index: ?p=<label> (manifest) -> legacy ?page=N ->
+  // legacy #pageN -> default. See resolveStartIndex().
+  const startPage = resolveStartIndex();
+
+  // Manifest mode: normalize a legacy ?page=/#page URL to the new ?p=<label>
+  // form without adding a history entry (old links still open the same
+  // file, but the address bar moves to the canonical form going forward).
+  if (manifestMode()) {
+    const normalized = buildPageUrl(startPage);
+    if (normalized !== window.location.pathname + window.location.search + window.location.hash) {
+      history.replaceState({ page: startPage }, '', normalized);
     }
   }
-  if (typeof startPage === 'undefined') {
-    if (metadata.pageNumbering && metadata.pageNumbering.logicalStart) {
-      startPage = metadata.pageNumbering.logicalStart;
-    } else {
-      startPage = 1;
-    }
-  }
-  startPage = clampPage(startPage);
 
   // Load the initial page
   loadPage(startPage);
 
   // Listen for Back/Forward navigation
   window.addEventListener('popstate', () => {
-    const usp2 = new URLSearchParams(window.location.search || '');
-    const p = parseInt(usp2.get('page'), 10);
-    loadPage(clampPage(isNaN(p) ? 1 : p));
+    loadPage(resolveStartIndex());
   });
 
   // Delegate clicks on pagination to navigate without full reload
@@ -136,11 +236,15 @@ async function init() {
       if (!href) return;
       try {
         const u = new URL(href, window.location.href);
-        const pStr = u.searchParams.get('page');
-        if (pStr) {
+        const labelStr = u.searchParams.get('p');
+        const pageStr = u.searchParams.get('page');
+        if (manifestMode() && labelStr !== null) {
           e.preventDefault();
-          const n = parseInt(pStr, 10);
-          navigateTo(n);
+          const idx = indexForLabel(labelStr);
+          if (idx !== -1) navigateTo(idx);
+        } else if (pageStr) {
+          e.preventDefault();
+          navigateTo(resolveLegacyPageNumber(parseInt(pageStr, 10)));
         }
       } catch (_) { /* ignore */ }
     });
@@ -153,8 +257,11 @@ async function init() {
 }
 
 /**
- * Load a page with the given logical page number
- * @param {number} pageNum - Logical page number to load
+ * Load a page for the given navigation index (1..N): the manifest index in
+ * manifest mode, or the legacy logical page number otherwise -- both ranges
+ * are identical (see clampPage), so callers don't need to know which mode
+ * is active.
+ * @param {number} pageNum - Navigation index to load
  */
 async function loadPage(pageNum) {
   isMobile = checkMobile();
@@ -169,10 +276,16 @@ async function loadPage(pageNum) {
   // ✅ УСТАНОВИТЬ currentPageNum перед вычислением
   currentPageNum = pageNum;
 
-  // Compute physical page: logicalStart + pageNum - 1
-  const phys = (metadata.pageNumbering.physicalStart || 1) + (pageNum - 1);
-  currentPageId = 'page_' + String(phys).padStart(3, '0');
-  
+  if (manifestMode()) {
+    currentPageId = fileForIndex(pageNum);
+    currentPageLabel = String(labelForIndex(pageNum));
+  } else {
+    // Compute physical page: logicalStart + pageNum - 1
+    const phys = (metadata.pageNumbering.physicalStart || 1) + (pageNum - 1);
+    currentPageId = 'page_' + String(phys).padStart(3, '0');
+    currentPageLabel = String(pageNum);
+  }
+
   // ✅ ОБНОВИТЬ состояние редактора, если он присутствует
   if (window.RedPenEditor && window.RedPenEditor.state) {
     window.RedPenEditor.state.page.pageNum = currentPageNum;
@@ -241,33 +354,31 @@ async function loadPage(pageNum) {
 }
 
 /**
- * Jump to next page
+ * Jump to next page (by navigation index -- see loadPage())
  */
 function nextPage() {
   const total = metadata.totalPages || 1;
-  const currentLogical = logicalFromPhysical();
-  if (currentLogical < total) navigateTo(currentLogical + 1);
+  if (currentPageNum < total) navigateTo(currentPageNum + 1);
 }
 
 /**
- * Jump to previous page
+ * Jump to previous page (by navigation index -- see loadPage())
  */
 function prevPage() {
-  const currentLogical = logicalFromPhysical();
-  if (currentLogical > 1) navigateTo(currentLogical - 1);
+  if (currentPageNum > 1) navigateTo(currentPageNum - 1);
 }
 
 /**
- * Go to a specific page entered by the user
+ * Go to a page entered by the user: a manifest label (e.g. "A1", "17",
+ * case-insensitive) in manifest mode, or a plain page number otherwise.
  */
 function goToPage() {
   const input = document.getElementById('page-input');
-  const pageNum = parseInt(input.value);
   const totalPages = metadata.totalPages || 1;
+  const idx = resolveIndexFromUserInput(input.value);
 
-  if (!isNaN(pageNum)) {
-    const clamped = Math.max(1, Math.min(totalPages, pageNum));
-    navigateTo(clamped);
+  if (!isNaN(idx)) {
+    navigateTo(idx); // navigateTo() clamps
     input.value = ''; // Clear the input after navigation
   } else {
     alert(`Пожалуйста, введите номер страницы от 1 до ${totalPages}`);
@@ -275,7 +386,9 @@ function goToPage() {
 }
 
 /**
- * Convert currentPageId (physical) to logical page number
+ * Convert currentPageId (physical) to legacy logical page number. Legacy-mode
+ * helper kept for callers outside main.js; in manifest mode use
+ * currentPageNum (already the manifest index) instead.
  */
 function logicalFromPhysical() {
   const phys = parseInt(currentPageId.split('_')[1], 10);
@@ -283,8 +396,8 @@ function logicalFromPhysical() {
 }
 
 /**
- * Update pagination based on current page and total pages
- * @param {number} currentPage - Current logical page number
+ * Update pagination based on the current navigation index and total count.
+ * @param {number} currentPage - Current navigation index
  */
 function updatePagination(currentPage) {
   const pageNumbersContainer = document.getElementById('page-numbers');
@@ -327,7 +440,7 @@ function updatePagination(currentPage) {
     // Add page number
     const pageElement = document.createElement('a');
     pageElement.className = 'page-number' + (pageNum === currentPage ? ' active' : '');
-    pageElement.textContent = pageNum;
+    pageElement.textContent = manifestMode() ? labelForIndex(pageNum) : pageNum;
     pageElement.href = hrefFor(pageNum);
     // No inline onclick; use delegated handler for SPA navigation
     pageNumbersContainer.appendChild(pageElement);
