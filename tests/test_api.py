@@ -626,6 +626,107 @@ def test_stale_client_page_sha_returns_409(client):
     assert third.status_code == 200
 
 
+# ---------------------------------------------------------------------------
+# Drafts (stage 3, C.2): status field, editor-only visibility
+# ---------------------------------------------------------------------------
+
+
+def test_draft_annotation_not_in_static_file_or_anonymous_get(client):
+    doc, page = "medinsky11klass", "70"
+    created = client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "wip", "coords": [1, 1], "status": "draft"},
+    )
+    assert created.status_code == 200
+    assert created.json()["published"] is False
+    ann_id = created.json()["id"]
+
+    assert _published_annotations(doc, "070") == []
+
+    anon = TestClient(main.app)
+    anon_page = anon.get(f"/api/editor/{doc}/{page}").json()
+    assert ann_id not in [a["id"] for a in anon_page["annotations"]]
+
+    editor_page = client.get(f"/api/editor/{doc}/{page}").json()
+    draft_anns = [a for a in editor_page["annotations"] if a["id"] == ann_id]
+    assert len(draft_anns) == 1
+    assert draft_anns[0]["draft"] is True
+
+
+def test_put_without_status_preserves_existing_draft_status(client):
+    doc, page = "medinsky11klass", "71"
+    created = client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "wip", "coords": [1, 1], "status": "draft"},
+    ).json()
+    ann_id = created["id"]
+
+    updated = client.put(
+        f"/api/editor/{doc}/{page}/{ann_id}",
+        json={"annType": "comment", "text": "still wip", "coords": [2, 2]},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["published"] is False
+    assert _published_annotations(doc, "071") == []
+
+
+def test_put_with_status_published_publishes_draft(client):
+    doc, page = "medinsky11klass", "72"
+    created = client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "wip", "coords": [1, 1], "status": "draft"},
+    ).json()
+    ann_id = created["id"]
+
+    published = client.put(
+        f"/api/editor/{doc}/{page}/{ann_id}",
+        json={"annType": "comment", "text": "ready", "coords": [2, 2], "status": "published"},
+    )
+    assert published.status_code == 200
+    assert published.json()["published"] is True
+    files = _published_annotations(doc, "072")
+    assert [a["id"] for a in files] == [ann_id]
+    assert files[0]["text"] == "ready"
+
+
+def test_invalid_status_value_is_400(client):
+    r = client.post(
+        "/api/editor/medinsky11klass/73",
+        json={"annType": "comment", "text": "x", "coords": [1, 1], "status": "bogus"},
+    )
+    assert r.status_code == 400
+
+
+@pytest.mark.parametrize("role", ["anon", "viewer", "editor"])
+def test_editor_get_draft_visibility_matrix(role):
+    doc, page = "medinsky11klass", "74"
+    editor_client = TestClient(main.app)
+    _login_with_csrf(editor_client)
+    created = editor_client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "wip", "coords": [1, 1], "status": "draft"},
+    ).json()
+    ann_id = created["id"]
+
+    if role == "anon":
+        c = TestClient(main.app)
+    elif role == "viewer":
+        c = TestClient(main.app)
+        viewer_user = db.get_or_create_user_google(
+            f"sub-viewer-draft-{page}", f"viewer-draft-{page}@example.com", "Viewer", None
+        )
+        c.cookies.set("redpen_session", db.create_session(viewer_user["id"]))
+    else:
+        c = editor_client
+
+    page_data = c.get(f"/api/editor/{doc}/{page}").json()
+    ids = [a["id"] for a in page_data["annotations"]]
+    if role == "editor":
+        assert ann_id in ids
+    else:
+        assert ann_id not in ids
+
+
 def test_stale_client_page_sha_returns_409_on_put(client):
     doc, page = "medinsky11klass", "42"
     created = client.post(

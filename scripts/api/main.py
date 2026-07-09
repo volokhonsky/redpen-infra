@@ -172,6 +172,27 @@ async def require_user(request: Request) -> Dict[str, Any]:
     }
 
 
+async def get_optional_user(request: Request) -> Optional[Dict[str, Any]]:
+    """Like require_user, but returns None instead of raising 401 -- used by
+    endpoints that behave differently for anonymous/viewer vs editor/admin
+    without requiring a session (e.g. GET /api/editor/{docId}/{pageNum})."""
+    session_id = request.cookies.get("redpen_session")
+    result = db.get_session(session_id) if session_id else None
+    if not result:
+        return None
+    session, user = result
+    return {
+        "sessionId": session["id"],
+        "csrf": session["csrf"],
+        "userId": user["id"],
+        "email": user["email"],
+        "name": user["name"],
+        "pictureUrl": user["pictureUrl"],
+        "role": user["role"],
+        "username": user["name"] or user["email"] or str(user["id"]),
+    }
+
+
 async def require_csrf(request: Request, user: Dict[str, str] = Depends(require_user)) -> Dict[str, str]:
     """FastAPI dependency: verify X-CSRF-Token against the session-bound token."""
     header_token = request.headers.get("X-CSRF-Token")
@@ -248,6 +269,12 @@ def _parse_annotation_body(body: Dict[str, Any]) -> Dict[str, Any]:
 
     if "id" in body and isinstance(body["id"], str) and body["id"].strip() != "":
         ann["id"] = body["id"].strip()
+
+    if "status" in body:
+        status = body["status"]
+        if status not in ("draft", "published"):
+            raise HTTPException(status_code=400, detail="status must be 'draft' or 'published'")
+        ann["status"] = status
 
     return ann
 
@@ -637,9 +664,23 @@ def _current_page_sha(docId: str, page_num_str: str) -> str:
     return publisher.compute_page_sha(publisher.render_page(docId, page_num_str))
 
 
+def _resolve_status(parsed: Dict[str, Any], existing: Optional[Dict[str, Any]]) -> str:
+    """If the client sent an explicit status, use it. Otherwise preserve the
+    existing annotation's status (a PUT without status must not silently
+    publish a draft); brand-new annotations default to published."""
+    if "status" in parsed:
+        return parsed["status"]
+    if existing is not None:
+        return existing["status"]
+    return "published"
+
+
 @app.get("/api/editor/{docId}/{pageNum}")
-async def get_editor_page(docId: str, pageNum: str):
-    """GET page data for editor, rendered from the SQLite annotations store."""
+async def get_editor_page(docId: str, pageNum: str, user: Optional[Dict[str, Any]] = Depends(get_optional_user)):
+    """GET page data for editor, rendered from the SQLite annotations store.
+    Anonymous/viewer callers see only published annotations; editor/admin
+    additionally see drafts (flagged draft=true), since drafts never reach
+    the published static JSON."""
     if not _validate_doc_id(docId):
         raise HTTPException(status_code=400, detail="invalid docId")
     page_num_str = _validate_page_key(pageNum)
@@ -648,12 +689,20 @@ async def get_editor_page(docId: str, pageNum: str):
 
     rendered = publisher.render_page(docId, page_num_str)
     sha = publisher.compute_page_sha(rendered)
+    annotations = list(rendered)
 
-    logger.info("GET editor docId=%s pageKey=%s anns=%d", docId, page_num_str, len(rendered))
+    if user is not None and user.get("role") in ("editor", "admin"):
+        for ann in db.list_annotations(doc_id=docId, page_num=page_num_str, status="draft", limit=1000):
+            item: Dict[str, Any] = {"id": ann["annId"], "text": ann["text"], "annType": ann["annType"], "draft": True}
+            if ann["coordX"] is not None and ann["coordY"] is not None:
+                item["coords"] = [ann["coordX"], ann["coordY"]]
+            annotations.append(item)
+
+    logger.info("GET editor docId=%s pageKey=%s anns=%d", docId, page_num_str, len(annotations))
     return {
         "pageId": f"{docId}_page_{page_num_str}",
         "serverPageSha": sha,
-        "annotations": rendered,
+        "annotations": annotations,
     }
 
 
@@ -683,18 +732,21 @@ async def post_editor_annotation(docId: str, pageNum: str, request: Request, use
 
     coords = ann.get("coords")
     coord_x, coord_y = (coords[0], coords[1]) if coords else (None, None)
-    action = "update" if db.get_annotation(docId, page_num_str, ann["id"]) else "create"
+    existing = db.get_annotation(docId, page_num_str, ann["id"])
+    action = "update" if existing else "create"
+    status = _resolve_status(ann, existing)
 
     db.upsert_annotation_db(
         docId, page_num_str, ann["id"], ann["annType"], ann["text"],
-        coord_x=coord_x, coord_y=coord_y, author_id=user["userId"], action=action,
+        coord_x=coord_x, coord_y=coord_y, status=status, author_id=user["userId"], action=action,
     )
-    published = publisher.publish_page(docId, page_num_str)
+    write_ok = publisher.publish_page(docId, page_num_str)
+    published = write_ok and status == "published"
     new_sha = _current_page_sha(docId, page_num_str)
 
     logger.info(
-        "POST editor SUCCESS docId=%s pageKey=%s annId=%s published=%s",
-        docId, page_num_str, ann["id"], published,
+        "POST editor SUCCESS docId=%s pageKey=%s annId=%s status=%s published=%s",
+        docId, page_num_str, ann["id"], status, published,
     )
     return {"id": ann["id"], "serverPageSha": new_sha, "published": published}
 
@@ -724,18 +776,21 @@ async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: R
 
     coords = parsed.get("coords")
     coord_x, coord_y = (coords[0], coords[1]) if coords else (None, None)
-    action = "update" if db.get_annotation(docId, page_num_str, annId) else "create"
+    existing = db.get_annotation(docId, page_num_str, annId)
+    action = "update" if existing else "create"
+    status = _resolve_status(parsed, existing)
 
     db.upsert_annotation_db(
         docId, page_num_str, annId, parsed["annType"], parsed["text"],
-        coord_x=coord_x, coord_y=coord_y, author_id=user["userId"], action=action,
+        coord_x=coord_x, coord_y=coord_y, status=status, author_id=user["userId"], action=action,
     )
-    published = publisher.publish_page(docId, page_num_str)
+    write_ok = publisher.publish_page(docId, page_num_str)
+    published = write_ok and status == "published"
     new_sha = _current_page_sha(docId, page_num_str)
 
     logger.info(
-        "PUT editor SUCCESS docId=%s pageKey=%s annId=%s published=%s",
-        docId, page_num_str, annId, published,
+        "PUT editor SUCCESS docId=%s pageKey=%s annId=%s status=%s published=%s",
+        docId, page_num_str, annId, status, published,
     )
     return {"id": annId, "serverPageSha": new_sha, "published": published}
 
