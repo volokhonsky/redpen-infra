@@ -2,11 +2,15 @@
 Tests for the FastAPI service in ``scripts/api`` driven through Starlette's
 ``TestClient`` (no running server or Docker required).
 
-Storage and log directories are redirected to a temp dir by ``conftest.py``,
-so these tests never touch real data. The one endpoint with repo side effects
-(``/api/rebuild``) is exercised only on its validation/404 paths, which do not
-write anything.
+Storage, log, and publish directories are redirected to a temp dir by
+``conftest.py``, so these tests never touch real data. Stage 2: annotations
+live in SQLite (``db.py``); PUBLISH_DIR is a throwaway directory, so tests can
+assert that the rendered ``page_NNN.json`` files agree with the DB after each
+mutation.
 """
+
+import json
+import os
 
 import pytest
 
@@ -20,6 +24,12 @@ from fastapi.testclient import TestClient
 import config  # noqa: E402  (imported after conftest sets env vars)
 import db  # noqa: E402  (imported after conftest sets env vars)
 import main  # noqa: E402  (imported after conftest sets env vars)
+
+
+def _published_annotations(doc_id: str, page_num_str: str):
+    path = os.path.join(config.PUBLISH_DIR, doc_id, "annotations", f"page_{page_num_str}.json")
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -173,6 +183,7 @@ def test_editor_post_creates_annotation_and_persists(client):
     created = r.json()
     assert created["id"].startswith("srv-")
     assert created["serverPageSha"]
+    assert created["published"] is True
 
     # GET should now return the persisted annotation.
     page_data = client.get(f"/api/editor/{doc}/{page}").json()
@@ -182,6 +193,10 @@ def test_editor_post_creates_annotation_and_persists(client):
     assert ann["annType"] == "comment"
     assert ann["text"] == "hello"
     assert ann["coords"] == [100, 200]
+
+    # The published static snapshot matches the DB-backed GET response.
+    published = _published_annotations(doc, "021")
+    assert published == page_data["annotations"]
 
 
 def test_editor_post_general_annotation_without_coords(client):
@@ -220,13 +235,18 @@ def test_editor_put_updates_existing_annotation(client):
         json={"annType": "main", "text": "updated", "coords": [3, 4]},
     )
     assert r.status_code == 200
-    assert r.json()["id"] == ann_id
+    body = r.json()
+    assert body["id"] == ann_id
+    assert body["published"] is True
 
     page_data = client.get(f"/api/editor/{doc}/{page}").json()
     anns = [a for a in page_data["annotations"] if a["id"] == ann_id]
     assert len(anns) == 1  # updated in place, not duplicated
     assert anns[0]["text"] == "updated"
     assert anns[0]["annType"] == "main"
+
+    published = _published_annotations(doc, "024")
+    assert published == page_data["annotations"]
 
 
 def test_editor_put_upserts_when_id_missing(client):
@@ -242,22 +262,63 @@ def test_editor_put_upserts_when_id_missing(client):
 
 
 # ---------------------------------------------------------------------------
-# /api/rebuild validation (no-write paths only)
+# DELETE /api/editor/{docId}/{pageNum}/{annId} (stage 2, soft-delete)
 # ---------------------------------------------------------------------------
 
-def test_rebuild_invalid_book_slug(client):
-    r = client.post("/api/rebuild/Bad Slug/annotations/page_007")
-    assert r.status_code == 400
+def test_editor_delete_removes_annotation_from_get_and_published_file(client):
+    doc, page = "medinsky11klass", "50"
+    created = client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "to be deleted", "coords": [1, 1]},
+    ).json()
+    ann_id = created["id"]
+
+    r = client.delete(f"/api/editor/{doc}/{page}/{ann_id}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == ann_id
+    assert body["published"] is True
+
+    page_data = client.get(f"/api/editor/{doc}/{page}").json()
+    assert ann_id not in [a["id"] for a in page_data["annotations"]]
+
+    published = _published_annotations(doc, "050")
+    assert ann_id not in [a["id"] for a in published]
 
 
-def test_rebuild_invalid_page_id(client):
-    r = client.post("/api/rebuild/medinsky11klass/annotations/page_7")
-    assert r.status_code == 400
-
-
-def test_rebuild_missing_markdown(client):
-    r = client.post("/api/rebuild/nonexistentbook/annotations/page_999")
+def test_editor_delete_missing_annotation_is_404(client):
+    r = client.delete("/api/editor/medinsky11klass/51/does-not-exist")
     assert r.status_code == 404
+
+
+def test_editor_delete_already_deleted_is_404(client):
+    doc, page = "medinsky11klass", "52"
+    created = client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "one shot", "coords": [1, 1]},
+    ).json()
+    ann_id = created["id"]
+
+    assert client.delete(f"/api/editor/{doc}/{page}/{ann_id}").status_code == 200
+    assert client.delete(f"/api/editor/{doc}/{page}/{ann_id}").status_code == 404
+
+
+def test_anonymous_delete_editor_annotation_is_rejected():
+    anon = TestClient(main.app)
+    r = anon.delete("/api/editor/medinsky11klass/53/some-id")
+    assert r.status_code == 401
+
+
+def test_viewer_delete_editor_annotation_is_forbidden(client):
+    # A fresh Google-login user defaults to the viewer role (no allowlist entry).
+    # Email must be unique across the whole test session (users.email UNIQUE).
+    c = TestClient(main.app)
+    viewer_user = db.get_or_create_user_google("sub-viewer-test-api", "viewer-test-api@example.com", "Viewer", None)
+    session_id = db.create_session(viewer_user["id"])
+    c.cookies.set("redpen_session", session_id)
+
+    r = c.delete("/api/editor/medinsky11klass/54/some-id")
+    assert r.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -317,12 +378,6 @@ def test_session_with_wrong_csrf_header_is_rejected():
 def test_csrf_endpoint_requires_session():
     anon = TestClient(main.app)
     r = anon.get("/api/auth/csrf")
-    assert r.status_code == 401
-
-
-def test_anonymous_rebuild_is_rejected():
-    anon = TestClient(main.app)
-    r = anon.post("/api/rebuild/medinsky11klass/annotations/page_007")
     assert r.status_code == 401
 
 
