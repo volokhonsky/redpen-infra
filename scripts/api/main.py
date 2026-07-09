@@ -818,6 +818,129 @@ async def delete_editor_annotation(docId: str, pageNum: str, annId: str, user: D
     return {"id": annId, "serverPageSha": new_sha, "published": published}
 
 
+# ===== CABINET (stage 3) =====
+
+ANNOTATION_STATUSES = ("published", "draft", "deleted")
+ANNOTATION_TYPES = ("main", "comment", "general")
+
+
+async def require_editor_read(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
+    """Editor/admin role, no CSRF (GET-only cabinet list endpoints)."""
+    if user.get("role") not in ("editor", "admin"):
+        raise HTTPException(status_code=403, detail="editor role required")
+    return user
+
+
+def _validate_list_params(
+    docId: Optional[str], pageKey: Optional[str], annType: Optional[str],
+    status: Optional[str], limit: int, offset: int, q: Optional[str],
+) -> Dict[str, Any]:
+    if docId is not None and not _validate_doc_id(docId):
+        raise HTTPException(status_code=400, detail="invalid docId")
+    page_num_str = None
+    if pageKey is not None:
+        page_num_str = _validate_page_key(pageKey)
+        if page_num_str is None:
+            raise HTTPException(status_code=400, detail="invalid pageKey")
+    if status is not None and status not in ANNOTATION_STATUSES:
+        raise HTTPException(status_code=400, detail="invalid status")
+    if annType is not None and annType not in ANNOTATION_TYPES:
+        raise HTTPException(status_code=400, detail="invalid annType")
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 200")
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="offset must be >= 0")
+    if q is not None and len(q) > 200:
+        raise HTTPException(status_code=400, detail="q must be at most 200 characters")
+    return {"pageKey": page_num_str}
+
+
+@app.get("/api/annotations")
+async def list_annotations(
+    docId: Optional[str] = None,
+    pageKey: Optional[str] = None,
+    annType: Optional[str] = None,
+    status: Optional[str] = None,
+    authorId: Optional[int] = None,
+    q: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    user: Dict[str, Any] = Depends(require_editor_read),
+):
+    validated = _validate_list_params(docId, pageKey, annType, status, limit, offset, q)
+    items = db.list_annotations(
+        doc_id=docId, page_num=validated["pageKey"], ann_type=annType, status=status,
+        author_id=authorId, q=q, limit=limit, offset=offset,
+    )
+    total = db.count_annotations(
+        doc_id=docId, page_num=validated["pageKey"], ann_type=annType, status=status,
+        author_id=authorId, q=q,
+    )
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/history")
+async def list_history(
+    docId: Optional[str] = None,
+    pageKey: Optional[str] = None,
+    annId: Optional[str] = None,
+    authorId: Optional[int] = None,
+    action: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    user: Dict[str, Any] = Depends(require_editor_read),
+):
+    validated = _validate_list_params(docId, pageKey, None, None, limit, offset, None)
+    items = db.list_history(
+        doc_id=docId, page_num=validated["pageKey"], ann_id=annId, author_id=authorId,
+        action=action, limit=limit, offset=offset,
+    )
+    return {"items": items, "hasMore": len(items) == limit, "limit": limit, "offset": offset}
+
+
+@app.get("/api/stats")
+async def get_stats(user: Dict[str, Any] = Depends(require_user)):
+    return db.get_stats()
+
+
+@app.post("/api/history/{histId}/revert")
+async def revert_history(histId: int, user: Dict[str, Any] = Depends(require_editor)):
+    """Restore an annotation to the exact state recorded in a history
+    snapshot (including that snapshot's own status -- reverting to a
+    delete-record re-deletes, which is intentional: the cabinet shows every
+    record's action and lets the user pick the state they want back)."""
+    record = db.get_history_record(histId)
+    if record is None:
+        raise HTTPException(status_code=404, detail="history record not found")
+
+    snapshot = record["snapshot"] or {}
+    doc_id = record["docId"]
+    page_num = record["pageNum"]
+    ann_id = record["annId"]
+    coords = None
+    if snapshot.get("coordX") is not None and snapshot.get("coordY") is not None:
+        coords = [snapshot["coordX"], snapshot["coordY"]]
+
+    db.upsert_annotation_db(
+        doc_id, page_num, ann_id, snapshot.get("annType"), snapshot.get("text"),
+        coord_x=coords[0] if coords else None, coord_y=coords[1] if coords else None,
+        status=snapshot.get("status", "published"), author_id=user["userId"], action="revert",
+    )
+    published = publisher.publish_page(doc_id, page_num)
+    new_sha = _current_page_sha(doc_id, page_num)
+
+    logger.info(
+        "revert histId=%s docId=%s pageKey=%s annId=%s by=%s",
+        histId, doc_id, page_num, ann_id, user.get("email"),
+    )
+    return {"annId": ann_id, "docId": doc_id, "pageNum": page_num, "serverPageSha": new_sha, "published": published}
+
+
+@app.get("/api/admin/users")
+async def get_admin_users(user: Dict[str, Any] = Depends(require_admin)):
+    return {"users": db.list_users()}
+
+
 # Allow running with `python main.py` for local dev
 
 if __name__ == "__main__":
