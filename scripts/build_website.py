@@ -872,6 +872,16 @@ def main():
     parser.add_argument("--backup-publish", action="store_true", help="Backup current redpen-publish contents (excluding .git) before build")
     parser.add_argument("--clean-publish", action="store_true", help="Clean redpen-publish (remove all except .git) before build")
     parser.add_argument("--compare-paths", action="store_true", help="After build, compare file path sets before vs after (requires --backup-publish)")
+    parser.add_argument(
+        "--annotations-from-md",
+        action="store_true",
+        help=(
+            "Convert redpen-content/<doc>/annotations/*.md to JSON (legacy). "
+            "Off by default since stage 2: annotations/*.json in redpen-publish "
+            "are exported from the SQLite DB (scripts/api/export_annotations.py); "
+            "md is archive-only and converting it here would overwrite fresher data."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -910,10 +920,15 @@ def main():
         # If both --document and --folders are specified, --document takes precedence
         specific_folders = None
 
-    # Step 1: Convert markdown annotations to JSON
-    if not convert_annotations(target_dir, document, specific_folders):
-        print("Failed to convert annotations. Aborting.")
-        sys.exit(1)
+    # Step 1: Convert markdown annotations to JSON (legacy/archive path -- see
+    # --annotations-from-md help text above). Skipped by default so a routine
+    # build never overwrites annotations/*.json exported from the DB.
+    if args.annotations_from_md:
+        if not convert_annotations(target_dir, document, specific_folders):
+            print("Failed to convert annotations. Aborting.")
+            sys.exit(1)
+    else:
+        print("Skipping markdown->JSON annotation conversion (pass --annotations-from-md to force; md is archive-only)")
 
     # Step 2: Run annotation position tests (if not skipped)
     if not args.skip_tests:
