@@ -69,14 +69,20 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 Редактор аннотаций (канон — таблица `annotations` в `DB_PATH`; каждая мутация
 республикует голый массив в `${PUBLISH_DIR}/<docId>/annotations/page_NNN.json`):
 - `GET /api/editor/{docId}/{pageNum}` — вернуть страницу, рендер из БД
-  (`{pageId, serverPageSha, annotations}`). `pageNum` — 1..999.
+  (`{pageId, serverPageSha, annotations}`). `pageNum` — 1..999. Анонимно/для
+  `viewer` возвращает только `status='published'`; для сессии `editor`/`admin`
+  дополнительно включает черновики (`status='draft'`) с флагом `draft: true`
+  в каждом элементе — черновики никогда не попадают в статический JSON.
 - 🔒 `POST /api/editor/{docId}/{pageNum}` — добавить/обновить аннотацию.
-  Тело: `{annType, text, coords?[x,y], id?, clientPageSha?}`. Для
-  `annType != "general"` можно передать целочисленные `coords`. Ответ:
-  `{id, serverPageSha, published}` (`published=false`, если `PUBLISH_DIR` не
-  настроен или запись в volume не удалась — данные уже в БД).
+  Тело: `{annType, text, coords?[x,y], id?, clientPageSha?, status?}`.
+  `status` — `"draft"` или `"published"` (иначе `400`); если поле не
+  передано, у существующей аннотации статус сохраняется, у новой —
+  `"published"`. Для `annType != "general"` можно передать целочисленные
+  `coords`. Ответ: `{id, serverPageSha, published}` — `published` учитывает
+  и результат записи в volume, и статус самой аннотации (`false` для
+  черновиков — это не ошибка).
 - 🔒 `PUT /api/editor/{docId}/{pageNum}/{annId}` — обновить аннотацию по id
-  (если не найдена — создаётся новая). То же тело/ответ.
+  (если не найдена — создаётся новая). То же тело/ответ/семантика `status`.
 - 🔒 `DELETE /api/editor/{docId}/{pageNum}/{annId}` — мягкое удаление
   (`status='deleted'`, остаётся в истории) + республикация. `404`, если
   аннотации нет или она уже удалена. Ответ: `{id, serverPageSha, published}`.
@@ -85,6 +91,27 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 совпадает с текущим `serverPageSha` страницы — ответ `409`
 `{"detail": "conflict", "serverPageSha": "<текущий>"}`. Если `clientPageSha`
 не передан, запрос принимается (переходный режим, пишется предупреждение в лог).
+
+Кабинет (`/cabinet/`, стадия 3) — списки/история/статистика поверх той же
+таблицы `annotations`/`annotation_history`:
+- 🔒 `GET /api/annotations?docId&pageKey&annType&status&authorId&q&limit&offset`
+  (роль `editor`/`admin`, CSRF не требуется — чтение) → `{items, total, limit, offset}`.
+  `items[]` — как `_annotation_row_to_dict` + `authorName`/`authorEmail`
+  (`null` для импортированных). Валидация: `docId`/`pageKey` — как в
+  `/api/editor/...`; `status ∈ {published,draft,deleted}`;
+  `annType ∈ {main,comment,general}`; `limit ≤ 200` (по умолчанию 50);
+  `offset ≥ 0`; `len(q) ≤ 200` — иначе `400`.
+- 🔒 `GET /api/history?docId&pageKey&annId&authorId&action&limit&offset`
+  (та же защита) → `{items, hasMore, limit, offset}`; `items[].snapshot` —
+  распарсенное состояние аннотации на момент записи.
+- `GET /api/stats` (любая роль, включая `viewer`, требует только сессию) →
+  `{"docs": [{"docId","published","draft","deleted"}, …], "recentActivity": […]}`.
+- 🔒 `POST /api/history/{histId}/revert` — восстанавливает аннотацию в
+  состояние из снапшота истории (включая его `status` — откат к записи
+  `action='delete'` повторно удаляет) и республикует страницу. `404`, если
+  записи нет. Ответ: `{annId, docId, pageNum, serverPageSha, published}`.
+- ⛔ `GET /api/admin/users` → `{"users": [{id,email,name,pictureUrl,role,createdAt,lastLoginAt}, …]}`
+  (без `google_sub`). Роли меняются существующим allowlist-API ниже.
 
 Администрирование (allowlist редакторов, публикация):
 - ⛔ `GET /api/admin/allowlist` → `{"allowlist": [{email, role, addedBy, addedAt}, …]}`
@@ -159,4 +186,7 @@ curl -s -b /tmp/redpen.cookies -X POST http://localhost:8080/api/editor/medinsky
 `fastapi.TestClient`, без запуска сервера); БД аннотаций — `tests/test_db.py` /
 `tests/test_annotations_db.py`; рендер/публикация — `tests/test_publisher.py`;
 CLI — `tests/test_import_annotations.py` / `tests/test_export_annotations.py`.
-См. `tests/README.md`.
+Кабинет (стадия 3) — `tests/test_cabinet_db.py` (запросы в `db.py`) и
+`tests/test_cabinet_api.py` (матрица прав anon/viewer/editor/admin на
+`/api/annotations`, `/api/history`, `/api/stats`, `/api/history/{id}/revert`,
+`/api/admin/users`). См. `tests/README.md`.
