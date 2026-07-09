@@ -251,11 +251,26 @@
       return headers;
     }
 
+    // RedPenAuth (templates/js/redpen-auth.js) holds the actual CSRF cache
+    // and session calls; these wrappers just keep filling the editor's own
+    // st.auth.* shape so nothing downstream (panel, save flow) has to change.
+    // If redpen-auth.js isn't loaded (older offline copy of the site), fall
+    // back to the original inline implementation.
     async function getCsrf(){
       var st = window.RedPenEditor.state;
       if (st.flags && st.flags.mock === true) {
         st.auth.csrfToken = st.auth.csrfToken || 'mock-csrf-'+Math.random().toString(36).slice(2,8);
         return { csrfToken: st.auth.csrfToken };
+      }
+      if (window.RedPenAuth && window.RedPenAuth.getCsrf) {
+        try {
+          var data = await window.RedPenAuth.getCsrf();
+          st.auth.csrfToken = data.csrfToken;
+          return data;
+        } catch (error) {
+          console.error('[RedPen Editor] CSRF error:', error);
+          throw error;
+        }
       }
       if (st.auth.csrfToken) {
         return { csrfToken: st.auth.csrfToken };
@@ -272,6 +287,19 @@
       }
     }
 
+    // Forces a fresh CSRF token (used after a save request comes back 403
+    // with a stale one).
+    async function refreshCsrf(){
+      var st = window.RedPenEditor.state;
+      st.auth.csrfToken = undefined;
+      if (window.RedPenAuth && window.RedPenAuth.getCsrf) {
+        var data = await window.RedPenAuth.getCsrf(true);
+        st.auth.csrfToken = data.csrfToken;
+        return data;
+      }
+      return getCsrf();
+    }
+
     async function apiMe(){
       var st = window.RedPenEditor.state;
       if (st.flags && st.flags.mock === true) {
@@ -280,6 +308,27 @@
         st.auth.userId = st.auth.userId || 'mock-'+Math.random().toString(36).slice(2,6);
         st.auth.role = st.auth.role || 'editor';
         return { userId: st.auth.userId, username: st.auth.username, role: st.auth.role };
+      }
+      if (window.RedPenAuth && window.RedPenAuth.me) {
+        try {
+          var data = await window.RedPenAuth.me();
+          if (!data) {
+            st.auth.isAuthenticated = false;
+            return null;
+          }
+          st.auth.isAuthenticated = true;
+          st.auth.userId = data.userId;
+          st.auth.username = data.username;
+          st.auth.email = data.email;
+          st.auth.name = data.name;
+          st.auth.picture = data.pictureUrl;
+          st.auth.role = data.role;
+          // Legacy shape (.picture, not .pictureUrl) for existing callers.
+          return { userId: data.userId, username: data.username, email: data.email, name: data.name, picture: data.pictureUrl, role: data.role };
+        } catch (error) {
+          console.error('[RedPen Editor] Auth error:', error);
+          throw error;
+        }
       }
       try {
         const res = await fetch(apiBase('/api/auth/me'), { credentials: 'include' });
@@ -316,6 +365,7 @@
 
     var _gisLoadPromise = null;
     function loadGoogleIdentityServices(){
+      if (window.RedPenAuth && window.RedPenAuth.loadGis) return window.RedPenAuth.loadGis();
       if (_gisLoadPromise) return _gisLoadPromise;
       _gisLoadPromise = new Promise(function(resolve){
         if (window.google && window.google.accounts && window.google.accounts.id) { resolve(); return; }
@@ -353,10 +403,20 @@
     }
 
     function renderGoogleButton(){
+      var el = document.getElementById('redpen-google-btn');
+      if (!el) return;
+      if (window.RedPenAuth && window.RedPenAuth.renderGoogleButton) {
+        window.RedPenAuth.renderGoogleButton(el, async function(user, error){
+          var errEl = document.getElementById('redpen-login-error');
+          if (error) { if (errEl) errEl.textContent = 'Не удалось войти через Google'; return; }
+          await refreshAuthUi();
+          var host = document.getElementById('redpen-login');
+          if (host) host.style.display = 'none';
+        });
+        return;
+      }
       try {
         if (!window.google || !window.google.accounts || !window.google.accounts.id) return;
-        var el = document.getElementById('redpen-google-btn');
-        if (!el) return;
         window.google.accounts.id.initialize({
           client_id: window.REDPEN_GOOGLE_CLIENT_ID,
           callback: onGoogleCredential
@@ -374,6 +434,16 @@
         st.auth.username = 'mockuser_'+token.slice(0,4);
         st.auth.userId = 'mock-'+Math.random().toString(36).slice(2,6);
         return { ok: true };
+      }
+      if (window.RedPenAuth && window.RedPenAuth.loginWithToken) {
+        try {
+          await window.RedPenAuth.loginWithToken(token);
+          await apiMe();
+          return { ok: true };
+        } catch (error) {
+          console.error('[RedPen Editor] Login error:', error);
+          throw error;
+        }
       }
       try {
         // No session exists yet, so /api/auth/csrf would 401 here; login is
@@ -869,9 +939,8 @@
           }
           if (err && err.code === 403) {
             // CSRF token stale/rejected: drop it, fetch a fresh one, retry once.
-            st.auth.csrfToken = undefined;
             try {
-              await getCsrf();
+              await refreshCsrf();
               result = await saveAnnotationToServer(draft);
             } catch (err2) {
               console.error('[RedPen Editor] Retry after CSRF 403 failed:', err2);
@@ -948,7 +1017,11 @@
     window.RedPenEditor.onLogoutClick = async function(){
       var st = window.RedPenEditor.state;
       try {
-        await fetch(apiBase('/api/auth/logout'), { method: 'POST', credentials: 'include' });
+        if (window.RedPenAuth && window.RedPenAuth.logout) {
+          await window.RedPenAuth.logout();
+        } else {
+          await fetch(apiBase('/api/auth/logout'), { method: 'POST', credentials: 'include' });
+        }
       } catch (error) {
         console.error('[RedPen Editor] Logout error:', error);
       }
