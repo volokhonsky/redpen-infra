@@ -454,3 +454,252 @@ def list_doc_ids() -> List[str]:
     with _lock:
         rows = conn.execute("SELECT DISTINCT doc_id FROM annotations ORDER BY doc_id").fetchall()
     return [row["doc_id"] for row in rows]
+
+
+# ===== Cabinet (stage 3): filtered lists, history, stats =====
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _annotation_filters(
+    doc_id: Optional[str],
+    page_num: Optional[str],
+    ann_type: Optional[str],
+    status: Optional[str],
+    author_id: Optional[int],
+    q: Optional[str],
+) -> Tuple[str, List[Any]]:
+    clauses: List[str] = []
+    params: List[Any] = []
+    if doc_id is not None:
+        clauses.append("a.doc_id = ?")
+        params.append(doc_id)
+    if page_num is not None:
+        clauses.append("a.page_num = ?")
+        params.append(page_num)
+    if ann_type is not None:
+        clauses.append("a.ann_type = ?")
+        params.append(ann_type)
+    if status is not None:
+        clauses.append("a.status = ?")
+        params.append(status)
+    if author_id is not None:
+        clauses.append("a.author_id = ?")
+        params.append(author_id)
+    if q:
+        clauses.append("a.text LIKE ? ESCAPE '\\'")
+        params.append(f"%{_escape_like(q)}%")
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+
+
+def list_annotations(
+    doc_id: Optional[str] = None,
+    page_num: Optional[str] = None,
+    ann_type: Optional[str] = None,
+    status: Optional[str] = None,
+    author_id: Optional[int] = None,
+    q: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    where, params = _annotation_filters(doc_id, page_num, ann_type, status, author_id, q)
+    conn = get_connection()
+    with _lock:
+        rows = conn.execute(
+            f"""
+            SELECT a.*, u.name AS author_name, u.email AS author_email
+            FROM annotations a
+            LEFT JOIN users u ON u.id = a.author_id
+            {where}
+            ORDER BY a.updated_at DESC, a.rowid_pk DESC
+            LIMIT ? OFFSET ?
+            """,
+            params + [limit, offset],
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = _annotation_row_to_dict(row)
+        item["authorName"] = row["author_name"]
+        item["authorEmail"] = row["author_email"]
+        result.append(item)
+    return result
+
+
+def count_annotations(
+    doc_id: Optional[str] = None,
+    page_num: Optional[str] = None,
+    ann_type: Optional[str] = None,
+    status: Optional[str] = None,
+    author_id: Optional[int] = None,
+    q: Optional[str] = None,
+) -> int:
+    where, params = _annotation_filters(doc_id, page_num, ann_type, status, author_id, q)
+    conn = get_connection()
+    with _lock:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS n FROM annotations a {where}", params
+        ).fetchone()
+    return row["n"]
+
+
+def list_history(
+    doc_id: Optional[str] = None,
+    page_num: Optional[str] = None,
+    ann_id: Optional[str] = None,
+    author_id: Optional[int] = None,
+    action: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    clauses: List[str] = []
+    params: List[Any] = []
+    if doc_id is not None:
+        clauses.append("h.doc_id = ?")
+        params.append(doc_id)
+    if page_num is not None:
+        clauses.append("h.page_num = ?")
+        params.append(page_num)
+    if ann_id is not None:
+        clauses.append("h.ann_id = ?")
+        params.append(ann_id)
+    if author_id is not None:
+        clauses.append("h.author_id = ?")
+        params.append(author_id)
+    if action is not None:
+        clauses.append("h.action = ?")
+        params.append(action)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    conn = get_connection()
+    with _lock:
+        rows = conn.execute(
+            f"""
+            SELECT h.*, u.name AS author_name
+            FROM annotation_history h
+            LEFT JOIN users u ON u.id = h.author_id
+            {where}
+            ORDER BY h.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            params + [limit, offset],
+        ).fetchall()
+    result = []
+    for row in rows:
+        try:
+            snapshot = json.loads(row["snapshot"])
+        except (TypeError, ValueError):
+            snapshot = None
+        result.append(
+            {
+                "id": row["id"],
+                "docId": row["doc_id"],
+                "pageNum": row["page_num"],
+                "annId": row["ann_id"],
+                "action": row["action"],
+                "snapshot": snapshot,
+                "authorId": row["author_id"],
+                "authorName": row["author_name"],
+                "createdAt": row["created_at"],
+            }
+        )
+    return result
+
+
+def get_history_record(hist_id: int) -> Optional[Dict[str, Any]]:
+    conn = get_connection()
+    with _lock:
+        row = conn.execute(
+            """
+            SELECT h.*, u.name AS author_name
+            FROM annotation_history h
+            LEFT JOIN users u ON u.id = h.author_id
+            WHERE h.id = ?
+            """,
+            (hist_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        snapshot = json.loads(row["snapshot"])
+    except (TypeError, ValueError):
+        snapshot = None
+    return {
+        "id": row["id"],
+        "docId": row["doc_id"],
+        "pageNum": row["page_num"],
+        "annId": row["ann_id"],
+        "action": row["action"],
+        "snapshot": snapshot,
+        "authorId": row["author_id"],
+        "authorName": row["author_name"],
+        "createdAt": row["created_at"],
+    }
+
+
+def list_users() -> List[Dict[str, Any]]:
+    conn = get_connection()
+    with _lock:
+        rows = conn.execute(
+            "SELECT id, email, name, picture_url, role, created_at, last_login_at FROM users ORDER BY created_at DESC"
+        ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "email": row["email"],
+            "name": row["name"],
+            "pictureUrl": row["picture_url"],
+            "role": row["role"],
+            "createdAt": row["created_at"],
+            "lastLoginAt": row["last_login_at"],
+        }
+        for row in rows
+    ]
+
+
+def get_stats() -> Dict[str, Any]:
+    conn = get_connection()
+    with _lock:
+        rows = conn.execute(
+            """
+            SELECT doc_id, status, COUNT(*) AS n
+            FROM annotations
+            GROUP BY doc_id, status
+            """
+        ).fetchall()
+        recent_rows = conn.execute(
+            """
+            SELECT h.doc_id, h.page_num, h.ann_id, h.action, h.created_at, u.name AS author_name
+            FROM annotation_history h
+            LEFT JOIN users u ON u.id = h.author_id
+            ORDER BY h.id DESC
+            LIMIT 10
+            """
+        ).fetchall()
+
+    docs: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        doc = docs.setdefault(
+            row["doc_id"], {"docId": row["doc_id"], "published": 0, "draft": 0, "deleted": 0}
+        )
+        if row["status"] in doc:
+            doc[row["status"]] = row["n"]
+
+    recent_activity = [
+        {
+            "docId": row["doc_id"],
+            "pageNum": row["page_num"],
+            "annId": row["ann_id"],
+            "action": row["action"],
+            "authorName": row["author_name"],
+            "createdAt": row["created_at"],
+        }
+        for row in recent_rows
+    ]
+
+    return {
+        "docs": sorted(docs.values(), key=lambda d: d["docId"]),
+        "recentActivity": recent_activity,
+    }
