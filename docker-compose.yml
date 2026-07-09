@@ -35,10 +35,12 @@ services:
       - EDITOR_TOKENS=${EDITOR_TOKENS}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - ADMIN_EMAILS=${ADMIN_EMAILS}
+      - PUBLISH_DIR=/srv/public
     volumes:
       - ./redpen-publish:/var/redpen-data:rw
       - ./redpen-content:/app/redpen-content:rw
       - redpen_db:/var/redpen-db
+      - redpen_public:/srv/public
     networks:
       - redpen
     restart: unless-stopped
