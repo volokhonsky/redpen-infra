@@ -14,8 +14,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import os
 import re
-import tempfile
-import importlib.util
 
 # Optional .env loading
 try:
@@ -26,6 +24,7 @@ except Exception:
 
 import config
 import db
+import publisher
 import storage
 
 
@@ -84,18 +83,6 @@ def setup_logger() -> logging.Logger:
 logger = setup_logger()
 
 app = FastAPI()
-
-# Resolve project root (two levels up from this file)
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-
-# Dynamically import the annotation converter to reuse existing parsing logic
-_annotation_converter_spec = importlib.util.spec_from_file_location(
-    "annotation_converter",
-    os.path.join(PROJECT_ROOT, "scripts", "annotation_converter.py"),
-)
-annotation_converter = importlib.util.module_from_spec(_annotation_converter_spec)
-assert _annotation_converter_spec is not None and _annotation_converter_spec.loader is not None
-_annotation_converter_spec.loader.exec_module(annotation_converter)  # type: ignore
 
 # CORS configuration
 #
@@ -156,14 +143,6 @@ def parse_log_line(line: str) -> dict:
         }
 
 
-def _serialize_size(obj: Dict[str, Any]) -> int:
-    try:
-        s = json.dumps(obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-        return len(s.encode("utf-8"))
-    except Exception:
-        return 0
-
-
 async def require_user(request: Request) -> Dict[str, Any]:
     """FastAPI dependency: return the session+user data or raise 401."""
     session_id = request.cookies.get("redpen_session")
@@ -214,18 +193,18 @@ async def require_admin_csrf(user: Dict[str, Any] = Depends(require_csrf)) -> Di
     return user
 
 
-def _check_optimistic_lock(body: Dict[str, Any], page: Dict[str, Any], docId: str, pageNum: int) -> Optional[Response]:
+def _check_optimistic_lock(body: Dict[str, Any], server_sha: str, docId: str, pageNum: int) -> Optional[Response]:
     """
     Compare the client's clientPageSha against the page's current
-    serverPageSha. Returns a 409 Response if they conflict, else None.
-    Missing clientPageSha is accepted (transitional) but logged.
+    serverPageSha (computed from the DB state). Returns a 409 Response if
+    they conflict, else None. Missing clientPageSha is accepted
+    (transitional) but logged.
     """
     client_sha = body.get("clientPageSha") if isinstance(body, dict) else None
     if not isinstance(client_sha, str) or not client_sha.strip():
         logger.warning("docId=%s pageNum=%d: clientPageSha missing (transitional)", docId, pageNum)
         return None
 
-    server_sha = page.get("serverPageSha")
     if server_sha and client_sha != server_sha:
         logger.info("docId=%s pageNum=%d: optimistic lock conflict", docId, pageNum)
         return JSONResponse(status_code=409, content={"detail": "conflict", "serverPageSha": server_sha})
@@ -589,179 +568,26 @@ async def store(request: Request, user: Dict[str, str] = Depends(require_editor)
 
 @app.get("/api/pages/{pageId}")
 async def get_page(pageId: str):
-    """GET page data by pageId (legacy endpoint, for backwards compatibility)"""
+    """GET page data by pageId (legacy endpoint, for backwards compatibility).
+    Rendered from the SQLite annotations store (stage 2); imageUrl/origW/origH
+    were never populated by this endpoint and remain placeholders."""
     # pageId format: "medinsky11klass_page_006"
     parts = pageId.rsplit("_page_", 1)
     if len(parts) != 2:
         raise HTTPException(status_code=400, detail="invalid pageId format")
-    
+
     doc_id, page_num = parts
-    page = storage.load_page(doc_id, page_num)
-    
-    if not page.get("serverPageSha"):
-        page_sha = storage.compute_sha(page)
-        page["serverPageSha"] = page_sha
-        try:
-            storage.save_page(doc_id, page_num, page)
-        except Exception:
-            logger.exception("failed to persist serverPageSha for pageId=%s", pageId)
-    
-    size = _serialize_size(page)
-    anns = page.get("annotations")
-    ann_count = len(anns) if isinstance(anns, list) else 0
-    logger.info("GET pageId=%s anns=%d size=%d", pageId, ann_count, size)
-    return page
+    rendered = publisher.render_page(doc_id, page_num)
+    sha = publisher.compute_page_sha(rendered)
 
-
-# @app.post("/api/pages/{pageId}/annotations")
-# async def post_annotation(pageId: str, request: Request):
-#     try:
-#         body = await request.json()
-#     except Exception:
-#         raise HTTPException(status_code=400, detail="body must be a JSON object")
-# 
-#     ann = _parse_annotation_body(body if isinstance(body, dict) else {})
-# 
-#     # Generate id if not provided
-#     if not ann.get("id"):
-#         ann["id"] = f"srv-{int(time.time())}-{uuid4().hex[:6]}"
-# 
-#     page = storage.load_page(config.STORAGE_DIR, pageId)
-#     storage.upsert_annotation(page, ann)
-# 
-#     try:
-#         sha = storage.save_page(config.STORAGE_DIR, page)
-#     except Exception:
-#         logger.exception("failed to save page after POST annotation pageId=%s", pageId)
-#         raise HTTPException(status_code=500, detail="failed to save page")
-# 
-#     # For response, return id and serverPageSha
-#     result = {"id": ann["id"], "serverPageSha": sha}
-# 
-#     # Logging
-#     anns = page.get("annotations")
-#     ann_count = len(anns) if isinstance(anns, list) else 0
-#     size = _serialize_size(page)
-#     logger.info("POST pageId=%s anns=%d size=%d", pageId, ann_count, size)
-#     return result
-
-# 
-# @app.put("/api/pages/{pageId}/annotations/{id}")
-# async def put_annotation(pageId: str, id: str, request: Request):
-#     try:
-#         body = await request.json()
-#     except Exception:
-#         raise HTTPException(status_code=400, detail="body must be a JSON object")
-# 
-#     parsed = _parse_annotation_body(body if isinstance(body, dict) else {})
-# 
-#     # Ensure the provided id in path is used
-#     parsed["id"] = id
-# 
-#     page = storage.load_page(config.STORAGE_DIR, pageId)
-#     updated = storage.update_annotation(page, id, parsed)
-#     if not updated:
-#         # If not found, append as new per permissive spec
-#         storage.upsert_annotation(page, parsed)
-# 
-#     try:
-#         sha = storage.save_page(config.STORAGE_DIR, page)
-#     except Exception:
-#         logger.exception("failed to save page after PUT annotation pageId=%s id=%s", pageId, id)
-#         raise HTTPException(status_code=500, detail="failed to save page")
-# 
-#     # Logging
-#     anns = page.get("annotations")
-#     ann_count = len(anns) if isinstance(anns, list) else 0
-#     size = _serialize_size(page)
-#     logger.info("PUT pageId=%s anns=%d size=%d", pageId, ann_count, size)
-# 
-#     return {"id": id, "serverPageSha": sha}
-
-
-@app.post("/api/rebuild/{bookSlug}/annotations/{pageId}")
-async def rebuild_annotation_page(bookSlug: str, pageId: str, user: Dict[str, str] = Depends(require_editor)):
-    started = time.time()
-
-    # Validate bookSlug
-    if not re.fullmatch(r"[a-z0-9_-]+", bookSlug or ""):
-        raise HTTPException(status_code=400, detail="invalid bookSlug")
-
-    # Validate pageId: page_XXX where XXX are digits with leading zeros
-    if not re.fullmatch(r"page_\d{3}", pageId or ""):
-        raise HTTPException(status_code=400, detail="invalid pageId")
-
-    content_md = os.path.join(PROJECT_ROOT, "redpen-content", bookSlug, "annotations", f"{pageId}.md")
-    publish_json_dir = os.path.join(PROJECT_ROOT, "redpen-publish", bookSlug, "annotations")
-    publish_json = os.path.join(publish_json_dir, f"{pageId}.json")
-
-    if not os.path.exists(content_md):
-        raise HTTPException(status_code=404, detail="markdown not found")
-
-    try:
-        with open(content_md, "r", encoding="utf-8") as f:
-            md_content = f.read()
-    except Exception:
-        logger.exception("failed to read markdown for bookSlug=%s pageId=%s path=%s", bookSlug, pageId, content_md)
-        raise HTTPException(status_code=500, detail="failed to read markdown")
-
-    try:
-        # Reuse the existing converter's parsing logic
-        annotations = annotation_converter.parse_markdown_annotation(md_content)
-    except Exception:
-        logger.exception("conversion failed for bookSlug=%s pageId=%s", bookSlug, pageId)
-        raise HTTPException(status_code=500, detail="conversion failed")
-
-    # Ensure target dir exists
-    try:
-        os.makedirs(publish_json_dir, exist_ok=True)
-    except Exception:
-        logger.exception("failed to ensure output dir for bookSlug=%s pageId=%s dir=%s", bookSlug, pageId, publish_json_dir)
-        raise HTTPException(status_code=500, detail="failed to prepare output directory")
-
-    # Serialize and atomically write JSON
-    try:
-        data_str = json.dumps(annotations, ensure_ascii=False, indent=2)
-        data_bytes = data_str.encode("utf-8")
-        fd, tmp_path = tempfile.mkstemp(dir=publish_json_dir, prefix="._tmp_", suffix=".json")
-        try:
-            with os.fdopen(fd, "wb") as tmp:
-                tmp.write(data_bytes)
-                tmp.flush()
-                os.fsync(tmp.fileno())
-            os.replace(tmp_path, publish_json)
-        finally:
-            try:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except Exception:
-                pass
-        size = len(data_bytes)
-    except Exception:
-        logger.exception("failed to write JSON for bookSlug=%s pageId=%s path=%s", bookSlug, pageId, publish_json)
-        raise HTTPException(status_code=500, detail="failed to write json")
-
-    duration_ms = int((time.time() - started) * 1000)
-    rel_json_path = os.path.join("annotations", f"{pageId}.json")
-
-    # Info log per requirements
-    logger.info(
-        "rebuild ok bookSlug=%s pageId=%s src=%s dst=%s size=%d durationMs=%d",
-        bookSlug,
-        pageId,
-        content_md,
-        publish_json,
-        size,
-        duration_ms,
-    )
-
+    logger.info("GET pageId=%s anns=%d", pageId, len(rendered))
     return {
-        "ok": True,
-        "bookSlug": bookSlug,
         "pageId": pageId,
-        "jsonPath": rel_json_path,
-        "size": size,
-        "regeneratedAt": datetime.utcnow().isoformat(),
+        "imageUrl": "",
+        "origW": 0,
+        "origH": 0,
+        "serverPageSha": sha,
+        "annotations": rendered,
     }
 
 
@@ -789,161 +615,141 @@ def _validate_page_num(page_num) -> bool:
 
 # ===== NEW ENDPOINTS =====
 
+def _current_page_sha(docId: str, page_num_str: str) -> str:
+    return publisher.compute_page_sha(publisher.render_page(docId, page_num_str))
+
+
 @app.get("/api/editor/{docId}/{pageNum}")
 async def get_editor_page(docId: str, pageNum: str):
-    """GET page data for editor"""
+    """GET page data for editor, rendered from the SQLite annotations store."""
     if not _validate_doc_id(docId):
         raise HTTPException(status_code=400, detail="invalid docId")
     if not _validate_page_num(pageNum):
         raise HTTPException(status_code=400, detail="invalid pageNum")
-    
-    pageNum = int(pageNum)
-    page_num_str = str(pageNum).zfill(3)
-    page = storage.load_page(docId, page_num_str)
-    
-    if not page.get("serverPageSha"):
-        page_sha = storage.compute_sha(page)
-        page["serverPageSha"] = page_sha
-        try:
-            storage.save_page(docId, page_num_str, page)
-        except Exception:
-            logger.exception("failed to persist serverPageSha docId=%s pageNum=%d", docId, pageNum)
-    
-    size = _serialize_size(page)
-    anns = page.get("annotations")
-    ann_count = len(anns) if isinstance(anns, list) else 0
-    logger.info("GET editor docId=%s pageNum=%d anns=%d size=%d", docId, pageNum, ann_count, size)
-    return page
+
+    pageNum_int = int(pageNum)
+    page_num_str = str(pageNum_int).zfill(3)
+    rendered = publisher.render_page(docId, page_num_str)
+    sha = publisher.compute_page_sha(rendered)
+
+    logger.info("GET editor docId=%s pageNum=%d anns=%d", docId, pageNum_int, len(rendered))
+    return {
+        "pageId": f"{docId}_page_{page_num_str}",
+        "serverPageSha": sha,
+        "annotations": rendered,
+    }
 
 
 @app.post("/api/editor/{docId}/{pageNum}")
-async def post_editor_annotation(docId: str, pageNum: str, request: Request, user: Dict[str, str] = Depends(require_editor)):
-    """POST new annotation"""
-    logger.info("POST editor START docId=%s pageNum=%s", docId, pageNum)
-    
+async def post_editor_annotation(docId: str, pageNum: str, request: Request, user: Dict[str, Any] = Depends(require_editor)):
+    """POST new annotation: upserts into the DB, records history, republishes."""
     if not _validate_doc_id(docId):
-        logger.warning("POST editor invalid docId=%s", docId)
         raise HTTPException(status_code=400, detail="invalid docId")
     if not _validate_page_num(pageNum):
-        logger.warning("POST editor invalid pageNum=%s", pageNum)
         raise HTTPException(status_code=400, detail="invalid pageNum")
-    
+
     try:
         body = await request.json()
-        logger.debug("POST editor body=%s", body)
-    except Exception as e:
-        logger.error("POST editor failed to parse JSON: %s", str(e))
+    except Exception:
         raise HTTPException(status_code=400, detail="body must be a JSON object")
 
-    try:
-        ann = _parse_annotation_body(body if isinstance(body, dict) else {})
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("POST editor failed to parse annotation: %s", str(e))
-        raise HTTPException(status_code=400, detail="invalid annotation")
-    
-    logger.debug("POST editor parsed annotation=%s", ann)
-
+    ann = _parse_annotation_body(body if isinstance(body, dict) else {})
     if not ann.get("id"):
         ann["id"] = f"srv-{int(time.time())}-{uuid4().hex[:6]}"
-        logger.debug("POST editor generated id=%s", ann["id"])
 
     pageNum_int = int(pageNum)
     page_num_str = str(pageNum_int).zfill(3)
-    logger.debug("POST editor docId=%s page_num=%s", docId, page_num_str)
-    
-    try:
-        page = storage.load_page(docId, page_num_str)
-        logger.debug("POST editor loaded page with %d existing annotations", len(page.get("annotations", [])))
 
-        conflict = _check_optimistic_lock(body if isinstance(body, dict) else {}, page, docId, pageNum_int)
-        if conflict is not None:
-            return conflict
+    conflict = _check_optimistic_lock(
+        body if isinstance(body, dict) else {}, _current_page_sha(docId, page_num_str), docId, pageNum_int
+    )
+    if conflict is not None:
+        return conflict
 
-        storage.upsert_annotation(page, ann)
-        logger.debug("POST editor upserted annotation id=%s", ann["id"])
-        
-        sha = storage.save_page(docId, page_num_str, page)
-        logger.debug("POST editor saved page with sha=%s", sha)
-    except Exception as e:
-        logger.exception("POST editor failed to save page docId=%s pageNum=%d: %s", docId, pageNum_int, str(e))
-        raise HTTPException(status_code=500, detail="failed to save page")
+    coords = ann.get("coords")
+    coord_x, coord_y = (coords[0], coords[1]) if coords else (None, None)
+    action = "update" if db.get_annotation(docId, page_num_str, ann["id"]) else "create"
 
-    anns = page.get("annotations")
-    ann_count = len(anns) if isinstance(anns, list) else 0
-    size = _serialize_size(page)
-    
-    logger.info("POST editor SUCCESS docId=%s pageNum=%d annId=%s anns=%d size=%d", 
-                docId, pageNum_int, ann["id"], ann_count, size)
-    
-    return {"id": ann["id"], "serverPageSha": sha}
+    db.upsert_annotation_db(
+        docId, page_num_str, ann["id"], ann["annType"], ann["text"],
+        coord_x=coord_x, coord_y=coord_y, author_id=user["userId"], action=action,
+    )
+    published = publisher.publish_page(docId, page_num_str)
+    new_sha = _current_page_sha(docId, page_num_str)
+
+    logger.info(
+        "POST editor SUCCESS docId=%s pageNum=%d annId=%s published=%s",
+        docId, pageNum_int, ann["id"], published,
+    )
+    return {"id": ann["id"], "serverPageSha": new_sha, "published": published}
 
 
 @app.put("/api/editor/{docId}/{pageNum}/{annId}")
-async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: Request, user: Dict[str, str] = Depends(require_editor)):
-    """PUT update annotation"""
-    logger.info("PUT editor START docId=%s pageNum=%s annId=%s", docId, pageNum, annId)
-    
+async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: Request, user: Dict[str, Any] = Depends(require_editor)):
+    """PUT update (or create, if annId doesn't exist yet) an annotation."""
     if not _validate_doc_id(docId):
-        logger.warning("PUT editor invalid docId=%s", docId)
         raise HTTPException(status_code=400, detail="invalid docId")
     if not _validate_page_num(pageNum):
-        logger.warning("PUT editor invalid pageNum=%s", pageNum)
         raise HTTPException(status_code=400, detail="invalid pageNum")
-    
-    try:
-        body = await request.json()
-        logger.debug("PUT editor body=%s", body)
-    except Exception as e:
-        logger.error("PUT editor failed to parse JSON: %s", str(e))
-        raise HTTPException(status_code=400, detail="body must be a JSON object")
 
     try:
-        parsed = _parse_annotation_body(body if isinstance(body, dict) else {})
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("PUT editor failed to parse annotation: %s", str(e))
-        raise HTTPException(status_code=400, detail="invalid annotation")
-    
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+
+    parsed = _parse_annotation_body(body if isinstance(body, dict) else {})
     parsed["id"] = annId
-    logger.debug("PUT editor parsed annotation with id=%s", annId)
 
     pageNum_int = int(pageNum)
     page_num_str = str(pageNum_int).zfill(3)
-    logger.debug("PUT editor docId=%s page_num=%s", docId, page_num_str)
-    
-    try:
-        page = storage.load_page(docId, page_num_str)
-        logger.debug("PUT editor loaded page with %d existing annotations", len(page.get("annotations", [])))
 
-        conflict = _check_optimistic_lock(body if isinstance(body, dict) else {}, page, docId, pageNum_int)
-        if conflict is not None:
-            return conflict
+    conflict = _check_optimistic_lock(
+        body if isinstance(body, dict) else {}, _current_page_sha(docId, page_num_str), docId, pageNum_int
+    )
+    if conflict is not None:
+        return conflict
 
-        updated = storage.update_annotation(page, annId, parsed)
-        if not updated:
-            logger.debug("PUT editor annotation id=%s not found, upserting as new", annId)
-            storage.upsert_annotation(page, parsed)
-        else:
-            logger.debug("PUT editor updated existing annotation id=%s", annId)
-        
-        sha = storage.save_page(docId, page_num_str, page)
-        logger.debug("PUT editor saved page with sha=%s", sha)
-    except Exception as e:
-        logger.exception("PUT editor failed to save page docId=%s pageNum=%d annId=%s: %s", 
-                         docId, pageNum_int, annId, str(e))
-        raise HTTPException(status_code=500, detail="failed to save page")
+    coords = parsed.get("coords")
+    coord_x, coord_y = (coords[0], coords[1]) if coords else (None, None)
+    action = "update" if db.get_annotation(docId, page_num_str, annId) else "create"
 
-    anns = page.get("annotations")
-    ann_count = len(anns) if isinstance(anns, list) else 0
-    size = _serialize_size(page)
-    
-    logger.info("PUT editor SUCCESS docId=%s pageNum=%d annId=%s anns=%d size=%d", 
-                docId, pageNum_int, annId, ann_count, size)
+    db.upsert_annotation_db(
+        docId, page_num_str, annId, parsed["annType"], parsed["text"],
+        coord_x=coord_x, coord_y=coord_y, author_id=user["userId"], action=action,
+    )
+    published = publisher.publish_page(docId, page_num_str)
+    new_sha = _current_page_sha(docId, page_num_str)
 
-    return {"id": annId, "serverPageSha": sha}
+    logger.info(
+        "PUT editor SUCCESS docId=%s pageNum=%d annId=%s published=%s",
+        docId, pageNum_int, annId, published,
+    )
+    return {"id": annId, "serverPageSha": new_sha, "published": published}
+
+
+@app.delete("/api/editor/{docId}/{pageNum}/{annId}")
+async def delete_editor_annotation(docId: str, pageNum: str, annId: str, user: Dict[str, Any] = Depends(require_editor)):
+    """Soft-delete an annotation and republish the page."""
+    if not _validate_doc_id(docId):
+        raise HTTPException(status_code=400, detail="invalid docId")
+    if not _validate_page_num(pageNum):
+        raise HTTPException(status_code=400, detail="invalid pageNum")
+
+    pageNum_int = int(pageNum)
+    page_num_str = str(pageNum_int).zfill(3)
+
+    deleted = db.soft_delete_annotation(docId, page_num_str, annId, author_id=user["userId"])
+    if not deleted:
+        raise HTTPException(status_code=404, detail="annotation not found")
+
+    published = publisher.publish_page(docId, page_num_str)
+    new_sha = _current_page_sha(docId, page_num_str)
+
+    logger.info(
+        "DELETE editor SUCCESS docId=%s pageNum=%d annId=%s published=%s",
+        docId, pageNum_int, annId, published,
+    )
+    return {"id": annId, "serverPageSha": new_sha, "published": published}
 
 
 # Allow running with `python main.py` for local dev
