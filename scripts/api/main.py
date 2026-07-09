@@ -110,6 +110,15 @@ async def on_startup() -> None:
     db.init_db()
     logger.info("service started LOG_LEVEL=%s storage_dir=%s db_path=%s", config.LOG_LEVEL, config.STORAGE_DIR, config.DB_PATH)
 
+    # Self-heal the published static volume (e.g. after a fresh/recreated
+    # container): republish everything already in the DB. Never block startup.
+    if config.PUBLISH_DIR:
+        try:
+            result = publisher.publish_all()
+            logger.info("startup publish_all pages=%d failed=%d", result["pages"], result["failed"])
+        except Exception:
+            logger.exception("startup publish_all failed")
+
 
 # ===== HELPER FUNCTIONS =====
 
@@ -445,6 +454,14 @@ async def delete_allowlist_entry(email: str, user: Dict[str, Any] = Depends(requ
         raise HTTPException(status_code=404, detail="not found")
     logger.info("admin: allowlist delete email=%s by=%s", email, user.get("email"))
     return {"allowlist": db.list_allowlist()}
+
+
+@app.post("/api/admin/publish-all")
+async def admin_publish_all(user: Dict[str, Any] = Depends(require_admin_csrf)):
+    """Republish every page in the DB to PUBLISH_DIR (volume self-heal / manual repair)."""
+    result = publisher.publish_all()
+    logger.info("admin: publish-all pages=%d failed=%d by=%s", result["pages"], result["failed"], user.get("email"))
+    return result
 
 
 @app.get("/api/hello")
