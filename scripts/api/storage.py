@@ -94,6 +94,7 @@ def save_inbox(obj: Any, bucket: Optional[str] = None, filename: Optional[str] =
             tmp.write(data_bytes)
             tmp.flush()
             os.fsync(tmp.fileno())
+        os.chmod(tmp_path, 0o644)  # mkstemp() defaults to 0600 (owner-only)
         os.replace(tmp_path, abs_path)
     finally:
         try:
