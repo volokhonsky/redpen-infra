@@ -241,3 +241,42 @@ def test_allowlist_post_viewer_forbidden(monkeypatch):
     _with_csrf(viewer)
     r = viewer.post("/api/admin/allowlist", json={"email": "x@example.com", "role": "editor"})
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# POST /api/admin/publish-all (stage 2, A2.5)
+# ---------------------------------------------------------------------------
+
+def test_publish_all_requires_admin(monkeypatch):
+    import db
+
+    viewer, _ = _google_login(monkeypatch, "publish-viewer@example.com")
+    _with_csrf(viewer)
+    assert viewer.post("/api/admin/publish-all").status_code == 403
+
+    monkeypatch.setattr(config, "ADMIN_EMAILS", ["publish-boss@example.com"])
+    db.upsert_allowlist("publish-editor@example.com", "editor", "publish-boss@example.com")
+    editor, _ = _google_login(monkeypatch, "publish-editor@example.com")
+    _with_csrf(editor)
+    assert editor.post("/api/admin/publish-all").status_code == 403
+
+
+def test_publish_all_writes_files_for_admin(monkeypatch):
+    import os
+
+    import db
+
+    db.upsert_annotation_db("publishalldoc", "006", "ann-1", "comment", "hi")
+
+    monkeypatch.setattr(config, "ADMIN_EMAILS", ["publish-admin@example.com"])
+    admin, _ = _google_login(monkeypatch, "publish-admin@example.com")
+    _with_csrf(admin)
+
+    r = admin.post("/api/admin/publish-all")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["pages"] >= 1
+    assert body["failed"] == 0
+
+    path = os.path.join(config.PUBLISH_DIR, "publishalldoc", "annotations", "page_006.json")
+    assert os.path.exists(path)

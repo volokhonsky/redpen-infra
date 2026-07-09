@@ -309,6 +309,21 @@ def test_anonymous_delete_editor_annotation_is_rejected():
     assert r.status_code == 401
 
 
+def test_startup_self_heals_publish_dir():
+    # An annotation exists in the DB but PUBLISH_DIR was wiped (simulating a
+    # fresh/recreated container) -- the startup hook's publish_all() should
+    # restore it without any explicit publish-all call.
+    db.upsert_annotation_db("startupdoc", "006", "ann-1", "comment", "restored on boot")
+    path = os.path.join(config.PUBLISH_DIR, "startupdoc", "annotations", "page_006.json")
+    if os.path.exists(path):
+        os.remove(path)
+
+    with TestClient(main.app):
+        pass  # entering the context fires the startup event
+
+    assert os.path.exists(path)
+
+
 def test_viewer_delete_editor_annotation_is_forbidden(client):
     # A fresh Google-login user defaults to the viewer role (no allowlist entry).
     # Email must be unique across the whole test session (users.email UNIQUE).
