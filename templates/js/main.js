@@ -177,6 +177,10 @@ async function loadPage(pageNum) {
   if (window.RedPenEditor && window.RedPenEditor.state) {
     window.RedPenEditor.state.page.pageNum = currentPageNum;
     window.RedPenEditor.state.page.docId = currentDocId;
+    // File key (e.g. "006", "-01"), independent of the logical page number
+    // above -- see docs/page-addressing-proposal.md. pageNum is kept for
+    // backwards compatibility; new code should use pageKey.
+    window.RedPenEditor.state.page.pageKey = currentPageId.split('_')[1];
   }
   
   const img = document.getElementById('page-image');
