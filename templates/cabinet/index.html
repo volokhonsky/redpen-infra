@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>RedPen — Кабинет</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <link rel="stylesheet" href="../css/main.css">
+  <link rel="stylesheet" href="cabinet.css">
+  <link rel="icon" href="../favicon.svg">
+</head>
+<body>
+  <header>
+    <a href="../index.html" class="cab-home-link" title="Вернуться к выбору документов">⌂</a>
+    RedPen — Кабинет
+  </header>
+
+  <div id="cab-status" class="cab-status" style="display:none;"></div>
+
+  <div id="cab-offline-notice" class="cab-notice cab-notice-error" style="display:none;">
+    Нет соединения с сервером
+  </div>
+
+  <div id="cab-login-screen" class="cab-card" style="display:none;">
+    <h2>Вход</h2>
+    <div id="cab-google-btn"></div>
+    <div id="cab-token-login" style="display:none;">
+      <input id="cab-token-input" type="text" placeholder="Личный токен" />
+      <button id="cab-token-submit">Войти токеном</button>
+    </div>
+    <div id="cab-login-error" class="cab-error"></div>
+  </div>
+
+  <div id="cab-app" style="display:none;">
+    <div id="cab-profile" class="cab-profile"></div>
+    <div id="cab-viewer-notice" class="cab-notice" style="display:none;">
+      Нет прав редактора. Обратитесь к администратору.
+    </div>
+
+    <nav id="cab-tabs" class="cab-tabs" style="display:none;">
+      <button type="button" class="cab-tab-btn is-active" data-tab="annotations">Аннотации</button>
+      <button type="button" class="cab-tab-btn" data-tab="history">История</button>
+      <button type="button" class="cab-tab-btn" id="cab-tab-admin-btn" data-tab="admin" style="display:none;">Админ</button>
+    </nav>
+
+    <section id="cab-tab-annotations" class="cab-tab-panel"></section>
+    <section id="cab-tab-history" class="cab-tab-panel" style="display:none;"></section>
+    <section id="cab-tab-admin" class="cab-tab-panel" style="display:none;"></section>
+  </div>
+
+  <script>
+    window.REDPEN_API_BASE = window.REDPEN_API_BASE || 'https://api.medinsky.net';
+    window.REDPEN_GOOGLE_CLIENT_ID = window.REDPEN_GOOGLE_CLIENT_ID || '679121872329-tl9fk0aq6i1rjf6jgdb1460p0pvn50md.apps.googleusercontent.com';
+  </script>
+  <script src="../js/redpen-auth.js"></script>
+  <script src="cabinet.js"></script>
+</body>
+</html>
