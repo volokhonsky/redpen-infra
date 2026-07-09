@@ -93,6 +93,11 @@ def test_build_produces_per_document_layout(synthetic_project, tmp_path):
     assert (target / "favicon.svg").is_file()
     assert (target / "index.html").is_file()
 
+    # Cabinet page (stage 3, C.10): copied alongside css/js.
+    assert (target / "cabinet" / "index.html").is_file()
+    assert (target / "cabinet" / "cabinet.js").is_file()
+    assert (target / "cabinet" / "cabinet.css").is_file()
+
 
 def test_converted_annotation_json_is_valid(synthetic_project, tmp_path):
     build, _ = synthetic_project

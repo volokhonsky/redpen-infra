@@ -582,6 +582,13 @@ def publish_website_data(target_dir=None, document=None, specific_folders=None):
         if os.path.exists(templates_dir):
             publish_data.copy_files(templates_dir, output_dir, "*.svg")
 
+        # Copy the cabinet page (stage 3): index.html, cabinet.js, cabinet.css
+        cabinet_src = os.path.join(templates_dir, 'cabinet')
+        cabinet_dest = os.path.join(output_dir, 'cabinet')
+        if os.path.exists(cabinet_src):
+            for pattern in ("*.html", "*.js", "*.css"):
+                publish_data.copy_files(cabinet_src, cabinet_dest, pattern)
+
         return True
     except Exception as e:
         print(f"Error publishing data: {e}")
