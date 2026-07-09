@@ -49,32 +49,38 @@ function updateMobilePagination() {
   const totalPagesNumber = document.getElementById('total-pages-number');
 
   if (currentPageNumber && totalPagesNumber && metadata) {
-    const currentLogical = logicalFromPhysical();
+    // currentPageNum is the navigation index (see main.js loadPage()); in
+    // manifest mode show the label instead of the raw index.
     const totalPages = metadata.totalPages || 1;
 
-    currentPageNumber.textContent = currentLogical;
+    currentPageNumber.textContent = (typeof manifestMode === 'function' && manifestMode())
+      ? labelForIndex(currentPageNum)
+      : currentPageNum;
     totalPagesNumber.textContent = totalPages;
 
     // Update navigation buttons visibility based on current page
     const prevButton = document.getElementById('mobile-prev-button');
     if (prevButton) {
-      prevButton.style.display = currentLogical > 1 ? 'flex' : 'none';
+      prevButton.style.display = currentPageNum > 1 ? 'flex' : 'none';
     }
   }
 }
 
 /**
- * Go to a specific page from mobile input
+ * Go to a page entered in the mobile input: a manifest label in manifest
+ * mode (see main.js resolveIndexFromUserInput()), or a plain page number.
  */
 function goToMobilePage() {
   const input = document.getElementById('mobile-page-input');
   if (!input) return;
 
-  const pageNum = parseInt(input.value);
   const totalPages = metadata.totalPages || 1;
+  const idx = (typeof resolveIndexFromUserInput === 'function')
+    ? resolveIndexFromUserInput(input.value)
+    : parseInt(input.value, 10);
 
-  if (!isNaN(pageNum) && pageNum >= 1 && pageNum <= totalPages) {
-    loadPage(pageNum);
+  if (!isNaN(idx) && idx >= 1 && idx <= totalPages) {
+    navigateTo(idx);
     input.value = ''; // Clear the input after navigation
   } else {
     alert(`Пожалуйста, введите номер страницы от 1 до ${totalPages}`);
