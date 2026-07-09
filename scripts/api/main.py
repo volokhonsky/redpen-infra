@@ -202,7 +202,7 @@ async def require_admin_csrf(user: Dict[str, Any] = Depends(require_csrf)) -> Di
     return user
 
 
-def _check_optimistic_lock(body: Dict[str, Any], server_sha: str, docId: str, pageNum: int) -> Optional[Response]:
+def _check_optimistic_lock(body: Dict[str, Any], server_sha: str, docId: str, pageKey: str) -> Optional[Response]:
     """
     Compare the client's clientPageSha against the page's current
     serverPageSha (computed from the DB state). Returns a 409 Response if
@@ -211,11 +211,11 @@ def _check_optimistic_lock(body: Dict[str, Any], server_sha: str, docId: str, pa
     """
     client_sha = body.get("clientPageSha") if isinstance(body, dict) else None
     if not isinstance(client_sha, str) or not client_sha.strip():
-        logger.warning("docId=%s pageNum=%d: clientPageSha missing (transitional)", docId, pageNum)
+        logger.warning("docId=%s pageKey=%s: clientPageSha missing (transitional)", docId, pageKey)
         return None
 
     if server_sha and client_sha != server_sha:
-        logger.info("docId=%s pageNum=%d: optimistic lock conflict", docId, pageNum)
+        logger.info("docId=%s pageKey=%s: optimistic lock conflict", docId, pageKey)
         return JSONResponse(status_code=409, content={"detail": "conflict", "serverPageSha": server_sha})
     return None
 
@@ -593,7 +593,10 @@ async def get_page(pageId: str):
     if len(parts) != 2:
         raise HTTPException(status_code=400, detail="invalid pageId format")
 
-    doc_id, page_num = parts
+    doc_id, page_num_raw = parts
+    page_num = _validate_page_key(page_num_raw)
+    if page_num is None:
+        raise HTTPException(status_code=400, detail="invalid pageId format")
     rendered = publisher.render_page(doc_id, page_num)
     sha = publisher.compute_page_sha(rendered)
 
@@ -608,26 +611,24 @@ async def get_page(pageId: str):
     }
 
 
-# ===== HELPER: Construct page file key =====
-def _build_page_key(doc_id: str, page_num: int) -> str:
-    """
-    Construct page key: docId="medinsky11klass", pageNum=6 → "medinsky11klass_page_006"
-    """
-    return f"{doc_id}_page_{str(page_num).zfill(3)}"
-
-
 def _validate_doc_id(doc_id: str) -> bool:
     """Validate docId: alphanumeric, underscore, hyphen"""
     return bool(re.fullmatch(r"[a-z0-9_-]+", doc_id or ""))
 
 
-def _validate_page_num(page_num) -> bool:
-    """Validate page number: 1-999"""
-    try:
-        p = int(page_num)
-        return 1 <= p <= 999
-    except (TypeError, ValueError):
-        return False
+def _validate_page_key(key: str) -> Optional[str]:
+    """
+    Validate and normalize a page file key (docs/page-addressing-proposal.md
+    B.4): accepts ^-?\\d{1,3}$ -- "6", "006", "000", "-1", "-01" -- and
+    returns the normalized key matching the page_<key>.json filename:
+    non-negative -> zfill(3) ("6"/"006" -> "006"); negative -> "-" +
+    zfill(2) of the absolute value ("-1"/"-01" -> "-01"). Invalid input
+    (wrong shape, out of range) -> None, caller responds 400.
+    """
+    if not isinstance(key, str) or not re.fullmatch(r"-?\d{1,3}", key):
+        return None
+    n = int(key)
+    return f"-{abs(n):02d}" if n < 0 else f"{n:03d}"
 
 
 # ===== NEW ENDPOINTS =====
@@ -641,15 +642,14 @@ async def get_editor_page(docId: str, pageNum: str):
     """GET page data for editor, rendered from the SQLite annotations store."""
     if not _validate_doc_id(docId):
         raise HTTPException(status_code=400, detail="invalid docId")
-    if not _validate_page_num(pageNum):
+    page_num_str = _validate_page_key(pageNum)
+    if page_num_str is None:
         raise HTTPException(status_code=400, detail="invalid pageNum")
 
-    pageNum_int = int(pageNum)
-    page_num_str = str(pageNum_int).zfill(3)
     rendered = publisher.render_page(docId, page_num_str)
     sha = publisher.compute_page_sha(rendered)
 
-    logger.info("GET editor docId=%s pageNum=%d anns=%d", docId, pageNum_int, len(rendered))
+    logger.info("GET editor docId=%s pageKey=%s anns=%d", docId, page_num_str, len(rendered))
     return {
         "pageId": f"{docId}_page_{page_num_str}",
         "serverPageSha": sha,
@@ -662,7 +662,8 @@ async def post_editor_annotation(docId: str, pageNum: str, request: Request, use
     """POST new annotation: upserts into the DB, records history, republishes."""
     if not _validate_doc_id(docId):
         raise HTTPException(status_code=400, detail="invalid docId")
-    if not _validate_page_num(pageNum):
+    page_num_str = _validate_page_key(pageNum)
+    if page_num_str is None:
         raise HTTPException(status_code=400, detail="invalid pageNum")
 
     try:
@@ -674,11 +675,8 @@ async def post_editor_annotation(docId: str, pageNum: str, request: Request, use
     if not ann.get("id"):
         ann["id"] = f"srv-{int(time.time())}-{uuid4().hex[:6]}"
 
-    pageNum_int = int(pageNum)
-    page_num_str = str(pageNum_int).zfill(3)
-
     conflict = _check_optimistic_lock(
-        body if isinstance(body, dict) else {}, _current_page_sha(docId, page_num_str), docId, pageNum_int
+        body if isinstance(body, dict) else {}, _current_page_sha(docId, page_num_str), docId, page_num_str
     )
     if conflict is not None:
         return conflict
@@ -695,8 +693,8 @@ async def post_editor_annotation(docId: str, pageNum: str, request: Request, use
     new_sha = _current_page_sha(docId, page_num_str)
 
     logger.info(
-        "POST editor SUCCESS docId=%s pageNum=%d annId=%s published=%s",
-        docId, pageNum_int, ann["id"], published,
+        "POST editor SUCCESS docId=%s pageKey=%s annId=%s published=%s",
+        docId, page_num_str, ann["id"], published,
     )
     return {"id": ann["id"], "serverPageSha": new_sha, "published": published}
 
@@ -706,7 +704,8 @@ async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: R
     """PUT update (or create, if annId doesn't exist yet) an annotation."""
     if not _validate_doc_id(docId):
         raise HTTPException(status_code=400, detail="invalid docId")
-    if not _validate_page_num(pageNum):
+    page_num_str = _validate_page_key(pageNum)
+    if page_num_str is None:
         raise HTTPException(status_code=400, detail="invalid pageNum")
 
     try:
@@ -717,11 +716,8 @@ async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: R
     parsed = _parse_annotation_body(body if isinstance(body, dict) else {})
     parsed["id"] = annId
 
-    pageNum_int = int(pageNum)
-    page_num_str = str(pageNum_int).zfill(3)
-
     conflict = _check_optimistic_lock(
-        body if isinstance(body, dict) else {}, _current_page_sha(docId, page_num_str), docId, pageNum_int
+        body if isinstance(body, dict) else {}, _current_page_sha(docId, page_num_str), docId, page_num_str
     )
     if conflict is not None:
         return conflict
@@ -738,8 +734,8 @@ async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: R
     new_sha = _current_page_sha(docId, page_num_str)
 
     logger.info(
-        "PUT editor SUCCESS docId=%s pageNum=%d annId=%s published=%s",
-        docId, pageNum_int, annId, published,
+        "PUT editor SUCCESS docId=%s pageKey=%s annId=%s published=%s",
+        docId, page_num_str, annId, published,
     )
     return {"id": annId, "serverPageSha": new_sha, "published": published}
 
@@ -749,11 +745,9 @@ async def delete_editor_annotation(docId: str, pageNum: str, annId: str, user: D
     """Soft-delete an annotation and republish the page."""
     if not _validate_doc_id(docId):
         raise HTTPException(status_code=400, detail="invalid docId")
-    if not _validate_page_num(pageNum):
+    page_num_str = _validate_page_key(pageNum)
+    if page_num_str is None:
         raise HTTPException(status_code=400, detail="invalid pageNum")
-
-    pageNum_int = int(pageNum)
-    page_num_str = str(pageNum_int).zfill(3)
 
     deleted = db.soft_delete_annotation(docId, page_num_str, annId, author_id=user["userId"])
     if not deleted:
@@ -763,8 +757,8 @@ async def delete_editor_annotation(docId: str, pageNum: str, annId: str, user: D
     new_sha = _current_page_sha(docId, page_num_str)
 
     logger.info(
-        "DELETE editor SUCCESS docId=%s pageNum=%d annId=%s published=%s",
-        docId, pageNum_int, annId, published,
+        "DELETE editor SUCCESS docId=%s pageKey=%s annId=%s published=%s",
+        docId, page_num_str, annId, published,
     )
     return {"id": annId, "serverPageSha": new_sha, "published": published}
 

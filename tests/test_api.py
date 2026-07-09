@@ -165,10 +165,58 @@ def test_editor_get_invalid_doc_id(client, doc_id):
     assert r.status_code == 400
 
 
-@pytest.mark.parametrize("page_num", ["0", "1000", "abc", "-1"])
+@pytest.mark.parametrize("page_num", ["abc", "1000", "--1", ""])
 def test_editor_get_invalid_page_num(client, page_num):
     r = client.get(f"/api/editor/medinsky11klass/{page_num}")
-    assert r.status_code == 400
+    assert r.status_code in (400, 404)  # "" hits a different route (404), not the {pageNum} param
+
+
+# ---------------------------------------------------------------------------
+# Page key normalization (stage 2, B.4): "6"/"006" are the same page; "000"
+# and "-01" (front-matter pages) validate and go through the full CRUD cycle.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [("6", "006"), ("006", "006"), ("000", "000"), ("-1", "-01"), ("-01", "-01")],
+)
+def test_validate_page_key_normalizes(raw, expected):
+    assert main._validate_page_key(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["abc", "1000", "--1", "", "1.5", "1 "])
+def test_validate_page_key_rejects_invalid(raw):
+    assert main._validate_page_key(raw) is None
+
+
+def test_page_key_short_and_zfilled_form_are_the_same_page(client):
+    doc = "medinsky11klass"
+    created = client.post(f"/api/editor/{doc}/60", json={"annType": "comment", "text": "via short key", "coords": [1, 1]}).json()
+
+    short_form = client.get(f"/api/editor/{doc}/60").json()
+    zfilled_form = client.get(f"/api/editor/{doc}/060").json()
+    assert short_form["pageId"] == zfilled_form["pageId"] == f"{doc}_page_060"
+    assert [a["id"] for a in short_form["annotations"]] == [a["id"] for a in zfilled_form["annotations"]]
+    assert created["id"] in [a["id"] for a in zfilled_form["annotations"]]
+
+
+@pytest.mark.parametrize("page_key", ["000", "-01"])
+def test_nonstandard_page_keys_support_full_crud_and_publish(client, page_key):
+    doc = "medinsky11klass"
+
+    created = client.post(f"/api/editor/{doc}/{page_key}", json={"annType": "comment", "text": "front matter", "coords": [1, 1]})
+    assert created.status_code == 200
+    ann_id = created.json()["id"]
+
+    updated = client.put(f"/api/editor/{doc}/{page_key}/{ann_id}", json={"annType": "main", "text": "updated", "coords": [2, 2]})
+    assert updated.status_code == 200
+
+    published = _published_annotations(doc, page_key)
+    assert published == [{"id": ann_id, "text": "updated", "annType": "main", "coords": [2, 2]}]
+
+    deleted = client.delete(f"/api/editor/{doc}/{page_key}/{ann_id}")
+    assert deleted.status_code == 200
+    assert _published_annotations(doc, page_key) == []
 
 
 # ---------------------------------------------------------------------------
