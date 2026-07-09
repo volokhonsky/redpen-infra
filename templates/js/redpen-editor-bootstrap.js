@@ -72,9 +72,10 @@
         flags: { allowCoordChangeWithoutPrompt: false, mock: (window.REDPEN_MOCKS === true) },
         autoContent: { general: undefined },
         auth: { isAuthenticated: false, userId: undefined, username: undefined, csrfToken: undefined },
-        page: { 
+        page: {
           docId: window.currentDocId || null,
           pageNum: window.currentPageNum || undefined,
+          pageKey: undefined,
           pageId: undefined,
           serverPageSha: undefined, 
           origW: undefined, 
@@ -431,10 +432,10 @@
         return;
       }
       var docId = st.page && st.page.docId;
-      var pageNum = st.page && st.page.pageNum;
-      if (!docId || !pageNum) return;
+      var pageKey = (st.page && st.page.pageKey) || (st.page && st.page.pageNum);
+      if (!docId || !pageKey) return;
       try {
-        const res = await fetch(apiBase('/api/editor/'+encodeURIComponent(docId)+'/'+encodeURIComponent(pageNum)), { credentials: 'include' });
+        const res = await fetch(apiBase('/api/editor/'+encodeURIComponent(docId)+'/'+encodeURIComponent(pageKey)), { credentials: 'include' });
         if (!res.ok) return;
         const data = await res.json();
         st.page.serverPageSha = data.serverPageSha;
@@ -456,7 +457,7 @@
       await getCsrf();
 
       var docId = st.page && st.page.docId ? st.page.docId : 'unknown';
-      var pageNum = st.page && st.page.pageNum ? st.page.pageNum : 1;
+      var pageKey = (st.page && st.page.pageKey) || (st.page && st.page.pageNum) || 1;
 
       var payload = { annType: draft.annType, text: draft.content, clientPageSha: st.page.serverPageSha };
       if (draft.annType !== 'general') payload.coords = draft.coords;
@@ -466,11 +467,11 @@
       var isExistingServerAnnotation = draft.id && String(draft.id).trim() && !String(draft.id).startsWith('client-');
 
       if (isExistingServerAnnotation) {
-        url = apiBase('/api/editor/'+encodeURIComponent(docId)+'/'+encodeURIComponent(pageNum)+'/'+encodeURIComponent(String(draft.id).trim()));
+        url = apiBase('/api/editor/'+encodeURIComponent(docId)+'/'+encodeURIComponent(pageKey)+'/'+encodeURIComponent(String(draft.id).trim()));
         method = 'PUT';
       } else {
         // Новая аннотация — отправляем POST без id в URL
-        url = apiBase('/api/editor/'+encodeURIComponent(docId)+'/'+encodeURIComponent(pageNum));
+        url = apiBase('/api/editor/'+encodeURIComponent(docId)+'/'+encodeURIComponent(pageKey));
         method = 'POST';
       }
 
