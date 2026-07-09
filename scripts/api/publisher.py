@@ -68,6 +68,10 @@ def publish_page(doc_id: str, page_num: str) -> bool:
                 tmp.write(data_bytes)
                 tmp.flush()
                 os.fsync(tmp.fileno())
+            # mkstemp() creates the file mode 0600 (owner-only); this directory
+            # is served directly by nginx (a different uid), so it must be
+            # world-readable like a normal checked-out file.
+            os.chmod(tmp_path, 0o644)
             os.replace(tmp_path, target)
         finally:
             if os.path.exists(tmp_path):

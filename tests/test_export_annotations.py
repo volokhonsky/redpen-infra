@@ -4,6 +4,7 @@ Unit tests for scripts/api/export_annotations.py (stage 2, A2.7).
 
 import json
 import os
+import stat
 
 import pytest
 
@@ -36,6 +37,12 @@ def test_export_writes_bare_array_files(tmp_path):
     with open(os.path.join(out, "doc1", "annotations", "page_006.json"), encoding="utf-8") as f:
         data = json.load(f)
     assert data == [{"id": "ann-1", "text": "hi", "annType": "comment", "coords": [1, 2]}]
+
+    # tempfile.mkstemp() defaults to mode 0600 (owner-only); exported files
+    # must stay world-readable (e.g. once committed/synced elsewhere).
+    path = os.path.join(out, "doc1", "annotations", "page_006.json")
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    assert mode & stat.S_IROTH, f"expected world-readable, got {oct(mode)}"
 
     assert os.path.exists(os.path.join(out, "doc2", "annotations", "page_-01.json"))
 

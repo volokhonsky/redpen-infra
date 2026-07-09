@@ -5,6 +5,7 @@ annotations store into the static bare-array JSON the viewer reads).
 
 import json
 import os
+import stat
 
 import pytest
 
@@ -73,6 +74,17 @@ def test_publish_page_writes_valid_bare_array(tmp_path):
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     assert data == [{"id": "ann-1", "text": "one", "annType": "comment", "coords": [1, 2]}]
+
+
+def test_publish_page_writes_world_readable_file(tmp_path):
+    # PUBLISH_DIR is served directly by nginx (a different uid than the api
+    # container). tempfile.mkstemp() defaults to mode 0600 (owner-only); the
+    # published file must stay world-readable or nginx 403s on it.
+    db.upsert_annotation_db("doc1", "006", "ann-1", "comment", "one")
+    publisher.publish_page("doc1", "006")
+    path = os.path.join(config.PUBLISH_DIR, "doc1", "annotations", "page_006.json")
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    assert mode & stat.S_IROTH, f"expected world-readable, got {oct(mode)}"
 
 
 def test_publish_page_general_has_no_coords_key_in_file(tmp_path):
