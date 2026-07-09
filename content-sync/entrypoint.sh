@@ -36,7 +36,10 @@ publish_from_repo() {
   set -e
   sync_log "Publishing to /srv/public via staging"
   rm -rf /srv/staging && mkdir -p /srv/staging
-  rsync -a --delete --exclude ".git" /srv/repo/ /srv/staging/
+  # */annotations/ is owned by the API (stage 2: SQLite is canonical, the API's
+  # publisher.py writes page_NNN.json straight into /srv/public). Excluding it
+  # here (without --delete-excluded) also protects it from --delete below.
+  rsync -a --delete --exclude ".git" --exclude "/*/annotations/" /srv/repo/ /srv/staging/
 
   # Generate app-config.js into staging
   if [ -n "${API_BASE_URL}" ]; then
@@ -47,7 +50,18 @@ publish_from_repo() {
   /usr/bin/env python3 /app/content_sync.py --mutate-only --staging /srv/staging || true
 
   # Sync to public (shared volume)
-  rsync -a --delete /srv/staging/ /srv/public/
+  rsync -a --delete --exclude "/*/annotations/" /srv/staging/ /srv/public/
+
+  # Ensure annotations/ exists and is writable by the API (uid 10001), which
+  # runs as a different user than this (root) sync process.
+  if [ -d /srv/public ]; then
+    for doc_dir in /srv/public/*/; do
+      [ -d "$doc_dir" ] || continue
+      mkdir -p "${doc_dir}annotations"
+      chown -R 10001:10001 "${doc_dir}annotations"
+    done
+  fi
+
   sync_log "Publish complete"
 }
 
