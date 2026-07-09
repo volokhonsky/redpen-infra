@@ -181,13 +181,33 @@ def publish_from_parent(parent: Path, public_dir: Path, staging_dir: Path, api_b
     if staging_dir.exists():
         subprocess.call(["rm", "-rf", str(staging_dir)])
     staging_dir.mkdir(parents=True, exist_ok=True)
-    run(["rsync", "-a", "--delete", "--exclude", ".git", f"{src}/", f"{staging_dir}/"])
+    # */annotations/ is owned by the API (stage 2: SQLite is canonical, the
+    # API's publisher.py writes page_NNN.json straight into public_dir). Without
+    # --delete-excluded, excluding it from --delete also protects it from being
+    # wiped by this sync -- only the API and import_annotations.py write there.
+    run(["rsync", "-a", "--delete", "--exclude", ".git", "--exclude", "/*/annotations/", f"{src}/", f"{staging_dir}/"])
     mutate_staging(staging_dir, api_base_url)
-    run(["rsync", "-a", "--delete", f"{staging_dir}/", f"{public_dir}/"])
+    run(["rsync", "-a", "--delete", "--exclude", "/*/annotations/", f"{staging_dir}/", f"{public_dir}/"])
+    _ensure_annotations_dirs_owned_by_api(public_dir)
     try:
         (public_dir / ".published_by_sync").write_text(str(int(time.time())), encoding="utf-8")
     except Exception as e:
         log("failed to write publish stamp:", e)
+
+
+def _ensure_annotations_dirs_owned_by_api(public_dir: Path) -> None:
+    """Create <docId>/annotations/ for any new docId and fix ownership on
+    existing ones. content-sync runs as root, but the API container writes
+    page_NNN.json as uid 10001 -- without this, a fresh docId directory (or one
+    still owned by root from before stage 2) makes the API's writes fail."""
+    if not public_dir.exists():
+        return
+    for doc_dir in public_dir.iterdir():
+        if not doc_dir.is_dir():
+            continue
+        ann = doc_dir / "annotations"
+        ann.mkdir(exist_ok=True)
+        subprocess.call(["chown", "-R", "10001:10001", str(ann)])
 
 def bump_parent_submodules(parent: Path, msg: str) -> bool:
     """No-op in independent-repos mode.
