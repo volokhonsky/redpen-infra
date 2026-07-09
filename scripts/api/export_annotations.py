@@ -37,6 +37,7 @@ def _write_page(target_dir: str, doc_id: str, page_num: str) -> None:
             tmp.write(data_bytes)
             tmp.flush()
             os.fsync(tmp.fileno())
+        os.chmod(tmp_path, 0o644)  # mkstemp() defaults to 0600 (owner-only)
         os.replace(tmp_path, out_path)
     finally:
         if os.path.exists(tmp_path):
