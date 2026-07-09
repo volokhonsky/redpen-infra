@@ -30,11 +30,14 @@
         '<textarea id="redpen-content" rows="6" style="width:100%;"></textarea>'+
         '<div id="redpen-content-error" class="redpen-error" style="color:#DC143C;font-size:12px;margin-top:4px;"></div>'+
       '</div>'+
-      '<div class="redpen-editor-actions" style="margin-top:10px;display:flex;gap:8px;">'+
+      '<div class="redpen-editor-actions" style="margin-top:10px;display:flex;gap:8px;align-items:center;">'+
+        '<label style="display:flex;align-items:center;gap:4px;font-weight:normal;">'+
+          '<input type="checkbox" id="redpen-draft-checkbox" /> Черновик'+
+        '</label>'+
         '<button id="redpen-preview" disabled>Показать</button>'+
         '<button id="redpen-submit" disabled>Отправить</button>'+
         '<button id="redpen-cancel">Отмена</button>'+
-      '</div>'+ 
+      '</div>'+
       '<div id="redpen-login" style="display:none;"></div>';
 
     container.appendChild(editor);
@@ -168,6 +171,8 @@
         }
       }
       if (contentEl) contentEl.value = (draft && typeof draft.content === 'string') ? draft.content : '';
+      var draftCheckbox = document.getElementById('redpen-draft-checkbox');
+      if (draftCheckbox) draftCheckbox.checked = !!(draft && draft.status === 'draft');
     } catch (e) { /* noop */ }
   }
 
@@ -200,8 +205,9 @@
     var annType = typeEl ? typeEl.value : 'comment';
     var content = contentEl ? contentEl.value : '';
     var coords = coordEl ? parseCoords(coordEl.value) : undefined;
+    var draftCheckbox = document.getElementById('redpen-draft-checkbox');
 
-    var res = { annType: annType, content: content };
+    var res = { annType: annType, content: content, isDraft: !!(draftCheckbox && draftCheckbox.checked) };
     if (typeof currentId !== 'undefined') res.id = currentId;
     if (Array.isArray(coords)) res.coords = coords;
     return res;
