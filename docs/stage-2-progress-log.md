@@ -9,13 +9,13 @@
 
 ## Часть A — SQLite + публикация
 
-- [ ] A2.1 Схема БД: annotations + annotation_history (db.py)
-- [ ] A2.2 Публикатор scripts/api/publisher.py
-- [ ] A2.3 Импорт scripts/api/import_annotations.py
-- [ ] A2.4 Перевод editor-эндпоинтов на БД (main.py, удаление storage.py page-функций)
-- [ ] A2.5 POST /api/admin/publish-all + publish_all() на старте
-- [ ] A2.6 content-sync: exclude annotations + chown
-- [ ] A2.7 export_annotations.py + флаг --annotations-from-md в build_website.py
+- [x] A2.1 Схема БД: annotations + annotation_history (db.py) — коммит 0071460
+- [x] A2.2 Публикатор scripts/api/publisher.py — коммит 1d540ef
+- [x] A2.3 Импорт scripts/api/import_annotations.py — коммит e8afd25
+- [x] A2.4 Перевод editor-эндпоинтов на БД (main.py, удаление storage.py page-функций) — коммит 93e0c05
+- [x] A2.5 POST /api/admin/publish-all + publish_all() на старте — коммит 6cd3b94
+- [x] A2.6 content-sync: exclude annotations + chown — коммит 7c28f3d (патч и entrypoint.sh — там был дублирующий bash-rsync)
+- [x] A2.7 export_annotations.py + флаг --annotations-from-md в build_website.py — коммит 2338125
 - [ ] A2.8 Документация и конфиги (docker-compose, .env.sample, README, STATE_OVERVIEW)
 
 ## Часть B — адресация страниц

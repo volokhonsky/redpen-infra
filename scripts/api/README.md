@@ -1,18 +1,28 @@
 # RedPen API
 
 FastAPI-сервис для хранения входящих данных и редактирования аннотаций.
-Каноническая реализация: `scripts/api` (`main.py`, `storage.py`, `config.py`).
+Каноническая реализация: `scripts/api` (`main.py`, `db.py`, `publisher.py`,
+`storage.py`, `config.py`).
+
+С этапа 2 аннотации редактора хранятся в SQLite (`db.py`, таблицы
+`annotations`/`annotation_history`), а не в файлах. `publisher.py` рендерит
+их в статические `<docId>/annotations/page_NNN.json` (тот же «голый массив»,
+который читает просмотрщик) при каждой мутации — это единственное, что
+пишется в `PUBLISH_DIR`. `storage.py` теперь отвечает только за inbox
+(`/api/store*`); CLI `import_annotations.py`/`export_annotations.py`
+переносят данные между файлами и БД (см. ниже).
 
 ## Конфигурация (переменные окружения)
 
 | Переменная | Значение по умолчанию | Назначение |
 |---|---|---|
-| `STORAGE_DIR` | `/data` | Корень для данных: `inbox/…` и `<docId>/annotations/page_NNN.json` |
+| `STORAGE_DIR` | `/data` | Корень для inbox: `inbox/…` (`/api/store*`) |
 | `LOG_DIR` | `/app/logs` | Каталог для файла лога `redpen-api.log` |
 | `LOG_LEVEL` | `INFO` | Уровень логирования |
 | `CORS_ALLOW_ORIGINS` | `_` (→ `*`) | Список origin через запятую; `_`/`*` = разрешить все |
 | `EDITOR_TOKENS` | (пусто) | Токены личного входа: `token1:username1,token2:username2`. Пусто = вход по токену отключён |
-| `DB_PATH` | `/var/redpen-db/redpen.db` | SQLite-файл для users/sessions/allowlist (стадия 1). Не должен лежать в `STORAGE_DIR` |
+| `DB_PATH` | `/var/redpen-db/redpen.db` | SQLite-файл: users/sessions/allowlist (стадия 1) + annotations/annotation_history (стадия 2). Не должен лежать в `STORAGE_DIR` |
+| `PUBLISH_DIR` | (пусто) | Куда `publisher.py` пишет `<docId>/annotations/page_NNN.json`. Пусто = публикация отключена (тесты, dev без volume) |
 | `GOOGLE_CLIENT_ID` | (пусто) | OAuth client id для верификации Google ID-token. Пусто = `POST /api/auth/google` отвечает 503 |
 | `ADMIN_EMAILS` | (пусто) | Email через запятую, получающие роль `admin` безусловно |
 | `COOKIE_SECURE` | `true` | Флаг `Secure` у cookie `redpen_session`. `false` — для локальной разработки по http |
@@ -56,32 +66,35 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
   При наличии обоих полей приоритет у `bucket`. Ответ содержит
   `{stored,id,dateDir,bucket,relPath,size}`.
 
-Редактор аннотаций (данные в `${STORAGE_DIR}/<docId>/annotations/page_NNN.json`):
-- `GET /api/editor/{docId}/{pageNum}` — вернуть страницу (создаёт и сохраняет
-  `serverPageSha`, если его не было). `pageNum` — 1..999.
+Редактор аннотаций (канон — таблица `annotations` в `DB_PATH`; каждая мутация
+республикует голый массив в `${PUBLISH_DIR}/<docId>/annotations/page_NNN.json`):
+- `GET /api/editor/{docId}/{pageNum}` — вернуть страницу, рендер из БД
+  (`{pageId, serverPageSha, annotations}`). `pageNum` — 1..999.
 - 🔒 `POST /api/editor/{docId}/{pageNum}` — добавить/обновить аннотацию.
   Тело: `{annType, text, coords?[x,y], id?, clientPageSha?}`. Для
   `annType != "general"` можно передать целочисленные `coords`. Ответ:
-  `{id, serverPageSha}`.
+  `{id, serverPageSha, published}` (`published=false`, если `PUBLISH_DIR` не
+  настроен или запись в volume не удалась — данные уже в БД).
 - 🔒 `PUT /api/editor/{docId}/{pageNum}/{annId}` — обновить аннотацию по id
-  (если не найдена — добавляется как новая). То же тело/ответ.
+  (если не найдена — создаётся новая). То же тело/ответ.
+- 🔒 `DELETE /api/editor/{docId}/{pageNum}/{annId}` — мягкое удаление
+  (`status='deleted'`, остаётся в истории) + республикация. `404`, если
+  аннотации нет или она уже удалена. Ответ: `{id, serverPageSha, published}`.
 
 Оптимистичная блокировка: если `clientPageSha` передан, не пуст и не
 совпадает с текущим `serverPageSha` страницы — ответ `409`
 `{"detail": "conflict", "serverPageSha": "<текущий>"}`. Если `clientPageSha`
 не передан, запрос принимается (переходный режим, пишется предупреждение в лог).
 
-Пересборка JSON из Markdown:
-- 🔒 `POST /api/rebuild/{bookSlug}/annotations/{pageId}` — конвертирует
-  `redpen-content/{bookSlug}/annotations/{pageId}.md` →
-  `redpen-publish/{bookSlug}/annotations/{pageId}.json`. `bookSlug`:
-  `[a-z0-9_-]+`; `pageId`: `page_NNN` (три цифры). 404, если Markdown нет.
-
-Администрирование (allowlist редакторов):
+Администрирование (allowlist редакторов, публикация):
 - ⛔ `GET /api/admin/allowlist` → `{"allowlist": [{email, role, addedBy, addedAt}, …]}`
 - ⛔🔒 `POST /api/admin/allowlist` `{email, role: "editor"|"admin"}` → upsert,
   возвращает обновлённый список
 - ⛔🔒 `DELETE /api/admin/allowlist/{email}` → удаляет запись (404, если не было)
+- ⛔🔒 `POST /api/admin/publish-all` → перепубликовать все страницы из БД в
+  `PUBLISH_DIR` (`{"pages": N, "failed": M}`); то же самое выполняется
+  автоматически при старте сервиса (самолечение volume после пересоздания
+  контейнера/тома).
 
 ### Роли
 
@@ -107,9 +120,21 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 - `POST /api/auth/logout` → удаляет сессию, очищает cookie, `{"ok": true}`
 
 > Легаси: `GET /api/pages/{pageId}` (формат `{docId}_page_{NNN}`, например
-> `medinsky11klass_page_006`) всё ещё работает. Старые эндпоинты
-> `POST/PUT /api/pages/{pageId}/annotations` **закомментированы** —
-> используйте `/api/editor/...`.
+> `medinsky11klass_page_006`) всё ещё работает, тоже рендерится из БД.
+> Используйте `/api/editor/...` для новых интеграций.
+
+## CLI: перенос данных между файлами и БД (этап 2)
+
+- `python scripts/api/import_annotations.py <source_dir> [--doc <docId>] [--dry-run] [--overwrite]` —
+  разовый импорт существующих `<source_dir>/<docId>/annotations/page_*.json`
+  (оба формата: голый массив и старый page-объект) в БД. По умолчанию
+  идемпотентен (пропускает уже существующие `ann_id`); `--overwrite` обновляет
+  их. Ничего не публикует — после импорта вызовите `publish-all` (или
+  перезапустите сервис).
+- `python scripts/api/export_annotations.py --to <dir> [--doc <docId>]` —
+  обратный экспорт: пишет голые массивы из БД в `<dir>/<docId>/annotations/page_*.json`
+  тем же рендером, что и `publisher.py`. Используется для синхронизации
+  переносимого git-снапшота `redpen-publish` с БД.
 
 ## Примеры
 
@@ -130,5 +155,8 @@ curl -s -b /tmp/redpen.cookies -X POST http://localhost:8080/api/editor/medinsky
 
 ## Тесты
 
-Эндпоинты покрыты `tests/test_api.py` (через `fastapi.TestClient`, без запуска
-сервера), `storage.py` — `tests/test_storage.py`. См. `tests/README.md`.
+Эндпоинты покрыты `tests/test_api.py` и `tests/test_auth.py` (через
+`fastapi.TestClient`, без запуска сервера); БД аннотаций — `tests/test_db.py` /
+`tests/test_annotations_db.py`; рендер/публикация — `tests/test_publisher.py`;
+CLI — `tests/test_import_annotations.py` / `tests/test_export_annotations.py`.
+См. `tests/README.md`.

@@ -23,10 +23,17 @@
     - «Показать» — локально применяет изменения: создаёт/обновляет маркер, поп‑ап, поддерживает hover, обновляет правый блок для general, синхронизирует baseline (форма становится «чистой»).
     - «Отправить» — реальный POST/PUT к `/api/editor/{docId}/{pageNum}[/{annId}]` (с сессией + CSRF-токеном); обрабатывает 401 (показывает вход), 403 с ролью viewer («недостаточно прав»), 403 CSRF (тихий ретрай с новым токеном), 409 (конфликт версий, предлагает перечитать страницу).
 
-- Бэкенд API (этапы 0 и 1 из `docs/editor-improvement-plan.md` выполнены, в Docker):
-  - FastAPI/Uvicorn; инбокс (`/api/store*`), редактор аннотаций (`/api/editor/...`, файлы `<docId>/annotations/page_NNN.json` в `STORAGE_DIR`), пересборка из Markdown (`/api/rebuild/...`).
+- Бэкенд API (этапы 0–2 из `docs/editor-improvement-plan.md` выполнены, в Docker):
+  - FastAPI/Uvicorn; инбокс (`/api/store*`, файлы в `STORAGE_DIR`), редактор
+    аннотаций (`/api/editor/...`, включая `DELETE`).
+  - Аннотации — в SQLite (`db.py`, таблицы `annotations`/`annotation_history`,
+    канон); каждая мутация сразу рендерится и пишется в
+    `<docId>/annotations/page_NNN.json` в `PUBLISH_DIR` (том `redpen_public`,
+    его же раздаёт nginx) — правки редактора видны на сайте немедленно, без
+    git-цикла. `POST /api/admin/publish-all` (и старт сервиса) перепубликует
+    всё из БД — самолечение тома. CLI `import_annotations.py`/
+    `export_annotations.py` переносят данные файлы⇄БД.
   - Аутентификация и роли — см. раздел «Аутентификация и роли» ниже.
-  - В планах (этап 2): аннотации в БД как источник правды + публикация JSON-снапшотов сразу в `redpen_public` (см. план).
 
 ## Где что лежит (ключевые файлы и их роли)
 
@@ -61,16 +68,31 @@
   - FastAPI‑приложение: CORS (конфигурируемые Origins), логи, обработчики:
     - `GET /api/health` — статус ok.
     - `POST /api/store` — принять JSON‑объект, добавить служебные поля `receivedAt`/`remoteAddr` и положить в файловое хранилище (`inbox/дата/uuid.json`), логировать путь/размер.
+    - `/api/editor/...` (GET/POST/PUT/DELETE) — CRUD аннотаций через `db.py` + `publisher.py`.
+- `scripts/api/db.py`
+  - SQLite: users/sessions/allowlist (этап 1) и `annotations`/`annotation_history`
+    (этап 2, канон для аннотаций редактора).
+- `scripts/api/publisher.py`
+  - Рендер аннотаций из БД в «голый массив» (формат просмотрщика), sha
+    (`serverPageSha`), атомарная запись `page_NNN.json` в `PUBLISH_DIR`.
+- `scripts/api/import_annotations.py` / `scripts/api/export_annotations.py`
+  - CLI: разовый импорт файлов → БД и обратный экспорт БД → файлы (для
+    переносимого git-снапшота `redpen-publish`).
 - `scripts/api/storage.py`
-  - Утилиты файлового ввода‑вывода: вычисление today‑директории inbox, атомарная запись JSON с временным файлом и `os.replace`, сериализация.
+  - Утилиты файлового ввода‑вывода для inbox (`/api/store*`): вычисление
+    today‑директории, атомарная запись JSON с временным файлом и `os.replace`,
+    санитизация bucket/pageId. Страницы аннотаций здесь больше не хранятся
+    (перенесены в `db.py`/`publisher.py`, этап 2).
 - `scripts/api/config.py`
-  - Конфиг: чтение ENV (`STORAGE_DIR`, `LOG_LEVEL`, `CORS_ALLOW_ORIGINS`) и парсинг Origins.
+  - Конфиг: чтение ENV (`STORAGE_DIR`, `LOG_LEVEL`, `CORS_ALLOW_ORIGINS`,
+    `DB_PATH`, `PUBLISH_DIR`, ...) и парсинг Origins.
 - `scripts/api/requirements-api.txt`
   - Зависимости: `fastapi`, `uvicorn`, `pydantic`, `python-dotenv`.
 - `scripts/api/Dockerfile`
   - Базовый образ `python:3.12-slim`, установка зависимостей, user `app` (uid 10001), запуск uvicorn на 8080.
 - `scripts/api/.env.sample`
-  - Пример ENV для контейнера (`STORAGE_DIR`, `LOG_LEVEL`, `CORS_ALLOW_ORIGINS`).
+  - Пример ENV для контейнера (`STORAGE_DIR`, `LOG_LEVEL`, `CORS_ALLOW_ORIGINS`,
+    `DB_PATH`, `PUBLISH_DIR`, ...).
 - `scripts/api/README.md`
   - Краткая инструкция сборки/запуска локально и список эндпоинтов.
 - `scripts/deploy/deploy-api.sh`
@@ -113,8 +135,9 @@
   записи сессии в БД; все write-эндпоинты сверяют заголовок `X-CSRF-Token`
   с ним (кроме `login`, для которого сессии ещё не существует).
 - Права на эндпоинты: `require_user` (есть сессия) → `require_editor`
-  (+ CSRF, роль editor/admin) для записи аннотаций/inbox/rebuild;
-  `require_admin` для `/logs`, `/api/logs`, allowlist-эндпоинтов.
+  (+ CSRF, роль editor/admin) для записи аннотаций/inbox;
+  `require_admin`/`require_admin_csrf` для `/logs`, `/api/logs`,
+  allowlist-эндпоинтов и `/api/admin/publish-all`.
 - Фронтенд: кнопка Google (`redpen-editor-bootstrap.js`, GIS-скрипт
   подключается динамически только в editor-режиме) + опциональный
   токен-фоллбэк за флагом `window.REDPEN_DEV_TOKEN_LOGIN`; шапка панели
@@ -125,12 +148,23 @@
 
 ## Связанные файлы конфигурации/оркестрации
 - `docker-compose.yml` — сервисы `frontend`, `api`, `caddy`, `content-sync`; тома
-  `redpen_public` (статика сайта), `redpen_data`/`redpen-publish` (инбокс + аннотации
-  API) и `redpen_db` (SQLite users/sessions/allowlist); переменные окружения для
-  CORS/доменов и аутентификации (`GOOGLE_CLIENT_ID`, `ADMIN_EMAILS`, `EDITOR_TOKENS`).
+  `redpen_public` (статика сайта; и `content-sync`, и `api` пишут в него —
+  `api` только в `*/annotations/`, `content-sync` — во всё остальное, см.
+  ниже), `redpen_data`/`redpen-publish` (рабочая копия для CLI-импорта/экспорта
+  и inbox) и `redpen_db` (SQLite: users/sessions/allowlist + аннотации);
+  переменные окружения для CORS/доменов и аутентификации (`GOOGLE_CLIENT_ID`,
+  `ADMIN_EMAILS`, `EDITOR_TOKENS`) и публикации (`PUBLISH_DIR=/srv/public` у `api`).
+- `content-sync/` — тянет `redpen-publish` из git и синхронизирует его в
+  `redpen_public` (`rsync -a --delete`), **кроме** `*/annotations/`
+  (владелец — `api`; исключено из `--delete` и из копирования, чтобы не
+  затирать то, что пишет `publisher.py`); после синка чинит владельца
+  `annotations/` (`chown 10001:10001`) для новых/старых docId.
 - `caddy/` — конфигурация реверс‑прокси (внешний каталог, путь проброшен в контейнер `caddy`).
 
 ## Примечания по состоянию интеграции
 - Режим «Отправить» в редакторе ходит в реальный API (не мок): аутентификация,
   CSRF, роли и optimistic locking (409) реализованы — см. «Аутентификация и роли».
 - Все функции просмотра не зависят от редактора: без `?editor=1` редакторский код не активен.
+- Аннотации — в SQLite, канон; статические `page_NNN.json` — производный рендер
+  (`publisher.py`), правки видны на сайте сразу после записи в БД, без
+  git-цикла публикации контента.

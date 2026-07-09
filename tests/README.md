@@ -20,9 +20,14 @@ pytest            # из корня репозитория; конфиг в pyte
 |---|---|
 | `test_annotation_converter.py` | Конвертация Markdown ↔ JSON (`scripts/annotation_converter.py`), round-trip |
 | `test_sanitize_bucket.py` | Санитизация bucket/pageId (`scripts/api/storage.py`) |
-| `test_storage.py` | Хранение страниц: `load_page`/`save_page`/`compute_sha`/`upsert`/`update` |
-| `test_api.py` | Эндпоинты FastAPI через `TestClient`: health, store, store-raw, editor GET/POST/PUT, rebuild-валидация, auth |
-| `test_build_website.py` | Сборка сайта (`scripts/build_website.py`): per-document раскладка, конвертация аннотаций, индексная страница |
+| `test_db.py` | Users/sessions/allowlist в SQLite (`scripts/api/db.py`, стадия 1) |
+| `test_annotations_db.py` | Таблицы `annotations`/`annotation_history` в SQLite (`scripts/api/db.py`, стадия 2) |
+| `test_publisher.py` | Рендер БД → голый массив, sha, запись `page_NNN.json` (`scripts/api/publisher.py`) |
+| `test_import_annotations.py` | CLI-импорт файлов в БД (`scripts/api/import_annotations.py`) |
+| `test_export_annotations.py` | CLI-экспорт БД в файлы (`scripts/api/export_annotations.py`) |
+| `test_api.py` | Эндпоинты FastAPI через `TestClient`: health, store, store-raw, editor GET/POST/PUT/DELETE, publish-all, auth |
+| `test_auth.py` | Google-вход, роли, allowlist, publish-all (стадии 1–2) |
+| `test_build_website.py` | Сборка сайта (`scripts/build_website.py`): per-document раскладка, `--annotations-from-md`, индексная страница |
 
 `test_build_website.py` строит сайт из синтетического мини-контента во временном
 каталоге (реальный `redpen-content` не нужен), поэтому проходит за доли секунды.
