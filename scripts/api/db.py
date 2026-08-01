@@ -353,6 +353,20 @@ def list_page_annotations(doc_id: str, page_num: str, include_deleted: bool = Fa
     return [_annotation_row_to_dict(row) for row in rows]
 
 
+def list_page_drafts(doc_id: str, page_num: str) -> List[Dict[str, Any]]:
+    """Draft (status='draft') annotations for a page, in insertion order. These
+    never reach the published bare-array page_<NNN>.json; the publisher renders
+    them into a separate page_<NNN>.drafts.json the viewer loads only in the
+    ?showDrafts=1 preview mode."""
+    conn = get_connection()
+    with _lock:
+        rows = conn.execute(
+            "SELECT * FROM annotations WHERE doc_id = ? AND page_num = ? AND status = 'draft' ORDER BY rowid_pk",
+            (doc_id, page_num),
+        ).fetchall()
+    return [_annotation_row_to_dict(row) for row in rows]
+
+
 def get_annotation(doc_id: str, page_num: str, ann_id: str) -> Optional[Dict[str, Any]]:
     conn = get_connection()
     with _lock:

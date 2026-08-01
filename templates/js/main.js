@@ -43,6 +43,28 @@ function isEditorMode() {
   }
 }
 
+/**
+ * Read-only preview mode that reveals draft annotations (status='draft' in the
+ * API). Drafts never enter the published page_<NNN>.json; they live in a
+ * sibling page_<NNN>.drafts.json that loadPage() fetches only when this is on.
+ * Enabled by ?showDrafts=1 (query or hash), mirroring isEditorMode().
+ * Intentionally independent of editor mode: the editor pulls its own live,
+ * editable drafts from the API and renders them itself, so this static preview
+ * stays off there to avoid double-rendering the same drafts.
+ */
+function isDraftMode() {
+  try {
+    if (isEditorMode()) return false;
+    const usp = new URLSearchParams(window.location.search || '');
+    const hsp = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
+    const qp = usp.get('showDrafts');
+    const hp = hsp.get('showDrafts');
+    return (qp === '1' || qp === 'true') || (hp === '1' || hp === 'true');
+  } catch (e) {
+    return false;
+  }
+}
+
 function clampPage(n) {
   // Doubles as clampIndex(): in manifest mode metadata.totalPages is always
   // set to metadata.pages.length (see scripts/generate_page_manifest.py), so
@@ -321,6 +343,19 @@ async function loadPage(pageNum) {
     allAnns = [];
   }
 
+  // Draft preview (?showDrafts=1): additionally load the sibling drafts file
+  // and append its items (each already carries draft:true). Absent file /
+  // parse error means "no drafts" -- the plain published view is unaffected.
+  if (isDraftMode()) {
+    try {
+      const drafts = await fetch('annotations/' + currentPageId + '.drafts.json')
+        .then(r => (r.ok ? r.json() : []));
+      if (Array.isArray(drafts) && drafts.length) {
+        allAnns = allAnns.concat(drafts.map(a => Object.assign({}, a, { draft: true })));
+      }
+    } catch (e) { /* no drafts for this page */ }
+  }
+
   const globalContainer = document.getElementById('global-comment-container');
   const globalDiv = document.getElementById('global-comment');
   const generalAnns = allAnns.filter(a => a.annType === 'general');
@@ -329,12 +364,15 @@ async function loadPage(pageNum) {
   globalContainer.style.display = 'block';
   globalContainer.style.border = '3px solid #DC143C';
 
+  // In draft preview, tag draft entries so they're distinguishable from
+  // published text in the shared global-comment block.
+  const draftTag = a => (a.draft ? '<em class="draft-tag">[черновик]</em> ' : '');
   let globalContent = '';
   if (generalAnns.length) {
-    globalContent += generalAnns.map(a => `<p>${formatCommentText(a.text)}</p>`).join('');
+    globalContent += generalAnns.map(a => `<p class="${a.draft ? 'is-draft' : ''}">${draftTag(a)}${formatCommentText(a.text)}</p>`).join('');
   }
   if (mainAnns.length) {
-    globalContent += mainAnns.map((a,i) => `<p><strong>${i+1}.</strong> ${formatCommentText(a.text)}</p>`).join('');
+    globalContent += mainAnns.map((a,i) => `<p class="${a.draft ? 'is-draft' : ''}"><strong>${i+1}.</strong> ${draftTag(a)}${formatCommentText(a.text)}</p>`).join('');
   }
   globalDiv.innerHTML = globalContent || 'Нет общего комментария.';
 

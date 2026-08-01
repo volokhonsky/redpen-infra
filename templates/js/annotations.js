@@ -127,6 +127,9 @@ function repositionAnnotations() {
         circle.style.fontSize = (d * 0.6) + 'px';
         // Ensure transform property is not overridden
         circle.style.transform = 'translateX(-50%)';
+        // Draft preview (?showDrafts=1): mark unpublished markers with a dashed
+        // outline, matching the editor's draft styling.
+        if (a.draft) { circle.classList.add('is-draft'); circle.style.outline = '2px dashed #888'; }
         circle.textContent = i + 1;
 
         // Attach annotation data for editor mode to pick up
@@ -253,6 +256,7 @@ function repositionAnnotations() {
             const color = a.annType === 'main' ? '#DC143C' : '#0000FF';
             circle.style.background = `radial-gradient(circle, ${color}80 0%, ${color}40 50%, ${color}00 100%)`;
             circle.style.fontSize = (d * 0.6) + 'px';
+            if (a.draft) { circle.classList.add('is-draft'); circle.style.outline = '2px dashed #888'; }
             circle.textContent = i + 1;
 
             // Attach annotation data for editor mode to pick up
