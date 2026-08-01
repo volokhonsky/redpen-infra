@@ -108,6 +108,58 @@ def test_publish_page_is_idempotent(tmp_path):
     assert first == second
 
 
+def test_render_drafts_bare_array_with_draft_flag():
+    db.upsert_annotation_db("doc1", "006", "d-1", "comment", "wip", coord_x=3, coord_y=4, status="draft")
+    rendered = publisher.render_drafts("doc1", "006")
+    assert rendered == [{"id": "d-1", "text": "wip", "annType": "comment", "draft": True, "coords": [3, 4]}]
+
+
+def test_render_drafts_excludes_published():
+    db.upsert_annotation_db("doc1", "006", "p-1", "comment", "live")
+    db.upsert_annotation_db("doc1", "006", "d-1", "comment", "wip", status="draft")
+    assert [a["id"] for a in publisher.render_drafts("doc1", "006")] == ["d-1"]
+
+
+def test_render_page_excludes_drafts():
+    db.upsert_annotation_db("doc1", "006", "p-1", "comment", "live")
+    db.upsert_annotation_db("doc1", "006", "d-1", "comment", "wip", status="draft")
+    assert [a["id"] for a in publisher.render_page("doc1", "006")] == ["p-1"]
+
+
+def test_publish_page_writes_drafts_sidecar(tmp_path):
+    db.upsert_annotation_db("doc1", "006", "p-1", "comment", "live")
+    db.upsert_annotation_db("doc1", "006", "d-1", "comment", "wip", coord_x=1, coord_y=2, status="draft")
+    assert publisher.publish_page("doc1", "006") is True
+
+    drafts_path = os.path.join(config.PUBLISH_DIR, "doc1", "annotations", "page_006.drafts.json")
+    with open(drafts_path, encoding="utf-8") as f:
+        data = json.load(f)
+    assert data == [{"id": "d-1", "text": "wip", "annType": "comment", "draft": True, "coords": [1, 2]}]
+    # Published file stays drafts-free so serverPageSha is unaffected.
+    main_path = os.path.join(config.PUBLISH_DIR, "doc1", "annotations", "page_006.json")
+    with open(main_path, encoding="utf-8") as f:
+        assert [a["id"] for a in json.load(f)] == ["p-1"]
+
+
+def test_publish_page_no_drafts_writes_no_sidecar(tmp_path):
+    db.upsert_annotation_db("doc1", "006", "p-1", "comment", "live")
+    publisher.publish_page("doc1", "006")
+    drafts_path = os.path.join(config.PUBLISH_DIR, "doc1", "annotations", "page_006.drafts.json")
+    assert not os.path.exists(drafts_path)
+
+
+def test_publish_page_removes_stale_drafts_sidecar(tmp_path):
+    db.upsert_annotation_db("doc1", "006", "d-1", "comment", "wip", status="draft")
+    publisher.publish_page("doc1", "006")
+    drafts_path = os.path.join(config.PUBLISH_DIR, "doc1", "annotations", "page_006.drafts.json")
+    assert os.path.exists(drafts_path)
+
+    # Promote the draft to published: the sidecar must be dropped.
+    db.upsert_annotation_db("doc1", "006", "d-1", "comment", "wip", status="published")
+    publisher.publish_page("doc1", "006")
+    assert not os.path.exists(drafts_path)
+
+
 def test_publish_all_counts_pages(tmp_path):
     db.upsert_annotation_db("doc1", "006", "ann-1", "comment", "one")
     db.upsert_annotation_db("doc1", "007", "ann-1", "comment", "one")

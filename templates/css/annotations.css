@@ -20,6 +20,21 @@
   transform: translateX(-50%); /* Center relative to the point */
 }
 
+/* Draft preview (?showDrafts=1): unpublished annotations. The dashed outline
+   on .circle.is-draft is set inline in annotations.js; these style the text
+   badge and the draft entries in the shared global-comment block. */
+.draft-tag {
+  color: #888;
+  font-style: italic;
+  font-weight: normal;
+  font-size: 0.85em;
+}
+#global-comment p.is-draft {
+  opacity: 0.85;
+  border-left: 3px dashed #888;
+  padding-left: 8px;
+}
+
 /* Comment Popups */
 .comment-popup {
   position: absolute;

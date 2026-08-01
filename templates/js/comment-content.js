@@ -9,9 +9,10 @@
  * @param {string} text - The text content of the annotation
  * @returns {string} HTML content for the comment popup
  */
-function renderCommentContent(index, text) {
+function renderCommentContent(index, text, isDraft) {
+  const badge = isDraft ? ' <span class="draft-tag">[черновик]</span>' : '';
   return `
-    <div class="comment-popup-title">Комментарий ${index + 1}</div>
+    <div class="comment-popup-title">Комментарий ${index + 1}${badge}</div>
     <div class="comment-content">${formatCommentText(text)}</div>
   `;
 }
@@ -66,7 +67,7 @@ function createCommentPopup(annotation, index, cx, cy, diameter) {
   const popup = document.createElement('div');
   popup.className = 'comment-popup';
   popup.id = (annotation.id || `ann-${currentPageId}-${index + 1}`);
-  popup.innerHTML = renderCommentContent(index, annotation.text);
+  popup.innerHTML = renderCommentContent(index, annotation.text, annotation.draft);
 
   // Set initial position to measure dimensions
   popup.style.left = cx + 'px';
