@@ -44,11 +44,16 @@
 Скрипты используют два каталога рядом с этим репозиторием (или внутри дерева):
 
 - `redpen-content/` — исходники. Раскладка **по документам**:
-  `redpen-content/<docId>/{annotations/*.md, images/*.png, text/*.json,
-  illustrations/, meta.json}` (например, `redpen-content/medinsky11klass/…`).
+  `redpen-content/<docId>/{annotations/*.md, annotations_draft/*.md,
+  images/*.png, images_with_grid/*.png, text/*.json, illustrations/,
+  paragraphs_list.txt, meta.json}` (например, `redpen-content/medinsky11klass/…`).
+  `annotations_draft/` наполняет агент-аннотатор (промпт и регламент —
+  `docs/annotation-agent-prompt.md`); детальная раскладка —
+  `docs/PROJECT_STRUCTURE.md`.
 - `redpen-publish/` — собранный статический сайт:
   `redpen-publish/<docId>/{annotations/*.json, images/, text/, index.html,
-  metadata.json}` плюс общие `css/`, `js/`, `favicon.svg`, `index.html` в корне.
+  metadata.json}` плюс общие `css/`, `js/`, `cabinet/`, `favicon.svg`,
+  `index.html` в корне.
 
 Репозитории независимы; **git submodule не используются**.
 
@@ -109,11 +114,20 @@ pytest                       # быстрый набор без браузера
 
 ## Рабочий процесс
 
-1. PDF обрабатывается скриптами (`process_pdf.py` → изображения/текст/шаблоны).
-2. Аннотации пишутся вручную как Markdown в `redpen-content/<docId>/annotations`.
-3. `build_website.py` конвертирует их в JSON и публикует сайт в `redpen-publish`.
-4. Опубликованный сайт отображает страницы с аннотациями; API обслуживает
-   приём данных и редактор.
+1. PDF обрабатывается скриптами (`process_pdf.py` → изображения/текст/шаблоны;
+   `make_grid_images.py` — картинки с сеткой для аннотатора).
+2. Аннотации пишет агент-аннотатор (`docs/annotation-agent-prompt.md`; один
+   запуск = один параграф) в `annotations_draft/`, либо люди — через
+   веб-редактор (`?editor=1`) и кабинет (`/cabinet/`).
+3. Канон аннотаций — SQLite на сервере: черновики импортируются
+   `scripts/api/import_annotations.py` (аддитивно), правки редактора пишутся
+   напрямую; каждая мутация сразу рендерится в статические
+   `annotations/page_NNN.json` (`scripts/api/publisher.py`).
+4. `build_website.py` собирает всё остальное (шаблоны, картинки, текст, манифест
+   страниц, кабинет) в `redpen-publish`; конвертация md→JSON аннотаций — только
+   по флагу `--annotations-from-md`.
+5. Просмотрщик работает только на статике; API обслуживает исключительно
+   редактор и кабинет. Быстрый вход в проект для агентов — корневой `CLAUDE.md`.
 
 ## API
 
