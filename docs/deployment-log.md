@@ -345,3 +345,28 @@ Runbook предполагал, что `/root/apps/redpen/infra/redpen-publish` 
 Исходная жалоба из `TODO` закрыта: `medinsky11klass` показывает печатные
 номера книги (A1/A2/A3/3/4/5…447), а не номера файлов. `TODO` отмечен
 выполненным.
+
+---
+
+## 2026-07-10 — Публикация 192 новых аннотаций из annotations_draft (стр. 021–093)
+
+Источник: `redpen-content/medinsky11klass/annotations_draft/page_*.md`
+(72 файла нового `~~~meta`-формата с полями `tags`/`confidence` — конвертер
+их игнорирует, они остаются только в md). Служебные `_check_*`/`_report_*`
+файлы не публиковались.
+
+Порядок: локальная конвертация md→JSON (annotation_converter, 72 стр. /
+192 аннотации, 0 проблем) → именной бэкап БД `pre-draft-import-20260710.db` →
+scp+docker cp на прод → `import_annotations.py` (dry-run, затем боевой:
+imported=192 skipped=0 errors=0; импорт аддитивный — старые аннотации не
+тронуты, проверено на page_029: старый `ann-page30-1` сосуществует с новыми,
+и на page_007 вне диапазона) → `docker restart redpen-api-1`
+(startup publish_all pages=87 failed=0) → curl-проверки живого сайта →
+снапшот published-рендера скопирован в локальный клон `redpen-publish`
+и запушен (коммит `7c83141`).
+
+Заметки:
+- `annotations_draft/` в `redpen-content` остаётся незакоммиченным (исходники
+  этих 192 аннотаций!) — стоит закоммитить в content-репозиторий.
+- Поля `tags`/`confidence` из нового md-формата в модель данных не переносятся —
+  если нужны на сайте, это отдельная доработка схемы.
