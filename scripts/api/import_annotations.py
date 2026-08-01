@@ -79,7 +79,7 @@ def _normalize_coords(ann: Dict[str, Any]) -> Tuple[Optional[int], Optional[int]
         return None, None
 
 
-def import_file(doc_id: str, page_num: str, path: str, overwrite: bool, dry_run: bool) -> Dict[str, int]:
+def import_file(doc_id: str, page_num: str, path: str, overwrite: bool, dry_run: bool, status: str = "published") -> Dict[str, int]:
     """Import one page_*.json file. Returns per-file imported/skipped/errors counts."""
     counts = {"imported": 0, "skipped": 0, "errors": 0}
     try:
@@ -117,6 +117,7 @@ def import_file(doc_id: str, page_num: str, path: str, overwrite: bool, dry_run:
                 text,
                 coord_x=coord_x,
                 coord_y=coord_y,
+                status=status,
                 author_id=None,
                 action="import",
             )
@@ -125,7 +126,7 @@ def import_file(doc_id: str, page_num: str, path: str, overwrite: bool, dry_run:
     return counts
 
 
-def run(source_dir: str, doc_id: Optional[str], overwrite: bool, dry_run: bool) -> Dict[str, int]:
+def run(source_dir: str, doc_id: Optional[str], overwrite: bool, dry_run: bool, status: str = "published") -> Dict[str, int]:
     totals = {"docs": 0, "pages": 0, "imported": 0, "skipped": 0, "errors": 0}
     for d in _iter_doc_dirs(source_dir, doc_id):
         pages = _iter_page_files(source_dir, d)
@@ -134,7 +135,7 @@ def run(source_dir: str, doc_id: Optional[str], overwrite: bool, dry_run: bool) 
         totals["docs"] += 1
         for page_num, path in pages:
             totals["pages"] += 1
-            counts = import_file(d, page_num, path, overwrite=overwrite, dry_run=dry_run)
+            counts = import_file(d, page_num, path, overwrite=overwrite, dry_run=dry_run, status=status)
             for key in ("imported", "skipped", "errors"):
                 totals[key] += counts[key]
     return totals
@@ -146,10 +147,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--doc", dest="doc_id", default=None, help="Import only this docId")
     parser.add_argument("--dry-run", action="store_true", help="Report counts without writing to the DB")
     parser.add_argument("--overwrite", action="store_true", help="Update existing annotations instead of skipping them")
+    parser.add_argument("--status", choices=["published", "draft"], default="published",
+                        help="Status to assign imported annotations (default: published). Use 'draft' to add "
+                             "reviewer-only annotations that render to page_<NNN>.drafts.json (?showDrafts=1) "
+                             "and never affect the public page_<NNN>.json.")
     args = parser.parse_args(argv)
 
     db.init_db()
-    totals = run(args.source_dir, args.doc_id, overwrite=args.overwrite, dry_run=args.dry_run)
+    totals = run(args.source_dir, args.doc_id, overwrite=args.overwrite, dry_run=args.dry_run, status=args.status)
 
     print(
         "docs=%(docs)d pages=%(pages)d imported=%(imported)d skipped=%(skipped)d errors=%(errors)d"

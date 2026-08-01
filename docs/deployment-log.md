@@ -428,3 +428,50 @@ imported=192 skipped=0 errors=0; импорт аддитивный — стар�
 - Черновиков в проде пока нет — draft-рендер в живом `?showDrafts=1` проверен
   только локально (см. журнал этой сессии). Появится компаньон-файл, как только
   редактор сохранит первую аннотацию со `status='draft'`.
+
+---
+
+## 2026-08-01 — Публикация 24 черновиков параграфа 1 (стр. 006–020) как `status='draft'`
+
+Задеплоено по явному подтверждению пользователя («новые добавить как черновики
+и сразу закоммитить в прод»). Это закрытие «дыры» в начале: §1 (стр. 6–20) был
+пропущен на первом проходе аннотатора (2–7 опубликованы 2026-07-10). Существующие
+опубликованные аннотации (`annotations/`, 225 published) НЕ тронуты — новые ушли
+исключительно как черновики.
+
+Источник: `redpen-content/medinsky11klass/annotations_draft/page_006–020.md`
+(24 аннотации: 6/2, 7/1, 8/1, 9/1, 10/1, 11/3, 12/2, 13/2, 14/2, 15/2, 16/2,
+17/2, 18/1, 19/1, 20/1). Все с проверенными источниками (веб-fetch каждого URL),
+теги/confidence — в md; отчёт `_report_para_1.md`, задачник `_check_para_1.md`,
+реестр `_typical_comments.md` пополнены (tc-usa-origin, tc-official-stats,
+tc-famine-1946, tc-whatabout).
+
+Инструментальное изменение: `scripts/api/import_annotations.py` получил флаг
+`--status {published,draft}` (по умолчанию published — обратная совместимость).
+Раньше импорт всегда писал `published`; для «добавить как черновики» нужен был
+`draft`. Обновлённый скрипт положен и в `/root/apps/redpen/infra/scripts/api/`
+на проде (переживёт rebuild), и в контейнер `redpen-api-1`.
+
+Порядок (проверено):
+1. Локально: конвертация md→JSON (annotation_converter, 15 стр. / 24 анн., 0 проблем),
+   e2e-тест импорта на временной БД (`--status draft` → 24 draft, идемпотентный
+   повтор → skipped=24).
+2. Именной бэкап БД: `VACUUM INTO /var/redpen-db/backups/pre-para1-draft-import-20260801.db`
+   (745 КБ).
+3. `docker cp` скрипта и JSON в контейнер → `import_annotations.py /tmp/import_src
+   --doc medinsky11klass --status draft` (dry-run, затем боевой: imported=24
+   skipped=0 errors=0). После: published=225 (без изменений), draft=24, deleted=1.
+4. `docker restart redpen-api-1` → `startup publish_all pages=96 failed=0`.
+5. Прод-проверки (live через caddy): `page_007.json` = 6 published (не изменился);
+   `page_007.drafts.json` = 1 (флаг `draft:true`); `page_015.drafts.json` = 2;
+   `page_011.drafts.json` = 3. Черновики видны читателю только при `?showDrafts=1`,
+   в публичный `page_NNN.json` не попали (инвариант статики сохранён).
+6. Снапшот рендера (`page_006–020.json` + `.drafts.json`) скопирован в клон
+   `redpen-publish` и запушен; исходники-черновики закоммичены в `redpen-content`.
+
+Заметки:
+- `import_annotations.py` с флагом `--status` — то, что нужно и запланированному
+  на 15:00 автозапуску (параграф 8+ тоже пойдёт как `draft`).
+- content-sync исключает `*/annotations/`, поэтому пуш аннотаций в `redpen-publish`
+  живой сайт не затрагивает (аннотации на проде рендерит API) — коммит для
+  консистентности git-снапшота.
