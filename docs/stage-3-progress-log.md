@@ -97,11 +97,13 @@
 
 ## Деплой
 
-- [ ] Показать пользователю готовое локально состояние, дождаться подтверждения
-- [ ] Runbook (docs/agent-instructions-stage-3.md, раздел «Runbook деплоя»)
-      выполнен на проде
+- [x] Показать пользователю готовое локально состояние, дождаться подтверждения
+- [x] Runbook выполнен на проде
 
-Ничего не задеплоено. Требуется подтверждение пользователя перед деплоем
-(бэкап БД, обновление `scripts/api/*.py` в контейнере `api`, пересборка
-сайта и push в `redpen-publish`, `docker restart redpen-content-sync-1`,
-прод-проверка — см. runbook в `docs/agent-instructions-stage-3.md`).
+**Задеплоено 2026-08-01** по явному подтверждению пользователя, **как есть** —
+с незакрытым багом №2 (`handleMarkerClick`/`circle-`-префикс). Backend
+(`db.py`/`main.py`/`publisher.py` → rebuild `api`) и контент (js/css/cabinet +
+`redpen-auth.js` в пер-документный index, push `redpen-publish` 746949f →
+content-sync) выложены и проверены. Подробности и curl/браузер-проверки —
+`docs/deployment-log.md`, запись 2026-08-01. В той же выкладке — режим
+`?showDrafts=1`. Остаётся фикс бага №2 отдельной задачей.

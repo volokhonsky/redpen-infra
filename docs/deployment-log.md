@@ -370,3 +370,61 @@ imported=192 skipped=0 errors=0; импорт аддитивный — стар�
   этих 192 аннотаций!) — стоит закоммитить в content-репозиторий.
 - Поля `tags`/`confidence` из нового md-формата в модель данных не переносятся —
   если нужны на сайте, это отдельная доработка схемы.
+
+---
+
+## 2026-08-01 — Деплой этапа 3 (кабинет/черновики/история) + режим `?showDrafts=1`
+
+Задеплоено по явному подтверждению пользователя. Этап 3 катился **как есть**,
+с незакрытым багом №2 (клик по опубликованному маркеру в редакторе → сохранение
+уходит на `circle-<realId>` и создаёт дубликат вместо обновления; затрагивает
+только редактора, данные восстановимы, история пишется). Пользователь выбрал
+«деплой как есть», фикс — отдельной аккуратной задачей.
+
+Новое в этой же выкладке — режим предпросмотра черновиков в статике:
+публикатор рендерит файл-компаньон `annotations/page_<NNN>.drafts.json`,
+просмотрщик грузит его только при `?showDrafts=1` (query/hash). Инвариант
+статики сохранён (в API просмотрщик не ходит). Коммит инфры `5d4515e`.
+
+### Бэкенд (api)
+1. Именной бэкап БД: `docker exec redpen-api-1 ... VACUUM INTO
+   /var/redpen-db/backups/pre-stage3-deploy-20260801.db` (745 КБ). Схема НЕ
+   менялась (stage 3 добавил только read-функции; миграции не требовалось —
+   сверено `CREATE TABLE`/`ALTER` diff пуст).
+2. Изменились 3 файла: `scripts/api/{db.py,main.py,publisher.py}` — scp в
+   `/root/apps/redpen/infra/scripts/api/` → `docker compose up -d --build api`.
+3. Старт: `startup publish_all pages=87 failed=0`, `Application startup complete`.
+   Проверки: `GET /api/stats` и `/api/annotations` → 401 (раньше 404 — значит
+   stage-3 API поднялся), `annotations/page_007.json` → 200. В проде 0 черновиков.
+
+### Контент (viewer/cabinet) — хирургически, БЕЗ `build_website.py`
+`build_website.py` делает `clean_publish_dir` (rmtree всего кроме `.git`) —
+рискует потерять images/annotations, поэтому НЕ запускался. Вместо этого в клон
+`redpen-publish` скопированы только изменившиеся фронтенд-файлы:
+- `js/`: `redpen-auth.js` (новый), `redpen-editor-bootstrap.js`,
+  `redpen-editor-panel.js`, `annotations.js`, `comment-content.js`, `main.js`;
+- `css/annotations.css`;
+- `cabinet/` (новый: `cabinet.css`, `cabinet.js`, `index.html`);
+- `medinsky11klass/index.html`: добавлен `<script ../js/redpen-auth.js>` перед
+  bootstrap (пер-документный index — сборочный артефакт, регенерить целиком не
+  стал, правка точечная).
+Аннотации/картинки/текст/metadata НЕ трогались. Коммит `redpen-publish`
+`746949f`, push → `docker restart redpen-content-sync-1` (reset --hard на
+`746949f`, «Publish complete»).
+
+### Прод-проверки (curl + браузер)
+- `js/redpen-auth.js`, `cabinet/`, `cabinet/cabinet.js` → 200;
+  `medinsky11klass/` index, `annotations/page_007.json`, `images/page_007.png`
+  → 200 (контент цел); `annotations/page_007.drafts.json` → 404 (черновиков нет).
+- Вьюер `medinsky11klass?p=A3`: консоль без ошибок, `RedPenAuth.apiBase` →
+  `https://api.medinsky.net`, `isDraftMode()` присутствует, 2 published-аннотации.
+- `/cabinet/`: рендерится карточка «Вход» с кнопкой Google (GIS загрузился —
+  `GOOGLE_CLIENT_ID` настроен), ошибок в консоли нет. Логин-флоу за авторизацией
+  не тестировался (действие пользователя).
+
+### Осталось / follow-up
+- **Баг №2** (`handleMarkerClick` берёт `circle-`-префиксный id) — отдельная
+  задача, не входила в эту выкладку.
+- Черновиков в проде пока нет — draft-рендер в живом `?showDrafts=1` проверен
+  только локально (см. журнал этой сессии). Появится компаньон-файл, как только
+  редактор сохранит первую аннотацию со `status='draft'`.
