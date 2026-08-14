@@ -2,7 +2,8 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
-  <title>RedPen — Красной ручкой</title>
+  <!-- Заголовок вкладки уточняется из metadata.json (см. main.js, setDocumentTitle). -->
+  <title>Красной ручкой — разбор учебника</title>
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <link rel="stylesheet" href="../css/main.css">
   <link rel="stylesheet" href="../css/components.css">
@@ -149,13 +150,5 @@
   <script src="../js/redpen-editor-panel.js"></script>
   <script src="../js/redpen-auth.js"></script>
   <script src="../js/redpen-editor-bootstrap.js"></script>
-  <script>
-    // Set the document title based on the URL path
-    document.addEventListener('DOMContentLoaded', function() {
-      const pathParts = window.location.pathname.split('/');
-      const documentId = pathParts[pathParts.length - 2] || 'med1'; // Default to med1 if not found
-      document.title = `RedPen — ${documentId === 'med1' ? 'Медицинский документ 1' : 'Медицинский документ 2'}`;
-    });
-  </script>
 </body>
 </html>

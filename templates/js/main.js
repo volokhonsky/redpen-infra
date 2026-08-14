@@ -196,6 +196,16 @@ function navigateTo(targetPage) {
 }
 
 /**
+ * Заголовок вкладки — из metadata.json (title разбираемой книги).
+ * Без метаданных остаётся статический заголовок из разметки.
+ */
+function setDocumentTitle() {
+  if (metadata && metadata.title) {
+    document.title = `${metadata.title} — Красной ручкой`;
+  }
+}
+
+/**
  * Initialize the application
  */
 async function init() {
@@ -214,6 +224,8 @@ async function init() {
     console.error('Failed to load metadata.json', e);
     metadata = { totalPages: 1, defaultPage: 1 };
   }
+
+  setDocumentTitle();
 
   // Add event listener for window resize
   window.addEventListener('resize', () => {

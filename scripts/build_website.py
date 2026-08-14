@@ -148,7 +148,9 @@ def get_document_folders(specific_folders=None):
     if not folders:
         print("Warning: No document folders found in redpen-content directory")
 
-    return folders
+    # Порядок glob не определён; сортируем, чтобы сборка была воспроизводимой,
+    # а карточки на титульной не прыгали от сборки к сборке.
+    return sorted(folders)
 
 # Import required modules
 def import_module_from_file(module_name, file_path):
@@ -594,6 +596,65 @@ def publish_website_data(target_dir=None, document=None, specific_folders=None):
         print(f"Error publishing data: {e}")
         return False
 
+def _document_subtitle(meta_data):
+    """Build the "авторы · издательство, год" line for a document card."""
+    parts = []
+    authors = meta_data.get('authors') or []
+    if isinstance(authors, list) and authors:
+        parts.append(', '.join(str(a) for a in authors))
+    imprint = []
+    if meta_data.get('publisher'):
+        imprint.append(str(meta_data['publisher']))
+    published_at = str(meta_data.get('publishedAt') or '')
+    if len(published_at) >= 4 and published_at[:4].isdigit():
+        imprint.append(published_at[:4])
+    if imprint:
+        parts.append(', '.join(imprint))
+    return ' · '.join(parts)
+
+
+def _count_published_annotations(doc_output_dir):
+    """
+    Count published annotations in a built document directory.
+
+    Returns {'annotations': N, 'pages': M} — M is the number of pages that
+    actually carry at least one annotation. Draft companions
+    (page_NNN.drafts.json) are deliberately not counted: they are invisible
+    without ?showDrafts=1.
+    """
+    import json
+
+    result = {'annotations': 0, 'pages': 0}
+    ann_dir = os.path.join(doc_output_dir, 'annotations')
+    if not os.path.isdir(ann_dir):
+        return result
+
+    for name in sorted(os.listdir(ann_dir)):
+        if not name.startswith('page_') or not name.endswith('.json'):
+            continue
+        if name.endswith('.drafts.json'):
+            continue
+        try:
+            with open(os.path.join(ann_dir, name), 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if isinstance(data, list) and data:
+            result['annotations'] += len(data)
+            result['pages'] += 1
+    return result
+
+
+def _plural_ru(n, one, few, many):
+    """Russian plural: 1 аннотация / 2 аннотации / 5 аннотаций."""
+    n = abs(int(n))
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if 2 <= n % 10 <= 4 and not (12 <= n % 100 <= 14):
+        return few
+    return many
+
+
 def create_index_page(target_dir=None, specific_folders=None):
     """
     Create the main index page with document selection menu
@@ -627,6 +688,7 @@ def create_index_page(target_dir=None, specific_folders=None):
         # Default title if meta.json is not available
         title = doc_id
         icon_path = None
+        meta_data = {}
 
         # Try to get title from meta.json
         meta_json_path = os.path.join(project_root, 'redpen-content', doc_id, 'meta.json')
@@ -639,6 +701,7 @@ def create_index_page(target_dir=None, specific_folders=None):
                         title = meta_data['title']
             except Exception as e:
                 print(f"Warning: Could not read title from meta.json for {doc_id}: {e}")
+                meta_data = {}
 
         # Find the first PNG image in the book's images directory
         images_dir = os.path.join(project_root, 'redpen-content', doc_id, 'images')
@@ -673,68 +736,196 @@ def create_index_page(target_dir=None, specific_folders=None):
             except Exception as e:
                 print(f"Warning: Could not process image for {doc_id}: {e}")
 
-        documents.append({'id': doc_id, 'title': title, 'icon': icon_path})
+        # Если пересобрать обложку не удалось (нет Pillow и т.п.), но она уже
+        # лежит в целевом каталоге с прошлой сборки — используем её.
+        if not icon_path and os.path.exists(os.path.join(output_dir, doc_id, 'cover.png')):
+            icon_path = 'cover.png'
+
+        documents.append({
+            'id': doc_id,
+            'title': title,
+            'icon': icon_path,
+            'subtitle': _document_subtitle(meta_data),
+            'description': meta_data.get('description') or '',
+            'stats': _count_published_annotations(os.path.join(output_dir, doc_id)),
+        })
+
+    # Разобранные книги — вперёд, «в работе» — в конец; внутри групп по названию.
+    documents.sort(key=lambda d: (0 if (d.get('stats') or {}).get('annotations') else 1, d['title']))
 
     # Get current timestamp
     current_timestamp = datetime.datetime.now().strftime('%d.%m.%Y %H:%M')
+    books_modifier = ' books--single' if len(documents) == 1 else ''
+
+    from html import escape as _esc
 
     # Create the HTML content - header part
     html_content = """<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
-  <title>RedPen — Красной ручкой</title>
+  <title>Красной ручкой — разбор школьного учебника истории</title>
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <meta name="description" content="Постраничный критический разбор школьного учебника истории: фактчек, разбор манипуляций и умолчаний прямо поверх страниц оригинала."/>
   <link rel="stylesheet" href="css/main.css">
   <link rel="stylesheet" href="css/components.css">
   <link rel="stylesheet" href="css/responsive.css">
   <link rel="icon" href="favicon.svg">
   <style>
-    .document-list {
-      max-width: 800px;
-      margin: 40px auto;
-      padding: 20px;
+    .landing {
+      max-width: 1060px;
+      margin: 0 auto;
+      padding: 8px 20px 48px;
+      color: #1c1c1c;
+      line-height: 1.55;
     }
-    .document-card {
-      background-color: #fff;
-      border-radius: 8px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-      margin-bottom: 20px;
-      padding: 20px;
-      transition: transform 0.2s, box-shadow 0.2s;
+    /* Текстовые блоки держим в комфортной для чтения колонке,
+       а сетка учебников занимает всю ширину. */
+    .prose { max-width: 780px; margin-left: auto; margin-right: auto; }
+    .landing section + section { margin-top: 44px; }
+    .landing h1 {
+      font-size: 2.4rem;
+      line-height: 1.15;
+      margin: 8px 0 16px;
     }
-    .document-card:hover {
-      transform: translateY(-5px);
-      box-shadow: 0 5px 15px rgba(0,0,0,0.15);
+    .landing h2 {
+      font-size: 1.25rem;
+      margin: 0 0 14px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid #f0d6dc;
     }
-    .document-content {
-      display: flex;
-      align-items: flex-start;
-    }
-    .document-icon {
-      margin-right: 20px;
-      flex-shrink: 0;
-    }
-    .document-icon img {
-      border-radius: 4px;
-      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-    }
-    .document-card h2 {
-      margin-top: 0;
+    .hero { padding-top: 28px; }
+    .hero__eyebrow {
+      margin: 0;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      font-size: 0.78rem;
+      font-weight: 700;
       color: #DC143C;
     }
-    .document-card a {
+    .hero__lead {
+      font-size: 1.1rem;
+      margin: 0;
+      color: #333;
+    }
+
+    /* Библиотека разборов */
+    .books__grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+      gap: 18px;
+    }
+    /* Один учебник — не растягиваем карточку на всю ширину сетки. */
+    .books--single .books__grid { max-width: 780px; margin: 0 auto; }
+    .document-card {
+      display: flex;
+      gap: 18px;
+      align-items: flex-start;
+      background-color: #fff;
+      border: 1px solid #e6e2dd;
+      border-left: 5px solid #DC143C;
+      border-radius: 6px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+      padding: 20px;
+    }
+    .document-card--pending { border-left-color: #c9c4bd; }
+    .document-card__cover { flex-shrink: 0; display: block; }
+    .document-card__cover img {
+      display: block;
+      width: 104px;
+      height: auto;
+      border-radius: 3px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+    }
+    .document-card--pending .document-card__cover img { filter: grayscale(0.8); opacity: 0.75; }
+    /* Карточки в ряду одной высоты, кнопка прижата к низу. */
+    .document-card__body {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      flex: 1;
+    }
+    .document-card__body .btn { margin-top: auto; }
+    .document-card h3 {
+      margin: 0 0 6px;
+      font-size: 1.1rem;
+      line-height: 1.3;
+    }
+    .document-card__meta,
+    .document-card__stats {
+      margin: 0 0 6px;
+      font-size: 0.88rem;
+      color: #6b6b6b;
+    }
+    .document-card__stats { color: #DC143C; font-weight: 600; }
+    .document-card--pending .document-card__stats { color: #8a8a8a; font-weight: 400; font-style: italic; }
+    .document-card__desc { margin: 10px 0 16px; font-size: 0.95rem; }
+    .btn {
       display: inline-block;
       background-color: #DC143C;
-      color: white;
-      padding: 10px 20px;
+      color: #fff;
+      padding: 9px 20px;
       border-radius: 4px;
       text-decoration: none;
-      margin-top: 10px;
+      font-weight: 600;
       transition: background-color 0.2s;
     }
-    .document-card a:hover {
-      background-color: #b01030;
+    .btn:hover { background-color: #b01030; }
+    .btn { white-space: nowrap; }
+    .btn--ghost {
+      background: transparent;
+      color: #8a3a4a;
+      border: 1px solid #d8ccce;
+      font-weight: 500;
+    }
+    .btn--ghost:hover { background: #f7eef0; }
+
+    /* Легенда маркеров */
+    .legend { list-style: none; margin: 0; padding: 0; }
+    .legend li {
+      position: relative;
+      padding-left: 34px;
+      margin-bottom: 14px;
+    }
+    .legend .dot {
+      position: absolute;
+      left: 0;
+      top: 3px;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 3px solid #DC143C;
+    }
+    .legend .dot--comment { border-color: #0000FF; width: 14px; height: 14px; top: 5px; left: 2px; }
+    .legend .dot--general {
+      border: none;
+      background: #d9d9d9;
+      border-radius: 3px;
+      width: 20px;
+      height: 12px;
+      top: 6px;
+    }
+    .rules { margin: 0; padding-left: 22px; }
+    .rules li { margin-bottom: 12px; }
+    .note {
+      background: #fff;
+      border: 1px solid #e6e2dd;
+      border-radius: 6px;
+      padding: 16px 20px;
+    }
+    .note p { margin: 0; }
+    .landing footer {
+      margin-top: 44px;
+      padding-top: 14px;
+      border-top: 1px solid #e2ded9;
+      font-size: 0.85rem;
+      color: #7a7a7a;
+    }
+    @media (max-width: 560px) {
+      .landing h1 { font-size: 1.9rem; }
+      .document-card { flex-direction: column; gap: 16px; }
+      .document-card__cover img { width: 110px; }
     }
   </style>
 </head>
@@ -744,33 +935,104 @@ def create_index_page(target_dir=None, specific_folders=None):
     html_content += f"""
   <header>RedPen — Красной ручкой <span id="timestamp" style="font-size: 0.7rem; font-weight: normal; opacity: 0.8;">Последнее обновление: {current_timestamp}</span></header>
 
-  <div class="document-list">
-    <h1>Выберите документ</h1>
+  <main class="landing">
+    <section class="hero prose">
+      <p class="hero__eyebrow">Постраничный разбор учебников</p>
+      <h1>Красной ручкой</h1>
+      <p class="hero__lead">Мы читаем школьные учебники истории страницу за страницей и выносим на поля то, что написал бы внимательный преподаватель: где факт передёрнут, где оценка выдана за установленный факт, а где о важном просто умолчали. Замечания стоят прямо на развороте — у того места, к которому относятся.</p>
+    </section>
+
+    <section class="books{books_modifier}">
+      <h2>Учебники</h2>
+      <div class="books__grid">
 """
 
     # Add document cards
     for doc in documents:
-        # Add icon if available
-        icon_html = ""
-        if doc.get('icon'):
-            icon_html = f"""
-      <div class="document-icon">
-        <img src="{doc['id']}/{doc['icon']}" alt="{doc['title']}" width="150">
-      </div>"""
+        stats = doc.get('stats') or {}
+        has_annotations = bool(stats.get('annotations'))
 
-        html_content += f"""
-    <div class="document-card">
-      <div class="document-content">{icon_html}
-        <h2>{doc['title']}</h2>
-        <a href="{doc['id']}/index.html">Открыть документ</a>
-      </div>
-    </div>
+        # Add cover if available
+        cover_html = ""
+        if doc.get('icon'):
+            cover_html = f"""
+          <a class="document-card__cover" href="{doc['id']}/index.html">
+            <img src="{doc['id']}/{doc['icon']}" alt="Обложка: {_esc(doc['title'], quote=True)}" width="104">
+          </a>"""
+
+        subtitle_html = ""
+        if doc.get('subtitle'):
+            subtitle_html = f"""
+            <p class="document-card__meta">{_esc(doc['subtitle'])}</p>"""
+
+        description_html = ""
+        if doc.get('description'):
+            description_html = f"""
+            <p class="document-card__desc">{_esc(doc['description'])}</p>"""
+
+        if has_annotations:
+            ann_n = stats['annotations']
+            pages_n = stats['pages']
+            ann_word = _plural_ru(ann_n, 'аннотация', 'аннотации', 'аннотаций')
+            page_word = _plural_ru(pages_n, 'странице', 'страницах', 'страницах')
+            stats_html = f"""
+            <p class="document-card__stats">{ann_n} {ann_word} на {pages_n} {page_word}</p>"""
+            button_html = f"""<a class="btn" href="{doc['id']}/index.html">Открыть разбор</a>"""
+            card_class = "document-card"
+        else:
+            # Книга уже опубликована постранично, но разбора ещё нет — честно
+            # говорим об этом и всё равно даём открыть сам учебник.
+            stats_html = """
+            <p class="document-card__stats">Разбор ещё готовится</p>"""
+            button_html = f"""<a class="btn btn--ghost" href="{doc['id']}/index.html">Смотреть страницы</a>"""
+            card_class = "document-card document-card--pending"
+
+        html_content += f"""        <article class="{card_class}">{cover_html}
+          <div class="document-card__body">
+            <h3>{_esc(doc['title'])}</h3>{subtitle_html}{stats_html}{description_html}
+            {button_html}
+          </div>
+        </article>
+"""
+
+    html_content += """      </div>
 """
 
     # Close HTML tags with optional editor flag propagation script
-    html_content += """
-  </div>
-  <script>
+    html_content += f"""    </section>
+
+    <section class="how prose">
+      <h2>Как читать</h2>
+      <ul class="legend">
+        <li><span class="dot"></span><strong>Красный кружок</strong> — главный разбор фрагмента: что именно не так с этим местом и чем это подтверждается.</li>
+        <li><span class="dot dot--comment"></span><strong>Синий кружок</strong> — комментарий к детали: уточнение, недостающий контекст, справка.</li>
+        <li><span class="dot dot--general"></span><strong>Общий комментарий</strong> под страницей — о развороте целиком: как выстроен рассказ и куда он ведёт читателя.</li>
+      </ul>
+      <p>Листать можно стрелками «Назад» и «Вперёд» или полем «Стр.». Адрес страницы вида <code>?p=17</code> ведёт ровно на неё — такую ссылку удобно давать в споре, чтобы собеседник открыл тот же разворот.</p>
+    </section>
+
+    <section class="rules-section prose">
+      <h2>Правила разбора</h2>
+      <ol class="rules">
+        <li><strong>Привязка к месту.</strong> Замечание относится к конкретному абзацу, а не к учебнику вообще: рядом всегда видно, что именно разбирается.</li>
+        <li><strong>Проверяемость.</strong> Утверждение без ссылки на источник — не разбор, а мнение. Ссылки стоят в тексте самих аннотаций.</li>
+        <li><strong>Факт отдельно, оценка отдельно.</strong> Мы отмечаем, где учебник подаёт оценку как установленный факт, и стараемся не делать того же сами.</li>
+        <li><strong>Умолчание — тоже приём.</strong> Прежде чем написать «в учебнике об этом не сказано», мы ищем по всему тексту книги.</li>
+      </ol>
+    </section>
+
+    <section class="offline prose">
+      <h2>Этот сайт можно унести с собой</h2>
+      <div class="note">
+        <p>Здесь нет ни регистрации, ни счётчиков, ни обращений к нашему серверу при чтении: страницы, текст и аннотации — обычные файлы, лежащие рядом. Копию сайта можно скачать целиком, положить на флешку и читать без интернета.</p>
+      </div>
+    </section>
+
+    <footer class="prose">Последнее обновление: {current_timestamp}</footer>
+  </main>
+"""
+
+    html_content += """  <script>
   (function(){
     var g = window;
     function hasEditorFlag(){
