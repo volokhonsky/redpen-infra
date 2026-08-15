@@ -233,7 +233,9 @@ function createCommentPopup(annotation, index, cx, cy, diameter) {
       if (mutation.attributeName === 'style') {
         const currentDisplay = popup.style.display;
         // If popup becomes visible
-        if (currentDisplay === 'block' && !popup.dataset.spacerAdded) {
+        // NB: dataset values are strings — after the first hide spacerAdded is
+        // the string 'false', which is truthy; compare explicitly.
+        if (currentDisplay === 'block' && popup.dataset.spacerAdded !== 'true') {
           ensurePopupVisibility(popup, cy, diameter);
         }
         // If popup becomes hidden
@@ -326,13 +328,11 @@ function ensurePopupVisibility(popup, cy, diameter) {
       spacer.style.clear = 'both';
       spacer.style.zIndex = '-1';
 
-      // Add the spacer to the layout container instead of body
-      const layoutContainer = document.getElementById('layout');
-      if (layoutContainer) {
-        layoutContainer.appendChild(spacer);
-      } else {
-        document.body.appendChild(spacer);
-      }
+      // The spacer must NOT land inside #layout: on desktop that container is a
+      // row flexbox, and a width:100% flex item squeezes #content-wrapper to
+      // zero width (image disappears, global comment jumps left). body is a
+      // plain block container, so appending here only extends scroll height.
+      document.body.appendChild(spacer);
 
       // Mark the popup as having a spacer
       popup.dataset.spacerAdded = 'true';
