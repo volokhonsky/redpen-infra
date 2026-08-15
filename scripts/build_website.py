@@ -111,6 +111,9 @@ def compare_path_sets(before_paths, after_paths):
 # Add the project root to the Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(project_root)
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+import blog as blog_builder  # noqa: E402  (после правки sys.path)
 
 def get_document_folders(specific_folders=None):
     """
@@ -761,6 +764,15 @@ def create_index_page(target_dir=None, specific_folders=None):
     current_timestamp = datetime.datetime.now().strftime('%d.%m.%Y %H:%M')
     books_modifier = ' books--single' if len(documents) == 1 else ''
 
+    # Блог рендерим здесь же: страницы blog/ пишутся в тот же output_dir, а
+    # титульной нужна последняя запись для секции-анонса.
+    blog_posts = blog_builder.build_blog(
+        output_dir,
+        source_dir=os.path.join(project_root, blog_builder.BLOG_SOURCE_DIRNAME),
+        timestamp=current_timestamp,
+        auto_header=auto_hdr)
+    blog_section_html = blog_builder.render_latest_section(blog_posts)
+
     from html import escape as _esc
 
     # Create the HTML content - header part
@@ -768,36 +780,18 @@ def create_index_page(target_dir=None, specific_folders=None):
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
-  <title>Красной ручкой — разбор школьного учебника истории</title>
+  <title>Мединский.нет — антимифы к единому учебнику</title>
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <meta name="description" content="Постраничный критический разбор школьного учебника истории: фактчек, разбор манипуляций и умолчаний прямо поверх страниц оригинала."/>
+  <meta name="description" content="Антимифы к единому учебнику истории: постраничный разбор с фактчеком, разбором манипуляций и умолчаний прямо поверх страниц оригинала."/>
   <link rel="stylesheet" href="css/main.css">
   <link rel="stylesheet" href="css/components.css">
+  <link rel="stylesheet" href="css/landing.css">
+  <link rel="stylesheet" href="css/blog.css">
   <link rel="stylesheet" href="css/responsive.css">
   <link rel="icon" href="favicon.svg">
   <style>
-    .landing {
-      max-width: 1060px;
-      margin: 0 auto;
-      padding: 8px 20px 48px;
-      color: #1c1c1c;
-      line-height: 1.55;
-    }
-    /* Текстовые блоки держим в комфортной для чтения колонке,
-       а сетка учебников занимает всю ширину. */
-    .prose { max-width: 780px; margin-left: auto; margin-right: auto; }
-    .landing section + section { margin-top: 44px; }
-    .landing h1 {
-      font-size: 2.4rem;
-      line-height: 1.15;
-      margin: 8px 0 16px;
-    }
-    .landing h2 {
-      font-size: 1.25rem;
-      margin: 0 0 14px;
-      padding-bottom: 8px;
-      border-bottom: 2px solid #f0d6dc;
-    }
+    /* Каркас (.landing/.prose/.btn/footer) — в css/landing.css, он общий
+       со страницами блога. Здесь только специфика титульной. */
     .hero { padding-top: 28px; }
     .hero__eyebrow {
       margin: 0;
@@ -806,6 +800,14 @@ def create_index_page(target_dir=None, specific_folders=None):
       font-size: 0.78rem;
       font-weight: 700;
       color: #DC143C;
+    }
+    /* Подпись сайта — только на титульной; шапку страниц держим однострочной. */
+    .hero__subtitle {
+      margin: -8px 0 16px;
+      font-size: 1.25rem;
+      font-weight: 600;
+      line-height: 1.35;
+      color: #8a3a4a;
     }
     .hero__lead {
       font-size: 1.1rem;
@@ -865,25 +867,6 @@ def create_index_page(target_dir=None, specific_folders=None):
     .document-card__stats { color: #DC143C; font-weight: 600; }
     .document-card--pending .document-card__stats { color: #8a8a8a; font-weight: 400; font-style: italic; }
     .document-card__desc { margin: 10px 0 16px; font-size: 0.95rem; }
-    .btn {
-      display: inline-block;
-      background-color: #DC143C;
-      color: #fff;
-      padding: 9px 20px;
-      border-radius: 4px;
-      text-decoration: none;
-      font-weight: 600;
-      transition: background-color 0.2s;
-    }
-    .btn:hover { background-color: #b01030; }
-    .btn { white-space: nowrap; }
-    .btn--ghost {
-      background: transparent;
-      color: #8a3a4a;
-      border: 1px solid #d8ccce;
-      font-weight: 500;
-    }
-    .btn--ghost:hover { background: #f7eef0; }
 
     /* Легенда маркеров */
     .legend { list-style: none; margin: 0; padding: 0; }
@@ -919,15 +902,7 @@ def create_index_page(target_dir=None, specific_folders=None):
       padding: 16px 20px;
     }
     .note p { margin: 0; }
-    .landing footer {
-      margin-top: 44px;
-      padding-top: 14px;
-      border-top: 1px solid #e2ded9;
-      font-size: 0.85rem;
-      color: #7a7a7a;
-    }
     @media (max-width: 560px) {
-      .landing h1 { font-size: 1.9rem; }
       .document-card { flex-direction: column; gap: 16px; }
       .document-card__cover img { width: 110px; }
     }
@@ -937,15 +912,16 @@ def create_index_page(target_dir=None, specific_folders=None):
 
     # Add header with dynamic timestamp
     html_content += f"""
-  <header>RedPen — Красной ручкой <span id="timestamp" style="font-size: 0.7rem; font-weight: normal; opacity: 0.8;">Последнее обновление: {current_timestamp}</span></header>
+  <header>Мединский.нет <span id="timestamp" style="font-size: 0.7rem; font-weight: normal; opacity: 0.8;">Последнее обновление: {current_timestamp}</span></header>
 
   <main class="landing">
     <section class="hero prose">
       <p class="hero__eyebrow">Постраничный разбор учебников</p>
-      <h1>Красной ручкой</h1>
+      <h1>Мединский.нет</h1>
+      <p class="hero__subtitle">Антимифы к единому учебнику. Проверяем избыточные победы.</p>
       <p class="hero__lead">Мы читаем школьные учебники истории страницу за страницей и выносим на поля то, что написал бы внимательный преподаватель: где факт передёрнут, где оценка выдана за установленный факт, а где о важном просто умолчали. Замечания стоят прямо на развороте — у того места, к которому относятся.</p>
     </section>
-
+{blog_section_html}
     <section class="books{books_modifier}">
       <h2>Учебники</h2>
       <div class="books__grid">
@@ -1028,7 +1004,8 @@ def create_index_page(target_dir=None, specific_folders=None):
     <section class="offline prose">
       <h2>Этот сайт можно унести с собой</h2>
       <div class="note">
-        <p>Здесь нет ни регистрации, ни счётчиков, ни обращений к нашему серверу при чтении: страницы, текст и аннотации — обычные файлы, лежащие рядом. Копию сайта можно скачать целиком, положить на флешку и читать без интернета.</p>
+        <p>Чтобы читать, не нужно ни регистрироваться, ни входить: здесь нет ни счётчиков, ни аналитики, ни рекламы — мы не следим за тем, кто какую страницу открыл. Страницы, текст и аннотации — обычные файлы, лежащие рядом: браузер скачивает их ровно так же, как картинки на любом другом сайте, и ничего больше никуда не отправляет. К нашему API — тому, через который разбор редактируется, — просмотрщик не обращается вовсе.</p>
+        <p>Поэтому сайт не привязан к нашему серверу: он одинаково работает из любой папки. Архив с полной копией разбора, который можно положить на флешку и читать без интернета, мы сейчас готовим.</p>
       </div>
     </section>
 

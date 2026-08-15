@@ -259,7 +259,7 @@ function navigateTo(targetPage) {
  */
 function setDocumentTitle() {
   if (metadata && metadata.title) {
-    document.title = `${metadata.title} — Красной ручкой`;
+    document.title = `${metadata.title} — Мединский.нет`;
   }
 }
 
