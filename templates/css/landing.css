@@ -1,0 +1,68 @@
+/**
+ * Landing shell styles for RedPen application
+ *
+ * Общий каркас «текстовых» страниц сайта: титульной (генерится в
+ * scripts/build_website.py) и страниц блога (scripts/blog.py). Всё, что нужно
+ * обеим, живёт здесь; специфика титульной осталась в её inline-<style>,
+ * специфика блога — в blog.css.
+ */
+
+.landing {
+  max-width: 1060px;
+  margin: 0 auto;
+  padding: 8px 20px 48px;
+  color: #1c1c1c;
+  line-height: 1.55;
+}
+
+/* Текстовые блоки держим в комфортной для чтения колонке,
+   а сетка учебников занимает всю ширину. */
+.prose { max-width: 780px; margin-left: auto; margin-right: auto; }
+
+.landing section + section { margin-top: 44px; }
+
+.landing h1 {
+  font-size: 2.4rem;
+  line-height: 1.15;
+  margin: 8px 0 16px;
+}
+
+.landing h2 {
+  font-size: 1.25rem;
+  margin: 0 0 14px;
+  padding-bottom: 8px;
+  border-bottom: 2px solid #f0d6dc;
+}
+
+.btn {
+  display: inline-block;
+  background-color: #DC143C;
+  color: #fff;
+  padding: 9px 20px;
+  border-radius: 4px;
+  text-decoration: none;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background-color 0.2s;
+}
+.btn:hover { background-color: #b01030; }
+
+.btn--ghost {
+  background: transparent;
+  color: #8a3a4a;
+  border: 1px solid #d8ccce;
+  font-weight: 500;
+}
+.btn--ghost:hover { background: #f7eef0; }
+
+.landing footer {
+  margin-top: 44px;
+  padding-top: 14px;
+  border-top: 1px solid #e2ded9;
+  font-size: 0.85rem;
+  color: #7a7a7a;
+}
+
+@media (max-width: 560px) {
+  .landing h1 { font-size: 1.9rem; }
+}

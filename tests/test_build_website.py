@@ -63,6 +63,14 @@ def synthetic_project(tmp_path):
     (content / "images" / "page_007.png").write_bytes(_PNG_1x1)
     (content / "meta.json").write_text('{"title": "Test Book"}', encoding="utf-8")
 
+    # Один пост блога: create_index_page рендерит blog/ из <project_root>/content/blog.
+    blog_src = tmp_path / "content" / "blog"
+    blog_src.mkdir(parents=True)
+    (blog_src / "2026-08-15-test-post.md").write_text(
+        "---\ntitle: Тестовая запись\ndate: 2026-08-15\nsummary: Аннотация.\n---\n\nТело.\n",
+        encoding="utf-8",
+    )
+
     # Reuse the real templates directory (CSS/JS/favicon/document_index.html).
     os.symlink(os.path.join(ROOT, "templates"), tmp_path / "templates")
 
@@ -97,6 +105,43 @@ def test_build_produces_per_document_layout(synthetic_project, tmp_path):
     assert (target / "cabinet" / "index.html").is_file()
     assert (target / "cabinet" / "cabinet.js").is_file()
     assert (target / "cabinet" / "cabinet.css").is_file()
+
+    # Блог: архив + страница записи, стили каркаса и блога.
+    assert (target / "blog" / "index.html").is_file()
+    assert (target / "blog" / "test-post" / "index.html").is_file()
+    assert (target / "css" / "landing.css").is_file()
+    assert (target / "css" / "blog.css").is_file()
+
+
+def test_index_page_shows_latest_blog_post(synthetic_project, tmp_path):
+    build, _ = synthetic_project
+    target = tmp_path / "out"
+    build.publish_website_data(str(target))
+    build.create_index_page(str(target))
+
+    index_html = (target / "index.html").read_text(encoding="utf-8")
+    assert "Тестовая запись" in index_html
+    assert 'href="blog/test-post/index.html"' in index_html
+    assert 'href="blog/index.html"' in index_html
+
+
+def test_site_carries_new_branding(synthetic_project, tmp_path):
+    """Старый бренд не должен остаться ни в одной собранной странице."""
+    build, _ = synthetic_project
+    target = tmp_path / "out"
+    build.publish_website_data(str(target))
+    build.create_index_page(str(target))
+
+    pages = list(target.rglob("*.html"))
+    assert pages
+    for page in pages:
+        text = page.read_text(encoding="utf-8")
+        assert "Красной ручкой" not in text, f"старый бренд в {page}"
+        assert "RedPen —" not in text, f"старый бренд в {page}"
+
+    index_html = (target / "index.html").read_text(encoding="utf-8")
+    assert "<h1>Мединский.нет</h1>" in index_html
+    assert "Антимифы к единому учебнику. Проверяем избыточные победы." in index_html
 
 
 def test_converted_annotation_json_is_valid(synthetic_project, tmp_path):
