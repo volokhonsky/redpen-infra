@@ -618,9 +618,10 @@ def _count_published_annotations(doc_output_dir):
     Count published annotations in a built document directory.
 
     Returns {'annotations': N, 'pages': M} — M is the number of pages that
-    actually carry at least one annotation. Draft companions
-    (page_NNN.drafts.json) are deliberately not counted: they are invisible
-    without ?showDrafts=1.
+    actually carry at least one annotation. Drafts share page_NNN.json with the
+    published ones now (each flagged draft/tagged 'draft') and are deliberately
+    not counted: they are invisible without ?showDrafts=1. Legacy
+    page_NNN.drafts.json companions are skipped for the same reason.
     """
     import json
 
@@ -639,8 +640,11 @@ def _count_published_annotations(doc_output_dir):
                 data = json.load(f)
         except Exception:
             continue
-        if isinstance(data, list) and data:
-            result['annotations'] += len(data)
+        if not isinstance(data, list):
+            continue
+        published = [a for a in data if not (isinstance(a, dict) and a.get('draft'))]
+        if published:
+            result['annotations'] += len(published)
             result['pages'] += 1
     return result
 

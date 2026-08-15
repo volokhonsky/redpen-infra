@@ -22,39 +22,54 @@ logger = logging.getLogger("redpen.api")
 _SHA_JSON_KWARGS = dict(ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
+def _render_item(ann: Dict[str, Any], draft: bool = False, with_tags: bool = True) -> Dict[str, Any]:
+    item: Dict[str, Any] = {
+        "id": ann["annId"],
+        "text": ann["text"],
+        "annType": ann["annType"],
+    }
+    if ann["coordX"] is not None and ann["coordY"] is not None:
+        item["coords"] = [ann["coordX"], ann["coordY"]]
+    if not with_tags:
+        return item
+    # `status` is canonical in the DB; the static file mirrors it as a tag so
+    # the viewer has one uniform thing to filter on (?tags= / ?notags=).
+    tags = list(ann.get("tags") or [])
+    if draft:
+        item["draft"] = True
+        tags = ["draft"] + tags
+    if tags:
+        item["tags"] = tags
+    return item
+
+
 def render_page(doc_id: str, page_num: str) -> List[Dict[str, Any]]:
-    """Bare array of published annotations for a page, in the format the
-    static viewer expects: {id, text, annType[, coords]}."""
-    rendered: List[Dict[str, Any]] = []
-    for ann in db.list_page_annotations(doc_id, page_num, include_deleted=False):
-        item: Dict[str, Any] = {
-            "id": ann["annId"],
-            "text": ann["text"],
-            "annType": ann["annType"],
-        }
-        if ann["coordX"] is not None and ann["coordY"] is not None:
-            item["coords"] = [ann["coordX"], ann["coordY"]]
-        rendered.append(item)
-    return rendered
+    """Bare array of published annotations for a page, in the legacy format:
+    {id, text, annType[, coords]} -- no tags, no drafts.
+
+    This is deliberately frozen: compute_page_sha() runs on it, and that hash is
+    the editor's optimistic lock (main._current_page_sha). Adding fields here
+    would 409 every editor session open across a deploy, and make draft/tag
+    edits collide with unrelated ones. The file on disk comes from
+    render_page_static() instead."""
+    return [
+        _render_item(ann, with_tags=False)
+        for ann in db.list_page_annotations(doc_id, page_num, include_deleted=False)
+    ]
 
 
-def render_drafts(doc_id: str, page_num: str) -> List[Dict[str, Any]]:
-    """Bare array of draft (status='draft') annotations for a page, same shape
-    as render_page() but each item carries "draft": true. Published to a
-    separate page_<NNN>.drafts.json the viewer loads only in ?showDrafts=1
-    preview mode -- kept out of page_<NNN>.json so drafts never affect the
-    serverPageSha used for the editor's optimistic locking."""
-    rendered: List[Dict[str, Any]] = []
-    for ann in db.list_page_drafts(doc_id, page_num):
-        item: Dict[str, Any] = {
-            "id": ann["annId"],
-            "text": ann["text"],
-            "annType": ann["annType"],
-            "draft": True,
-        }
-        if ann["coordX"] is not None and ann["coordY"] is not None:
-            item["coords"] = [ann["coordX"], ann["coordY"]]
-        rendered.append(item)
+def render_page_static(doc_id: str, page_num: str) -> List[Dict[str, Any]]:
+    """What actually gets written to page_<NNN>.json: published AND draft
+    annotations in one array, each carrying its tags. Drafts additionally get
+    "draft": true (kept for older viewers) and a leading "draft" tag.
+
+    The viewer hides drafts by default and reveals them per URL parameter; see
+    getTagFilter() in templates/js/main.js."""
+    rendered = [
+        _render_item(ann, draft=False)
+        for ann in db.list_page_annotations(doc_id, page_num, include_deleted=False)
+    ]
+    rendered += [_render_item(ann, draft=True) for ann in db.list_page_drafts(doc_id, page_num)]
     return rendered
 
 
@@ -93,23 +108,22 @@ def _atomic_write_json(target: str, rendered: List[Dict[str, Any]]) -> None:
 
 
 def publish_page(doc_id: str, page_num: str) -> bool:
-    """Atomically write the rendered bare array for a page to PUBLISH_DIR, plus
-    a sibling page_<NNN>.drafts.json for the ?showDrafts=1 preview mode. Returns
-    False (without raising) if publication is disabled or fails -- the DB write
-    already succeeded, and the volume can be repaired later via publish_all()."""
+    """Atomically write the rendered bare array for a page to PUBLISH_DIR.
+    Returns False (without raising) if publication is disabled or fails -- the
+    DB write already succeeded, and the volume can be repaired later via
+    publish_all()."""
     if not config.PUBLISH_DIR:
         return False
 
     try:
-        _atomic_write_json(_page_file_path(doc_id, page_num), render_page(doc_id, page_num))
+        _atomic_write_json(_page_file_path(doc_id, page_num), render_page_static(doc_id, page_num))
 
-        drafts = render_drafts(doc_id, page_num)
+        # Drafts used to live in a sibling page_<NNN>.drafts.json; they are now
+        # part of the file above. Removing the leftovers here means publish_all()
+        # on the next restart cleans the volume by itself. Drop this branch (and
+        # _drafts_file_path) a release after the merged format is everywhere.
         drafts_target = _drafts_file_path(doc_id, page_num)
-        if drafts:
-            _atomic_write_json(drafts_target, drafts)
-        elif os.path.exists(drafts_target):
-            # No drafts remain (all published/deleted): drop any stale file so
-            # the preview mode doesn't keep showing gone drafts.
+        if os.path.exists(drafts_target):
             os.remove(drafts_target)
     except Exception:
         logger.error("publish_page failed doc_id=%s page_num=%s", doc_id, page_num, exc_info=True)

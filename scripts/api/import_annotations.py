@@ -103,6 +103,17 @@ def import_file(doc_id: str, page_num: str, path: str, overwrite: bool, dry_run:
 
         coord_x, coord_y = _normalize_coords(ann)
 
+        # Absent "tags" leaves an existing annotation's tags alone; unknown or
+        # reserved tags abort the file rather than land half-imported.
+        tags = None
+        if "tags" in ann:
+            try:
+                tags = db.normalize_tags(ann["tags"])
+            except db.TagError as exc:
+                print(f"  {path}: {ann_id}: {exc}", file=sys.stderr)
+                counts["errors"] += 1
+                continue
+
         existing = db.get_annotation(doc_id, page_num, ann_id)
         if existing is not None and not overwrite:
             counts["skipped"] += 1
@@ -120,6 +131,7 @@ def import_file(doc_id: str, page_num: str, path: str, overwrite: bool, dry_run:
                 status=status,
                 author_id=None,
                 action="import",
+                tags=tags,
             )
         counts["imported"] += 1
 
@@ -149,8 +161,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--overwrite", action="store_true", help="Update existing annotations instead of skipping them")
     parser.add_argument("--status", choices=["published", "draft"], default="published",
                         help="Status to assign imported annotations (default: published). Use 'draft' to add "
-                             "reviewer-only annotations that render to page_<NNN>.drafts.json (?showDrafts=1) "
-                             "and never affect the public page_<NNN>.json.")
+                             "reviewer-only annotations: they render into page_<NNN>.json carrying the 'draft' "
+                             "tag, which the viewer hides unless the URL asks for it (?showDrafts=1 / ?tags=draft).")
     args = parser.parse_args(argv)
 
     db.init_db()
