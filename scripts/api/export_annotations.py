@@ -1,14 +1,15 @@
 """
-CLI: export published annotations from the SQLite store (db.py) into the
-"bare array" page_NNN.json files used by the portable redpen-publish git
-snapshot (stage 2, docs/agent-instructions-stage-2.md, A2.7).
+CLI: export annotations from the SQLite store (db.py) into the "bare array"
+page_NNN.json files used by the portable redpen-publish git snapshot (stage 2,
+docs/agent-instructions-stage-2.md, A2.7).
 
 Usage:
     python export_annotations.py --to <dir> [--doc <docId>]
 
 Writes <dir>/<docId>/annotations/page_<NNN>.json for every page that has at
-least one annotation row (status='published' only), using the same renderer
-as the live publisher (publisher.render_page). Run this wherever the DB
+least one annotation row, using the same renderer as the live publisher
+(publisher.render_page_static) -- published and draft annotations together,
+with their tags, exactly as the volume gets it. Run this wherever the DB
 lives (inside the api container), then commit/push the target directory
 (typically the mounted redpen-publish working copy) separately.
 """
@@ -25,7 +26,7 @@ import publisher
 
 
 def _write_page(target_dir: str, doc_id: str, page_num: str) -> None:
-    rendered = publisher.render_page(doc_id, page_num)
+    rendered = publisher.render_page_static(doc_id, page_num)
     out_dir = os.path.join(target_dir, doc_id, "annotations")
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f"page_{page_num}.json")

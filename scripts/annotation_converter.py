@@ -61,6 +61,11 @@ def convert_json_to_md(json_file_path):
                 # Otherwise use targetBlock as target
                 md_content += f"target: {target_block}\n"
 
+        # Tags round-trip too, so json -> md -> json doesn't lose them
+        tags = annotation.get('tags') or []
+        if tags:
+            md_content += f"tags: [{', '.join(tags)}]\n"
+
         # End metadata section with separator
         md_content += "~~~\n\n"
 
@@ -68,6 +73,23 @@ def convert_json_to_md(json_file_path):
         md_content += f"{text}\n\n"
 
     return md_content
+
+def parse_tags_field(raw):
+    """Parse the meta `tags:` line into a list. The annotator agents write it
+    as a bracketed list -- `tags: [omission, framing]` -- but a bare
+    comma-separated line is accepted too. Order is kept, duplicates dropped."""
+    if not raw:
+        return []
+    value = raw.strip()
+    if value.startswith('[') and value.endswith(']'):
+        value = value[1:-1]
+    tags = []
+    for part in value.split(','):
+        tag = part.strip().strip('"\'').lower()
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags
+
 
 def parse_markdown_annotation(md_content):
     """
@@ -115,6 +137,15 @@ def parse_markdown_annotation(md_content):
             "text": content.strip(),
             "annType": ann_type
         }
+
+        tags = parse_tags_field(metadata_dict.get('tags'))
+        confidence = (metadata_dict.get('confidence') or '').strip().lower()
+        if confidence:
+            # `prefix:value` convention -- confidence is just another tag, so it
+            # needs no column of its own (scripts/api/db.py, normalize_tag).
+            tags.append('confidence:' + confidence)
+        if tags:
+            annotation["tags"] = tags
 
         # Process target field if present and annotation type is not general
         if 'target' in metadata_dict and ann_type != 'general':

@@ -5,7 +5,7 @@ import time
 import secrets
 from uuid import uuid4
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -275,6 +275,13 @@ def _parse_annotation_body(body: Dict[str, Any]) -> Dict[str, Any]:
         if status not in ("draft", "published"):
             raise HTTPException(status_code=400, detail="status must be 'draft' or 'published'")
         ann["status"] = status
+
+    # Absent "tags" means "leave them alone" (see _resolve_tags); [] clears them.
+    if "tags" in body:
+        try:
+            ann["tags"] = db.normalize_tags(body["tags"])
+        except db.TagError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     return ann
 
@@ -675,12 +682,23 @@ def _resolve_status(parsed: Dict[str, Any], existing: Optional[Dict[str, Any]]) 
     return "published"
 
 
+def _resolve_tags(parsed: Dict[str, Any]) -> Optional[List[str]]:
+    """None ("tags" absent) tells upsert_annotation_db to leave the tag set
+    alone -- the editor doesn't send tags yet and must not wipe them. An
+    explicit [] clears them."""
+    return parsed.get("tags") if "tags" in parsed else None
+
+
 @app.get("/api/editor/{docId}/{pageNum}")
 async def get_editor_page(docId: str, pageNum: str, user: Optional[Dict[str, Any]] = Depends(get_optional_user)):
     """GET page data for editor, rendered from the SQLite annotations store.
     Anonymous/viewer callers see only published annotations; editor/admin
-    additionally see drafts (flagged draft=true), since drafts never reach
-    the published static JSON."""
+    additionally see drafts, flagged draft=true.
+
+    Note the drafts are flagged with the boolean, NOT with a "draft" entry in
+    "tags": the editor echoes the fields it received back in its PUT, and
+    "draft" is a reserved tag name that would come back as a 400. The
+    status->tag mirroring belongs to the static render only."""
     if not _validate_doc_id(docId):
         raise HTTPException(status_code=400, detail="invalid docId")
     page_num_str = _validate_page_key(pageNum)
@@ -689,13 +707,21 @@ async def get_editor_page(docId: str, pageNum: str, user: Optional[Dict[str, Any
 
     rendered = publisher.render_page(docId, page_num_str)
     sha = publisher.compute_page_sha(rendered)
-    annotations = list(rendered)
+    tags_by_id = {ann["annId"]: ann["tags"] for ann in db.list_page_annotations(docId, page_num_str)}
+    annotations = []
+    for item in rendered:
+        item = dict(item)
+        if tags_by_id.get(item["id"]):
+            item["tags"] = tags_by_id[item["id"]]
+        annotations.append(item)
 
     if user is not None and user.get("role") in ("editor", "admin"):
         for ann in db.list_annotations(doc_id=docId, page_num=page_num_str, status="draft", limit=1000):
             item: Dict[str, Any] = {"id": ann["annId"], "text": ann["text"], "annType": ann["annType"], "draft": True}
             if ann["coordX"] is not None and ann["coordY"] is not None:
                 item["coords"] = [ann["coordX"], ann["coordY"]]
+            if ann["tags"]:
+                item["tags"] = ann["tags"]
             annotations.append(item)
 
     logger.info("GET editor docId=%s pageKey=%s anns=%d", docId, page_num_str, len(annotations))
@@ -739,6 +765,7 @@ async def post_editor_annotation(docId: str, pageNum: str, request: Request, use
     db.upsert_annotation_db(
         docId, page_num_str, ann["id"], ann["annType"], ann["text"],
         coord_x=coord_x, coord_y=coord_y, status=status, author_id=user["userId"], action=action,
+        tags=_resolve_tags(ann),
     )
     write_ok = publisher.publish_page(docId, page_num_str)
     published = write_ok and status == "published"
@@ -783,6 +810,7 @@ async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: R
     db.upsert_annotation_db(
         docId, page_num_str, annId, parsed["annType"], parsed["text"],
         coord_x=coord_x, coord_y=coord_y, status=status, author_id=user["userId"], action=action,
+        tags=_resolve_tags(parsed),
     )
     write_ok = publisher.publish_page(docId, page_num_str)
     published = write_ok and status == "published"
@@ -863,20 +891,34 @@ async def list_annotations(
     status: Optional[str] = None,
     authorId: Optional[int] = None,
     q: Optional[str] = None,
+    tag: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     user: Dict[str, Any] = Depends(require_editor_read),
 ):
     validated = _validate_list_params(docId, pageKey, annType, status, limit, offset, q)
+    if tag is not None:
+        try:
+            tag = db.normalize_tag(tag)
+        except db.TagError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     items = db.list_annotations(
         doc_id=docId, page_num=validated["pageKey"], ann_type=annType, status=status,
-        author_id=authorId, q=q, limit=limit, offset=offset,
+        author_id=authorId, q=q, limit=limit, offset=offset, tag=tag,
     )
     total = db.count_annotations(
         doc_id=docId, page_num=validated["pageKey"], ann_type=annType, status=status,
-        author_id=authorId, q=q,
+        author_id=authorId, q=q, tag=tag,
     )
     return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/tags")
+async def get_tags(docId: Optional[str] = None, user: Dict[str, Any] = Depends(require_editor_read)):
+    """Tag vocabulary in use, with counts -- populates the cabinet's filter."""
+    if docId is not None and not _validate_doc_id(docId):
+        raise HTTPException(status_code=400, detail="invalid docId")
+    return {"tags": db.list_all_tags(docId)}
 
 
 @app.get("/api/history")
@@ -925,6 +967,9 @@ async def revert_history(histId: int, user: Dict[str, Any] = Depends(require_edi
         doc_id, page_num, ann_id, snapshot.get("annType"), snapshot.get("text"),
         coord_x=coords[0] if coords else None, coord_y=coords[1] if coords else None,
         status=snapshot.get("status", "published"), author_id=user["userId"], action="revert",
+        # Only snapshots taken after tags existed carry the key; older ones must
+        # leave the current tag set alone rather than clear it.
+        tags=snapshot["tags"] if "tags" in snapshot else None,
     )
     published = publisher.publish_page(doc_id, page_num)
     new_sha = _current_page_sha(doc_id, page_num)
