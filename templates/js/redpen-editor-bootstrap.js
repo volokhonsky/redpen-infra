@@ -857,6 +857,18 @@
         } catch(e){ /* noop */ }
         return { host: host, img: img };
       }
+      // Во сколько раз картинка страницы ужата на экране относительно оригинала.
+      function markerScale(){
+        var ctx = ensureContainer();
+        var img = ctx && ctx.img;
+        if (!img) return 1;
+        var w = img.getBoundingClientRect ? img.getBoundingClientRect().width : img.width;
+        var st = window.RedPenEditor.state;
+        var ow = (st.page && st.page.origW) || img.naturalWidth || w;
+        var sc = ow ? (w / ow) : 1;
+        return sc || 1;
+      }
+
       function toClientOffsets(coords){
         if (!Array.isArray(coords) || coords.length < 2) return [0,0];
         var ctx = ensureContainer();
@@ -890,8 +902,10 @@
           if (ann.draft) { el.dataset.draft = 'true'; el.classList.add('is-draft'); }
           else { delete el.dataset.draft; el.classList.remove('is-draft'); }
         } catch(e){ /* noop */ }
-        var sizeMap = { main: 100, comment: 50, small: 25 };
-        var d = sizeMap[ann.annType] || 50;
+        // Диаметр — в координатах исходной страницы, на экране масштабируется
+        // вместе с картинкой (те же числа, что в annotations.js).
+        var sizeMap = { main: 90, comment: 50, small: 25 };
+        var d = (sizeMap[ann.annType] || 50) * markerScale();
         el.style.cssText = 'position:absolute;width:'+d+'px;height:'+d+'px;border-radius:50%;cursor:pointer;transform:translateX(-50%);' +
           (ann.draft ? 'outline:2px dashed #888;' : '');
         var color = ann.annType === 'main' ? '#DC143C' : '#0000FF';

@@ -58,7 +58,11 @@ function repositionAnnotations() {
   document.querySelectorAll('.comment-popup').forEach(popup => popup.remove());
 
   // Recreate circles and popups with updated positions
-  const sizeMap = { main: 100, comment: 50, small: 25 };
+  // Диаметр маркера в координатах ИСХОДНОЙ страницы; на экране умножается на scaleX,
+  // иначе на телефоне диск остаётся во весь экран (см. markerDiameter).
+  const sizeMap = { main: 90, comment: 50, small: 25 };
+  // scaleX === 0 бывает, пока раскладка не устоялась; тогда не схлопываем маркер в точку.
+  const markerDiameter = (annType) => (sizeMap[annType] || 50) * (scaleX || 1);
 
   // Load text blocks
   let textBlocks = {};
@@ -113,7 +117,7 @@ function repositionAnnotations() {
           return;
         }
 
-        const d = sizeMap[a.annType] || 50;
+        const d = markerDiameter(a.annType);
         const circle = document.createElement('div');
         circle.className = 'circle';
         // Add unique ID to circle based on annotation ID or generate one using sequential counter
@@ -245,7 +249,7 @@ function repositionAnnotations() {
             const cy = a.coords[1] * scaleY;
             console.log(`Creating annotation ${i+1} at fallback position (${cx}, ${cy})`);
 
-            const d = sizeMap[a.annType] || 50;
+            const d = markerDiameter(a.annType);
             const circle = document.createElement('div');
             circle.className = 'circle';
             circle.id = 'circle-' + (a.id || `${currentPageId}-${annotationCounter}`);
