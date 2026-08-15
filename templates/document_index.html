@@ -146,7 +146,10 @@
   <script src="../js/comment-content.js"></script>
   <script src="../js/annotations.js"></script>
   <script src="../js/mobile.js"></script>
-  <script src="../js/main.js"></script>
+  <!-- ?v= busts the browser cache: a stale main.js paired with the merged
+       annotations JSON would render drafts as if they were published. Bump on
+       every change to main.js's filtering contract. -->
+  <script src="../js/main.js?v=tags-1"></script>
   <script src="../js/redpen-editor-panel.js"></script>
   <script src="../js/redpen-auth.js"></script>
   <script src="../js/redpen-editor-bootstrap.js"></script>

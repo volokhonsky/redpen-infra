@@ -309,6 +309,7 @@
         '<label>Тип<select name="annType"><option value="">Любой</option><option value="main">main</option><option value="comment">comment</option><option value="general">general</option></select></label>' +
         '<label>Статус<select name="status"><option value="">Любой</option><option value="published">published</option><option value="draft">draft</option><option value="deleted">deleted</option></select></label>' +
         '<label>Автор<select name="authorId" id="cab-ann-author-filter"><option value="">Все авторы</option></select></label>' +
+        '<label>Тег<select name="tag" id="cab-ann-tag-filter"><option value="">Любой</option></select></label>' +
         '<label>Поиск<input type="text" name="q" placeholder="текст" /></label>' +
         '<button type="submit">Применить</button>' +
         '<button type="button" class="cab-btn-secondary" id="cab-ann-reset">Сбросить</button>' +
@@ -328,6 +329,7 @@
         annType: f.get('annType') || undefined,
         status: f.get('status') || undefined,
         authorId: f.get('authorId') || undefined,
+        tag: f.get('tag') || undefined,
         q: (f.get('q') || '').trim() || undefined
       };
       loadAnnotations(true);
@@ -338,6 +340,21 @@
       loadAnnotations(true);
     });
     document.getElementById('cab-ann-more').addEventListener('click', function(){ loadAnnotations(false); });
+    loadTagOptions();
+  }
+
+  /** Fill the tag filter from the vocabulary actually in use, most used first. */
+  async function loadTagOptions(){
+    var sel = document.getElementById('cab-ann-tag-filter');
+    if (!sel) return;
+    var data;
+    try { data = await apiGet('/api/tags'); }
+    catch (e) { return; }
+    var current = sel.value;
+    sel.innerHTML = '<option value="">Любой</option>' + (data.tags || []).map(function(t){
+      return '<option value="' + escapeHtml(t.tag) + '">' + escapeHtml(t.tag) + ' (' + t.count + ')</option>';
+    }).join('');
+    sel.value = current;
   }
 
   async function loadAnnotations(reset){

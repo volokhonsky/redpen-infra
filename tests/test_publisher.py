@@ -108,16 +108,27 @@ def test_publish_page_is_idempotent(tmp_path):
     assert first == second
 
 
-def test_render_drafts_bare_array_with_draft_flag():
+def test_render_page_static_marks_drafts_with_flag_and_tag():
     db.upsert_annotation_db("doc1", "006", "d-1", "comment", "wip", coord_x=3, coord_y=4, status="draft")
-    rendered = publisher.render_drafts("doc1", "006")
-    assert rendered == [{"id": "d-1", "text": "wip", "annType": "comment", "draft": True, "coords": [3, 4]}]
+    rendered = publisher.render_page_static("doc1", "006")
+    assert rendered == [
+        {"id": "d-1", "text": "wip", "annType": "comment", "coords": [3, 4],
+         "draft": True, "tags": ["draft"]}
+    ]
 
 
-def test_render_drafts_excludes_published():
+def test_render_page_static_puts_published_and_drafts_in_one_array():
     db.upsert_annotation_db("doc1", "006", "p-1", "comment", "live")
     db.upsert_annotation_db("doc1", "006", "d-1", "comment", "wip", status="draft")
-    assert [a["id"] for a in publisher.render_drafts("doc1", "006")] == ["d-1"]
+    rendered = publisher.render_page_static("doc1", "006")
+    assert [a["id"] for a in rendered] == ["p-1", "d-1"]
+    assert "draft" not in rendered[0]
+    assert rendered[1]["draft"] is True
+
+
+def test_render_page_static_carries_tags():
+    db.upsert_annotation_db("doc1", "006", "p-1", "comment", "live", tags=["omission", "framing"])
+    assert publisher.render_page_static("doc1", "006")[0]["tags"] == ["framing", "omission"]
 
 
 def test_render_page_excludes_drafts():
@@ -126,36 +137,44 @@ def test_render_page_excludes_drafts():
     assert [a["id"] for a in publisher.render_page("doc1", "006")] == ["p-1"]
 
 
-def test_publish_page_writes_drafts_sidecar(tmp_path):
+def test_render_page_omits_tags_so_the_sha_stays_stable():
+    """render_page feeds compute_page_sha, which is the editor's optimistic
+    lock -- tagging or drafting must not move it."""
+    db.upsert_annotation_db("doc1", "006", "p-1", "comment", "live")
+    before = publisher.compute_page_sha(publisher.render_page("doc1", "006"))
+
+    db.upsert_annotation_db("doc1", "006", "p-1", "comment", "live", tags=["omission"])
+    db.upsert_annotation_db("doc1", "006", "d-1", "comment", "wip", status="draft")
+
+    assert "tags" not in publisher.render_page("doc1", "006")[0]
+    assert publisher.compute_page_sha(publisher.render_page("doc1", "006")) == before
+
+
+def test_publish_page_writes_drafts_into_the_page_file(tmp_path):
     db.upsert_annotation_db("doc1", "006", "p-1", "comment", "live")
     db.upsert_annotation_db("doc1", "006", "d-1", "comment", "wip", coord_x=1, coord_y=2, status="draft")
     assert publisher.publish_page("doc1", "006") is True
 
-    drafts_path = os.path.join(config.PUBLISH_DIR, "doc1", "annotations", "page_006.drafts.json")
-    with open(drafts_path, encoding="utf-8") as f:
-        data = json.load(f)
-    assert data == [{"id": "d-1", "text": "wip", "annType": "comment", "draft": True, "coords": [1, 2]}]
-    # Published file stays drafts-free so serverPageSha is unaffected.
     main_path = os.path.join(config.PUBLISH_DIR, "doc1", "annotations", "page_006.json")
     with open(main_path, encoding="utf-8") as f:
-        assert [a["id"] for a in json.load(f)] == ["p-1"]
+        data = json.load(f)
+    assert [a["id"] for a in data] == ["p-1", "d-1"]
+    assert data[1]["tags"] == ["draft"]
 
-
-def test_publish_page_no_drafts_writes_no_sidecar(tmp_path):
-    db.upsert_annotation_db("doc1", "006", "p-1", "comment", "live")
-    publisher.publish_page("doc1", "006")
     drafts_path = os.path.join(config.PUBLISH_DIR, "doc1", "annotations", "page_006.drafts.json")
     assert not os.path.exists(drafts_path)
 
 
-def test_publish_page_removes_stale_drafts_sidecar(tmp_path):
+def test_publish_page_removes_legacy_drafts_sidecar(tmp_path):
+    """Leftovers from the sidecar era are cleaned up by the next publish, so a
+    publish_all() on restart repairs the whole volume."""
     db.upsert_annotation_db("doc1", "006", "d-1", "comment", "wip", status="draft")
-    publisher.publish_page("doc1", "006")
-    drafts_path = os.path.join(config.PUBLISH_DIR, "doc1", "annotations", "page_006.drafts.json")
-    assert os.path.exists(drafts_path)
+    ann_dir = os.path.join(config.PUBLISH_DIR, "doc1", "annotations")
+    os.makedirs(ann_dir, exist_ok=True)
+    drafts_path = os.path.join(ann_dir, "page_006.drafts.json")
+    with open(drafts_path, "w", encoding="utf-8") as f:
+        json.dump([{"id": "d-1", "text": "wip", "annType": "comment", "draft": True}], f)
 
-    # Promote the draft to published: the sidecar must be dropped.
-    db.upsert_annotation_db("doc1", "006", "d-1", "comment", "wip", status="published")
     publisher.publish_page("doc1", "006")
     assert not os.path.exists(drafts_path)
 

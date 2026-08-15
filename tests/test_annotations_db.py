@@ -143,3 +143,63 @@ def test_add_history_standalone():
     assert len(rows) == 1
     assert rows[0]["action"] == "import"
     assert rows[0]["author_id"] is None
+
+
+# ===== Tags =====
+
+
+def test_upsert_stores_and_returns_tags():
+    ann = db.upsert_annotation_db("doc1", "006", "ann-1", "comment", "x", tags=["Framing", "omission"])
+    assert ann["tags"] == ["framing", "omission"]
+    assert db.list_page_annotations("doc1", "006")[0]["tags"] == ["framing", "omission"]
+
+
+def test_upsert_without_tags_preserves_them():
+    db.upsert_annotation_db("doc1", "006", "ann-1", "comment", "x", tags=["omission"])
+    db.upsert_annotation_db("doc1", "006", "ann-1", "comment", "edited")
+    assert db.get_annotation("doc1", "006", "ann-1")["tags"] == ["omission"]
+
+
+def test_upsert_with_empty_list_clears_tags():
+    db.upsert_annotation_db("doc1", "006", "ann-1", "comment", "x", tags=["omission"])
+    db.upsert_annotation_db("doc1", "006", "ann-1", "comment", "x", tags=[])
+    assert db.get_annotation("doc1", "006", "ann-1")["tags"] == []
+
+
+def test_history_snapshot_carries_tags():
+    db.upsert_annotation_db("doc1", "006", "ann-1", "comment", "x", tags=["omission"])
+    record = db.list_history(doc_id="doc1", page_num="006", ann_id="ann-1", limit=1)[0]
+    assert record["snapshot"]["tags"] == ["omission"]
+
+
+@pytest.mark.parametrize("bad", ["draft", "published", "DELETED", "has space", "кириллица", "", "-lead", "a" * 65])
+def test_reserved_and_malformed_tags_rejected(bad):
+    with pytest.raises(db.TagError):
+        db.normalize_tag(bad)
+
+
+def test_normalize_tags_drops_duplicates_and_keeps_order():
+    assert db.normalize_tags(["Omission", "framing", "omission"]) == ["omission", "framing"]
+
+
+def test_prefixed_tags_are_allowed():
+    assert db.normalize_tag("confidence:high") == "confidence:high"
+    assert db.normalize_tag("tc-usa-origin") == "tc-usa-origin"
+
+
+def test_list_all_tags_counts_and_skips_deleted():
+    db.upsert_annotation_db("doc1", "006", "a1", "comment", "x", tags=["omission", "framing"])
+    db.upsert_annotation_db("doc1", "007", "a2", "comment", "y", tags=["omission"])
+    db.upsert_annotation_db("doc1", "008", "a3", "comment", "z", tags=["omission"])
+    db.soft_delete_annotation("doc1", "008", "a3")
+
+    counts = {t["tag"]: t["count"] for t in db.list_all_tags("doc1")}
+    assert counts == {"omission": 2, "framing": 1}
+
+
+def test_list_annotations_filters_by_tag():
+    db.upsert_annotation_db("doc1", "006", "a1", "comment", "x", tags=["omission"])
+    db.upsert_annotation_db("doc1", "006", "a2", "comment", "y")
+
+    assert [a["annId"] for a in db.list_annotations(tag="omission")] == ["a1"]
+    assert db.count_annotations(tag="omission") == 1
