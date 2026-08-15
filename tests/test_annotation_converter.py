@@ -25,9 +25,50 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 from annotation_converter import (
     convert_json_to_md,
     parse_markdown_annotation,
+    parse_tags_field,
     json_to_md,
     md_to_json
 )
+
+
+class TestTags(unittest.TestCase):
+    """tags:/confidence: used to be parsed and then dropped; they now survive
+    into the JSON so the import can put them in the DB."""
+
+    def test_parse_tags_field_accepts_bracketed_and_bare_lists(self):
+        self.assertEqual(parse_tags_field('[omission, framing]'), ['omission', 'framing'])
+        self.assertEqual(parse_tags_field('omission, framing'), ['omission', 'framing'])
+        self.assertEqual(parse_tags_field('[Omission, omission]'), ['omission'])
+        self.assertEqual(parse_tags_field(''), [])
+        self.assertEqual(parse_tags_field(None), [])
+
+    def test_meta_tags_and_confidence_reach_the_annotation(self):
+        md = (
+            "~~~meta\n"
+            "type: main\n"
+            "id: ann-p107-1\n"
+            "target: [350, 255]\n"
+            "tags: [omission, tc-usa-origin]\n"
+            "confidence: high\n"
+            "~~~\n\n"
+            "Текст аннотации\n"
+        )
+        ann = parse_markdown_annotation(md)[0]
+        self.assertEqual(ann['tags'], ['omission', 'tc-usa-origin', 'confidence:high'])
+        self.assertEqual(ann['coords'], [350, 255])
+
+    def test_annotation_without_tags_has_no_tags_key(self):
+        md = "~~~meta\ntype: comment\nid: ann-1\n~~~\n\nТекст\n"
+        self.assertNotIn('tags', parse_markdown_annotation(md)[0])
+
+    def test_tags_round_trip_through_md(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, 'page_007.json')
+            with open(src, 'w', encoding='utf-8') as f:
+                json.dump([{"id": "a1", "text": "t", "annType": "main",
+                            "coords": [1, 2], "tags": ["omission", "framing"]}], f)
+            back = parse_markdown_annotation(convert_json_to_md(src))[0]
+            self.assertEqual(back['tags'], ['omission', 'framing'])
 
 class TestAnnotationConverter(unittest.TestCase):
     """Test cases for the annotation_converter.py script."""

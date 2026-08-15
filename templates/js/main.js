@@ -28,41 +28,99 @@ function getDocIdFromPath() {
   return null;
 }
 
+/** Read a URL parameter from either the query string or the hash, in that
+ * order. Every mode flag below is addressable both ways. */
+function getUrlParam(name) {
+  try {
+    const usp = new URLSearchParams(window.location.search || '');
+    const fromQuery = usp.get(name);
+    if (fromQuery !== null) return fromQuery;
+    const hsp = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
+    return hsp.get(name);
+  } catch (e) {
+    return null;
+  }
+}
+
+function isTruthyParam(value) {
+  return value === '1' || value === 'true';
+}
+
 function isEditorMode() {
   try {
     if (window.hasEditorFlag && typeof window.hasEditorFlag === 'function') {
       return !!window.hasEditorFlag();
     }
-    const usp = new URLSearchParams(window.location.search || '');
-    const hsp = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
-    const qp = usp.get('editor');
-    const hp = hsp.get('editor');
-    return (qp === '1' || qp === 'true') || (hp === '1' || hp === 'true') || window.REDPEN_EDITOR === true;
+    return isTruthyParam(getUrlParam('editor')) || window.REDPEN_EDITOR === true;
   } catch (e) {
     return window.REDPEN_EDITOR === true;
   }
 }
 
 /**
- * Read-only preview mode that reveals draft annotations (status='draft' in the
- * API). Drafts never enter the published page_<NNN>.json; they live in a
- * sibling page_<NNN>.drafts.json that loadPage() fetches only when this is on.
- * Enabled by ?showDrafts=1 (query or hash), mirroring isEditorMode().
+ * Read-only preview mode that reveals draft annotations. Kept as the legacy
+ * spelling of ?tags=draft: enabled by ?showDrafts=1 (query or hash), it just
+ * lifts the default "draft" exclusion in getTagFilter().
  * Intentionally independent of editor mode: the editor pulls its own live,
  * editable drafts from the API and renders them itself, so this static preview
  * stays off there to avoid double-rendering the same drafts.
  */
 function isDraftMode() {
-  try {
-    if (isEditorMode()) return false;
-    const usp = new URLSearchParams(window.location.search || '');
-    const hsp = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
-    const qp = usp.get('showDrafts');
-    const hp = hsp.get('showDrafts');
-    return (qp === '1' || qp === 'true') || (hp === '1' || hp === 'true');
-  } catch (e) {
-    return false;
-  }
+  if (isEditorMode()) return false;
+  return isTruthyParam(getUrlParam('showDrafts'));
+}
+
+function parseTagList(value) {
+  if (!value) return [];
+  return value.split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0);
+}
+
+/**
+ * URL-driven annotation filtering. Every annotation carries a `tags` array in
+ * the published JSON, and the API's `status` is mirrored there as a `draft`
+ * tag -- so drafts are just an ordinary tag, not a separate file.
+ *
+ *   ?tags=a,b     keep only annotations carrying at least one of a, b
+ *   ?notags=a,b   drop annotations carrying any of a, b
+ *
+ * Exclusion always wins. Drafts are hidden unless the URL mentions `draft`
+ * explicitly (in either list) or ?showDrafts=1 is on.
+ */
+function getTagFilter() {
+  const include = parseTagList(getUrlParam('tags'));
+  const exclude = parseTagList(getUrlParam('notags'));
+  const mentionsDraft = include.indexOf('draft') !== -1 || exclude.indexOf('draft') !== -1;
+  if (!mentionsDraft && !isDraftMode()) exclude.push('draft');
+  return { include, exclude };
+}
+
+/** Whether the URL asks for drafts at all -- by ?showDrafts=1 or by naming
+ * `draft` in ?tags=. Used to decide whether the legacy sidecar is worth
+ * fetching; the merged page file needs no such decision. */
+function draftsRequested() {
+  if (isEditorMode()) return false;
+  return getTagFilter().exclude.indexOf('draft') === -1;
+}
+
+/** Normalize one annotation to a lowercase `tags` array. `draft: true` from
+ * the publisher (and from older files that predate tags) becomes the tag. */
+function annotationTags(a) {
+  const tags = Array.isArray(a.tags) ? a.tags.map(t => String(t).toLowerCase()) : [];
+  if (a.draft && tags.indexOf('draft') === -1) tags.unshift('draft');
+  return tags;
+}
+
+function applyTagFilter(anns) {
+  // In editor mode the editor owns what's shown (it renders live drafts from
+  // the API); filtering here would fight it.
+  if (isEditorMode()) return anns;
+  const filter = getTagFilter();
+  return anns.filter(a => {
+    const tags = annotationTags(a);
+    if (filter.exclude.some(t => tags.indexOf(t) !== -1)) return false;
+    if (!filter.include.length) return true;
+    return filter.include.some(t => tags.indexOf(t) !== -1);
+  });
 }
 
 function clampPage(n) {
@@ -355,18 +413,24 @@ async function loadPage(pageNum) {
     allAnns = [];
   }
 
-  // Draft preview (?showDrafts=1): additionally load the sibling drafts file
-  // and append its items (each already carries draft:true). Absent file /
-  // parse error means "no drafts" -- the plain published view is unaffected.
-  if (isDraftMode()) {
+  // Transitional: drafts used to live in a sibling page_<NNN>.drafts.json and
+  // are now part of the file above. An offline copy can still hold both, so
+  // merge the sidecar when it exists and drop ids we already have -- otherwise
+  // every draft would render twice. Remove once no such copies are in use.
+  if (draftsRequested()) {
     try {
       const drafts = await fetch('annotations/' + currentPageId + '.drafts.json')
         .then(r => (r.ok ? r.json() : []));
       if (Array.isArray(drafts) && drafts.length) {
-        allAnns = allAnns.concat(drafts.map(a => Object.assign({}, a, { draft: true })));
+        const seen = new Set(allAnns.map(a => a.id));
+        allAnns = allAnns.concat(
+          drafts.filter(a => !seen.has(a.id)).map(a => Object.assign({}, a, { draft: true }))
+        );
       }
     } catch (e) { /* no drafts for this page */ }
   }
+
+  allAnns = applyTagFilter(allAnns);
 
   const globalContainer = document.getElementById('global-comment-container');
   const globalDiv = document.getElementById('global-comment');

@@ -205,3 +205,25 @@ def test_index_page_lists_document_title(synthetic_project, tmp_path):
     index_html = (target / "index.html").read_text("utf-8")
     assert "Test Book" in index_html          # title from meta.json
     assert f"{DOC}/index.html" in index_html   # link to the document
+
+
+def test_count_published_annotations_ignores_drafts(tmp_path):
+    """Drafts share page_NNN.json with published annotations now, so the
+    landing-page counter has to skip them explicitly."""
+    build = _load_build_website()
+    ann_dir = tmp_path / "annotations"
+    ann_dir.mkdir()
+    (ann_dir / "page_007.json").write_text(
+        '[{"id": "a1", "text": "x", "annType": "main"},'
+        ' {"id": "d1", "text": "wip", "annType": "main", "draft": true, "tags": ["draft"]}]',
+        encoding="utf-8",
+    )
+    # A page holding nothing but drafts must not count as an annotated page.
+    (ann_dir / "page_008.json").write_text(
+        '[{"id": "d2", "text": "wip", "annType": "main", "draft": true, "tags": ["draft"]}]',
+        encoding="utf-8",
+    )
+    # Legacy sidecars are still skipped.
+    (ann_dir / "page_009.drafts.json").write_text('[{"id": "d3", "text": "x", "annType": "main"}]', encoding="utf-8")
+
+    assert build._count_published_annotations(str(tmp_path)) == {"annotations": 1, "pages": 1}

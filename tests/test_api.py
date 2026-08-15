@@ -26,10 +26,16 @@ import db  # noqa: E402  (imported after conftest sets env vars)
 import main  # noqa: E402  (imported after conftest sets env vars)
 
 
-def _published_annotations(doc_id: str, page_num_str: str):
+def _static_annotations(doc_id: str, page_num_str: str):
+    """Everything in the published file -- drafts included, since they share it."""
     path = os.path.join(config.PUBLISH_DIR, doc_id, "annotations", f"page_{page_num_str}.json")
     with open(path, encoding="utf-8") as f:
         return json.load(f)
+
+
+def _published_annotations(doc_id: str, page_num_str: str):
+    """Only what a plain reader sees: the file minus the draft-tagged items."""
+    return [a for a in _static_annotations(doc_id, page_num_str) if not a.get("draft")]
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -631,7 +637,7 @@ def test_stale_client_page_sha_returns_409(client):
 # ---------------------------------------------------------------------------
 
 
-def test_draft_annotation_not_in_static_file_or_anonymous_get(client):
+def test_draft_annotation_tagged_in_static_file_and_hidden_from_anonymous_get(client):
     doc, page = "medinsky11klass", "70"
     created = client.post(
         f"/api/editor/{doc}/{page}",
@@ -641,6 +647,11 @@ def test_draft_annotation_not_in_static_file_or_anonymous_get(client):
     assert created.json()["published"] is False
     ann_id = created.json()["id"]
 
+    # The draft ships in the page file, carrying the marker the viewer filters on.
+    static = _static_annotations(doc, "070")
+    assert [a["id"] for a in static] == [ann_id]
+    assert static[0]["draft"] is True
+    assert static[0]["tags"] == ["draft"]
     assert _published_annotations(doc, "070") == []
 
     anon = TestClient(main.app)
@@ -725,6 +736,130 @@ def test_editor_get_draft_visibility_matrix(role):
         assert ann_id in ids
     else:
         assert ann_id not in ids
+
+
+# ---------------------------------------------------------------------------
+# Tags
+# ---------------------------------------------------------------------------
+
+
+def test_post_stores_tags_and_renders_them(client):
+    doc, page = "medinsky11klass", "80"
+    created = client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "x", "coords": [1, 1], "tags": ["Omission", "framing"]},
+    )
+    assert created.status_code == 200
+    ann_id = created.json()["id"]
+
+    published = _published_annotations(doc, "080")
+    assert published[0]["tags"] == ["framing", "omission"]
+
+    editor_page = client.get(f"/api/editor/{doc}/{page}").json()
+    assert [a for a in editor_page["annotations"] if a["id"] == ann_id][0]["tags"] == ["framing", "omission"]
+
+
+def test_put_without_tags_preserves_them(client):
+    """The editor UI doesn't send tags yet; saving from it must not wipe them."""
+    doc, page = "medinsky11klass", "81"
+    ann_id = client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "x", "coords": [1, 1], "tags": ["omission"]},
+    ).json()["id"]
+
+    client.put(
+        f"/api/editor/{doc}/{page}/{ann_id}",
+        json={"annType": "comment", "text": "edited", "coords": [2, 2]},
+    )
+    assert _published_annotations(doc, "081")[0]["tags"] == ["omission"]
+
+
+def test_put_with_empty_tags_clears_them(client):
+    doc, page = "medinsky11klass", "82"
+    ann_id = client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "x", "coords": [1, 1], "tags": ["omission"]},
+    ).json()["id"]
+
+    client.put(
+        f"/api/editor/{doc}/{page}/{ann_id}",
+        json={"annType": "comment", "text": "x", "coords": [1, 1], "tags": []},
+    )
+    assert "tags" not in _published_annotations(doc, "082")[0]
+
+
+@pytest.mark.parametrize("tags", [["draft"], ["published"], ["deleted"], ["has space"], ["кириллица"], "omission"])
+def test_reserved_or_malformed_tags_are_400(client, tags):
+    r = client.post(
+        "/api/editor/medinsky11klass/83",
+        json={"annType": "comment", "text": "x", "coords": [1, 1], "tags": tags},
+    )
+    assert r.status_code == 400
+
+
+def test_editor_page_does_not_expose_draft_as_a_tag(client):
+    """A draft's flag must stay a boolean: the editor echoes fields back on
+    save, and a "draft" entry in tags would come back as a 400."""
+    doc, page = "medinsky11klass", "84"
+    ann_id = client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "wip", "coords": [1, 1], "status": "draft", "tags": ["omission"]},
+    ).json()["id"]
+
+    item = [a for a in client.get(f"/api/editor/{doc}/{page}").json()["annotations"] if a["id"] == ann_id][0]
+    assert item["draft"] is True
+    assert item["tags"] == ["omission"]
+
+    # Round-tripping exactly what the editor got back must still save.
+    resave = client.put(
+        f"/api/editor/{doc}/{page}/{ann_id}",
+        json={"annType": item["annType"], "text": item["text"], "coords": item["coords"], "tags": item["tags"]},
+    )
+    assert resave.status_code == 200
+
+
+def test_tags_endpoint_lists_vocabulary_with_counts(client):
+    doc = "medinsky11klass"
+    # Tag names unique to this test: the DB is shared across the module.
+    client.post(f"/api/editor/{doc}/85", json={"annType": "comment", "text": "a", "coords": [1, 1], "tags": ["vocab-a", "vocab-b"]})
+    client.post(f"/api/editor/{doc}/86", json={"annType": "comment", "text": "b", "coords": [1, 1], "tags": ["vocab-a"]})
+
+    tags = {t["tag"]: t["count"] for t in client.get(f"/api/tags?docId={doc}").json()["tags"]}
+    assert tags["vocab-a"] == 2
+    assert tags["vocab-b"] == 1
+
+
+def test_annotations_list_filters_by_tag(client):
+    doc = "medinsky11klass"
+    tagged = client.post(f"/api/editor/{doc}/87", json={"annType": "comment", "text": "a", "coords": [1, 1], "tags": ["euphemism"]}).json()["id"]
+    client.post(f"/api/editor/{doc}/88", json={"annType": "comment", "text": "b", "coords": [1, 1]})
+
+    r = client.get(f"/api/annotations?docId={doc}&tag=euphemism").json()
+    assert [i["annId"] for i in r["items"]] == [tagged]
+    assert r["total"] == 1
+
+
+def test_revert_of_pre_tags_snapshot_leaves_tags_alone(client):
+    """History snapshots written before tags existed have no "tags" key;
+    reverting to one must not clear the annotation's current tags."""
+    doc, page = "medinsky11klass", "89"
+    ann_id = client.post(
+        f"/api/editor/{doc}/{page}", json={"annType": "comment", "text": "v1", "coords": [1, 1]}
+    ).json()["id"]
+
+    # Simulate a legacy record: a snapshot lacking the tags key.
+    legacy = db.get_annotation(doc, "089", ann_id)
+    legacy.pop("tags")
+    db.add_history(doc, "089", ann_id, "update", legacy, None)
+    hist_id = db.list_history(doc_id=doc, page_num="089", ann_id=ann_id, limit=1)[0]["id"]
+
+    client.put(
+        f"/api/editor/{doc}/{page}/{ann_id}",
+        json={"annType": "comment", "text": "v2", "coords": [1, 1], "tags": ["omission"]},
+    )
+    r = client.post(f"/api/history/{hist_id}/revert")
+    assert r.status_code == 200
+    assert _published_annotations(doc, "089")[0]["tags"] == ["omission"]
 
 
 def test_stale_client_page_sha_returns_409_on_put(client):
