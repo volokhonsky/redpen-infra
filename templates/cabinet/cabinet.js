@@ -306,7 +306,7 @@
       '<form id="cab-ann-filters" class="cab-filters">' +
         '<label>Документ<select name="docId">' + docOptionsHtml() + '</select></label>' +
         '<label>Страница<input type="text" name="pageKey" placeholder="напр. 6" /></label>' +
-        '<label>Тип<select name="annType"><option value="">Любой</option><option value="main">main</option><option value="comment">comment</option><option value="general">general</option></select></label>' +
+        '<label>Тип<select name="annType"><option value="">Любой</option><option value="main">main</option><option value="comment">comment</option></select></label>' +
         '<label>Статус<select name="status"><option value="">Любой</option><option value="published">published</option><option value="draft">draft</option><option value="deleted">deleted</option></select></label>' +
         '<label>Автор<select name="authorId" id="cab-ann-author-filter"><option value="">Все авторы</option></select></label>' +
         '<label>Тег<select name="tag" id="cab-ann-tag-filter"><option value="">Любой</option></select></label>' +

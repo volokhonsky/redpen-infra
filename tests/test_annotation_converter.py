@@ -150,6 +150,29 @@ class TestAnnotationConverter(unittest.TestCase):
         # Compare the parsed annotations with the expected annotations
         self.assertEqual(annotations, expected_annotations)
 
+    def test_fence_with_trailing_whitespace_still_separates(self):
+        """Пробел после закрывающего ~~~ не должен склеивать аннотации."""
+        md_content = (
+            "~~~meta\n"
+            "type: main\n"
+            "id: ann-1\n"
+            "target: [300,650]\n"
+            "~~~ \n"
+            "\nПервая.\n\n"
+            "~~~meta\n"
+            "type: main\n"
+            "id: ann-2\n"
+            "target: [650,950]\n"
+            "~~~\n"
+            "Вторая.\n"
+        )
+
+        annotations = parse_markdown_annotation(md_content)
+
+        self.assertEqual([a['id'] for a in annotations], ['ann-1', 'ann-2'])
+        self.assertEqual(annotations[0]['text'], 'Первая.')
+        self.assertEqual(annotations[1]['text'], 'Вторая.')
+
     def test_json_to_md_directory(self):
         """Test the conversion from JSON to Markdown for a directory."""
         # Create temporary directories for input and output

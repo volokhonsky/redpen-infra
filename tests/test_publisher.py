@@ -33,10 +33,12 @@ def test_render_page_bare_array_with_coords():
     assert rendered == [{"id": "ann-1", "text": "hi", "annType": "main", "coords": [10, 20]}]
 
 
-def test_render_page_general_annotation_has_no_coords():
-    db.upsert_annotation_db("doc1", "006", "ann-1", "general", "note")
+def test_render_page_omits_coords_when_they_are_null():
+    """Defensive path: annotations always carry coordinates now (the anchorless
+    "general" type is retired), but a NULL pair must not render as [null, null]."""
+    db.upsert_annotation_db("doc1", "006", "ann-1", "comment", "note")
     rendered = publisher.render_page("doc1", "006")
-    assert rendered == [{"id": "ann-1", "text": "note", "annType": "general"}]
+    assert rendered == [{"id": "ann-1", "text": "note", "annType": "comment"}]
     assert "coords" not in rendered[0]
 
 
@@ -87,8 +89,8 @@ def test_publish_page_writes_world_readable_file(tmp_path):
     assert mode & stat.S_IROTH, f"expected world-readable, got {oct(mode)}"
 
 
-def test_publish_page_general_has_no_coords_key_in_file(tmp_path):
-    db.upsert_annotation_db("doc1", "006", "ann-1", "general", "note")
+def test_publish_page_omits_coords_key_when_null(tmp_path):
+    db.upsert_annotation_db("doc1", "006", "ann-1", "comment", "note")
     publisher.publish_page("doc1", "006")
     path = os.path.join(config.PUBLISH_DIR, "doc1", "annotations", "page_006.json")
     with open(path, encoding="utf-8") as f:

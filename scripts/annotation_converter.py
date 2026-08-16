@@ -52,14 +52,14 @@ def convert_json_to_md(json_file_path):
         if annotation_id:
             md_content += f"id: {annotation_id}\n"
 
-        # Add target field based on the type of annotation and available data
-        if ann_type != 'general':
-            if coords:
-                # If coords exist, use them as target
-                md_content += f"target: [{coords[0]}, {coords[1]}]\n"
-            elif target_block:
-                # Otherwise use targetBlock as target
-                md_content += f"target: {target_block}\n"
+        # Add target field based on the available data. Every annotation has an
+        # anchor now -- the type without one ("general") is retired.
+        if coords:
+            # If coords exist, use them as target
+            md_content += f"target: [{coords[0]}, {coords[1]}]\n"
+        elif target_block:
+            # Otherwise use targetBlock as target
+            md_content += f"target: {target_block}\n"
 
         # Tags round-trip too, so json -> md -> json doesn't lose them
         tags = annotation.get('tags') or []
@@ -102,7 +102,10 @@ def parse_markdown_annotation(md_content):
         list: List of annotation dictionaries
     """
     # Split the content by the meta block delimiter (supporting both old and new formats)
-    sections = re.split(r'^~~~meta$|^~~~$|^---$', md_content, flags=re.MULTILINE)
+    # Хвостовые пробелы на строке-разделителе встречаются в черновиках; без
+    # допуска на них аннотация склеивается со следующей (стр. 006, 2026-08-16).
+    sections = re.split(r'^[ \t]*(?:~~~meta|~~~|---)[ \t]*$', md_content,
+                        flags=re.MULTILINE)
 
     # Remove empty sections
     sections = [s.strip() for s in sections if s.strip()]
@@ -130,6 +133,15 @@ def parse_markdown_annotation(md_content):
 
         # Get annotation type
         ann_type = metadata_dict.get('type', '')
+        if ann_type == 'general':
+            # Retired: an annotation without an anchor on the scan has nowhere
+            # to live now that every page is its own address. Converting it
+            # silently would produce a marker-less annotation that the viewer
+            # cannot show at all, so fail loudly instead.
+            raise ValueError(
+                f"type: general больше не поддерживается (id={metadata_dict.get('id', '?')!r}). "
+                "Проставьте target: [x, y] и type: main|comment — см. docs/general-migration-map.json"
+            )
 
         # Create annotation object
         annotation = {
@@ -147,8 +159,8 @@ def parse_markdown_annotation(md_content):
         if tags:
             annotation["tags"] = tags
 
-        # Process target field if present and annotation type is not general
-        if 'target' in metadata_dict and ann_type != 'general':
+        # Process target field if present
+        if 'target' in metadata_dict:
             target_value = metadata_dict['target'].strip()
 
             # Check if target is in the format [X, Y]

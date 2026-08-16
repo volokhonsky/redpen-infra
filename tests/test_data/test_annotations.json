@@ -1,8 +1,12 @@
 [
   {
     "id": "ann-test-1",
-    "text": "This is a general annotation without a target.",
-    "annType": "general"
+    "text": "This is a comment annotation anchored by coordinates.",
+    "annType": "comment",
+    "coords": [
+      120,
+      640
+    ]
   },
   {
     "id": "ann-test-2",

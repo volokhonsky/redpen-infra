@@ -16,7 +16,6 @@
         '<select id="redpen-type">'+
           '<option value="main" selected>main</option>'+
           '<option value="comment">comment</option>'+
-          '<option value="general">general</option>'+
         '</select>'+
         '<div id="redpen-type-error" class="redpen-error" style="color:#DC143C;font-size:12px;margin-top:4px;"></div>'+
       '</div>'+
@@ -146,12 +145,12 @@
     };
   }
 
-  function toggleCoordVisibilityByType(annType){
+  // Координаты нужны каждой аннотации: тип без якоря ("general") упразднён.
+  function toggleCoordVisibilityByType(){
     var coordEl = document.getElementById('redpen-coord');
     var coordRow = document.getElementById('redpen-coord-row');
-    var isGen = annType === 'general';
-    if (coordEl){ coordEl.disabled = isGen; if (isGen) coordEl.value=''; }
-    if (coordRow){ coordRow.style.display = isGen ? 'none' : ''; }
+    if (coordEl){ coordEl.disabled = false; }
+    if (coordRow){ coordRow.style.display = ''; }
   }
 
   // Helpers to sync form fields
@@ -216,16 +215,12 @@
   // Validation API
   function validate(draft){
     var errors = {};
-    var typeOk = (draft.annType === 'main' || draft.annType === 'comment' || draft.annType === 'general');
+    var typeOk = (draft.annType === 'main' || draft.annType === 'comment');
     if (!typeOk) errors.type = 'Неверный тип аннотации';
     var contentOk = (typeof draft.content === 'string') && (draft.content.trim().length > 0);
     if (!contentOk) errors.content = 'Текст обязателен';
-    if (draft.annType === 'general') {
-      if (typeof draft.coords !== 'undefined') errors.coord = 'Координаты не используются для general';
-    } else {
-      var coordsOk = Array.isArray(draft.coords) && draft.coords.length === 2 && Number.isInteger(draft.coords[0]) && Number.isInteger(draft.coords[1]);
-      if (!coordsOk) errors.coord = 'Укажите координаты кликом по изображению';
-    }
+    var coordsOk = Array.isArray(draft.coords) && draft.coords.length === 2 && Number.isInteger(draft.coords[0]) && Number.isInteger(draft.coords[1]);
+    if (!coordsOk) errors.coord = 'Укажите координаты кликом по изображению';
     return { valid: Object.keys(errors).length === 0, errors: errors };
   }
 

@@ -77,7 +77,7 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
   Тело: `{annType, text, coords?[x,y], id?, clientPageSha?, status?}`.
   `status` — `"draft"` или `"published"` (иначе `400`); если поле не
   передано, у существующей аннотации статус сохраняется, у новой —
-  `"published"`. Для `annType != "general"` можно передать целочисленные
+  `"published"`. Можно передать целочисленные
   `coords`. Ответ: `{id, serverPageSha, published}` — `published` учитывает
   и результат записи в volume, и статус самой аннотации (`false` для
   черновиков — это не ошибка).
@@ -99,7 +99,7 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
   `items[]` — как `_annotation_row_to_dict` + `authorName`/`authorEmail`
   (`null` для импортированных). Валидация: `docId`/`pageKey` — как в
   `/api/editor/...`; `status ∈ {published,draft,deleted}`;
-  `annType ∈ {main,comment,general}`; `limit ≤ 200` (по умолчанию 50);
+  `annType ∈ {main,comment}`; `limit ≤ 200` (по умолчанию 50);
   `offset ≥ 0`; `len(q) ≤ 200` — иначе `400`.
 - 🔒 `GET /api/history?docId&pageKey&annId&authorId&action&limit&offset`
   (та же защита) → `{items, hasMore, limit, offset}`; `items[].snapshot` —

@@ -114,6 +114,9 @@ sys.path.append(project_root)
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import blog as blog_builder  # noqa: E402  (после правки sys.path)
+import chapters  # noqa: E402
+import page_html  # noqa: E402
+import sitemap  # noqa: E402
 
 def get_document_folders(specific_folders=None):
     """
@@ -276,6 +279,44 @@ def generate_page_manifests(target_dir=None, document=None, specific_folders=Non
             generate_page_manifest.generate(doc_dir, meta_path)
         except generate_page_manifest.ManifestError as e:
             print(f"Error generating page manifest for {doc}: {e}")
+            success = False
+
+    return success
+
+def generate_page_html(target_dir=None, document=None, specific_folders=None):
+    """
+    Rebuild metadata.json's `chapters` from paragraphs_list.txt, then render one
+    static HTML file per page (<doc>/pages/<label>/index.html) with the
+    published annotations inlined as real text.
+
+    This is what makes the corpus indexable: before it, the whole book was a
+    single HTML document that fetched everything over JSON, so a crawler saw
+    ~159 characters of text for all 1257 annotations. Must run after
+    generate_page_manifests() -- it needs the `pages` manifest -- and after
+    annotations/*.json are in place.
+
+    Documents without a pages manifest or a paragraphs_list.txt are skipped,
+    the same way legacy documents are skipped elsewhere.
+    """
+    documents = [document] if document else get_document_folders(specific_folders)
+    output_root = target_dir if target_dir else os.path.join(project_root, 'redpen-publish')
+    current_timestamp = datetime.datetime.now().strftime('%d.%m.%Y %H:%M')
+    auto_hdr = "<!-- AUTO-GENERATED FILE. Do not edit directly. Run scripts/build_website.py -->\n"
+
+    success = True
+    for doc in documents:
+        doc_dir = os.path.join(output_root, doc)
+        if not os.path.isdir(doc_dir):
+            continue
+        paragraphs_path = os.path.join(project_root, 'redpen-content', doc, 'paragraphs_list.txt')
+        try:
+            chapters.generate(doc_dir, paragraphs_path)
+            page_html.build_pages(doc_dir, current_timestamp, auto_header=auto_hdr)
+        except chapters.ChaptersError as e:
+            print(f"Error building chapters for {doc}: {e}")
+            success = False
+        except (OSError, ValueError, KeyError) as e:
+            print(f"Error building per-page HTML for {doc}: {e}")
             success = False
 
     return success
@@ -783,6 +824,12 @@ def create_index_page(target_dir=None, specific_folders=None):
   <title>Мединский.нет — антимифы к единому учебнику</title>
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <meta name="description" content="Антимифы к единому учебнику истории: постраничный разбор с фактчеком, разбором манипуляций и умолчаний прямо поверх страниц оригинала."/>
+  <link rel="canonical" href="https://medinsky.net/"/>
+  <meta property="og:type" content="website"/>
+  <meta property="og:site_name" content="Мединский.нет"/>
+  <meta property="og:title" content="Мединский.нет — антимифы к единому учебнику"/>
+  <meta property="og:description" content="Антимифы к единому учебнику истории: постраничный разбор с фактчеком, разбором манипуляций и умолчаний прямо поверх страниц оригинала."/>
+  <meta property="og:url" content="https://medinsky.net/"/>
   <link rel="stylesheet" href="css/main.css">
   <link rel="stylesheet" href="css/components.css">
   <link rel="stylesheet" href="css/landing.css">
@@ -885,14 +932,6 @@ def create_index_page(target_dir=None, specific_folders=None):
       border: 3px solid #DC143C;
     }
     .legend .dot--comment { border-color: #0000FF; width: 14px; height: 14px; top: 5px; left: 2px; }
-    .legend .dot--general {
-      border: none;
-      background: #d9d9d9;
-      border-radius: 3px;
-      width: 20px;
-      height: 12px;
-      top: 6px;
-    }
     .rules { margin: 0; padding-left: 22px; }
     .rules li { margin-bottom: 12px; }
     .note {
@@ -986,9 +1025,9 @@ def create_index_page(target_dir=None, specific_folders=None):
       <ul class="legend">
         <li><span class="dot"></span><strong>Красный кружок</strong> — главный разбор фрагмента: что именно не так с этим местом и чем это подтверждается.</li>
         <li><span class="dot dot--comment"></span><strong>Синий кружок</strong> — комментарий к детали: уточнение, недостающий контекст, справка.</li>
-        <li><span class="dot dot--general"></span><strong>Общий комментарий</strong> под страницей — о развороте целиком: как выстроен рассказ и куда он ведёт читателя.</li>
       </ul>
-      <p>Листать можно стрелками «Назад» и «Вперёд» или полем «Стр.». Адрес страницы вида <code>?p=17</code> ведёт ровно на неё — такую ссылку удобно давать в споре, чтобы собеседник открыл тот же разворот.</p>
+      <p>Наведите курсор на кружок — разбор появится прямо поверх страницы; щелчок закрепит его. Под сканом те же комментарии идут списком, по порядку, — так разбор страницы можно прочитать подряд.</p>
+      <p>У каждой страницы учебника свой адрес вида <code>/medinsky11klass/pages/17/</code> — такую ссылку удобно давать в споре, чтобы собеседник открыл ровно тот же разворот. Листать можно ссылками «вперёд» и «назад» внизу страницы или из оглавления учебника.</p>
     </section>
 
     <section class="rules-section prose">
@@ -1235,10 +1274,21 @@ def main():
         print("Failed to generate page manifest. Aborting.")
         sys.exit(1)
 
+    # Step 3.6: Rebuild chapters from the table of contents and render the
+    # per-page HTML that search engines actually index.
+    if not generate_page_html(target_dir, document, specific_folders):
+        print("Failed to generate per-page HTML. Aborting.")
+        sys.exit(1)
+
     # Step 4: Create index page with document selection menu
     if not document:
         # Only create the index page when building all documents
         create_index_page(target_dir, specific_folders)
+
+        # Step 4.5: sitemap.xml + robots.txt. Last, so the landing page, the
+        # blog and every per-page file already exist -- the sitemap is built by
+        # scanning the output and skipping anything marked noindex.
+        sitemap.generate(publish_dir, os.getenv('REDPEN_SITE_URL', 'https://medinsky.net'))
 
     # Step 5: Run editor mode tests (post-publish) unless skipped
     if not args.skip_tests and not document:

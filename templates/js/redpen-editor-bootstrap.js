@@ -596,7 +596,7 @@
       var pageKey = (st.page && st.page.pageKey) || (st.page && st.page.pageNum) || 1;
 
       var payload = { annType: draft.annType, text: draft.content, clientPageSha: st.page.serverPageSha, status: draft.isDraft ? 'draft' : 'published' };
-      if (draft.annType !== 'general') payload.coords = draft.coords;
+      payload.coords = draft.coords;
 
       var url, method;
       // Только для обновления существующих аннотаций (не client-*)
@@ -771,7 +771,7 @@
     window.RedPenEditor.state.ui.selectedAnnotationId = null;
     window.RedPenEditor.state.draft = Object.assign({}, window.RedPenEditor.state.draft, {
       id: undefined,
-      annType: 'general',
+      annType: 'comment',
       content: '',
       coords: undefined
     });
@@ -781,13 +781,13 @@
     }
     try {
       var typeEl = document.getElementById('redpen-type');
-      if (typeEl) typeEl.value = 'general';
+      if (typeEl) typeEl.value = 'comment';
       var coordEl = document.getElementById('redpen-coord');
-      if (coordEl) { coordEl.value=''; coordEl.disabled = true; if (coordEl.parentElement) coordEl.parentElement.style.display='none'; }
+      // Координаты обязательны для любой аннотации: тип без якоря упразднён.
+      if (coordEl) { coordEl.value=''; coordEl.disabled = false; }
     } catch(e){ /* noop */ }
 
-    beginCreatingNew({ id: undefined, annType: 'general', content: '', coords: undefined });
-    initGeneralCache();
+    beginCreatingNew({ id: undefined, annType: 'comment', content: '', coords: undefined });
 
     window.RedPenEditor.state.editing.mode = 'none';
     window.RedPenEditor.state.baseline = null;
@@ -813,21 +813,6 @@
       var current = (window.RedPenEditorPanel && window.RedPenEditorPanel.getDraft) ? window.RedPenEditorPanel.getDraft() : state.draft;
       var baseline = state.baseline;
       var mode = (state.editing && state.editing.mode) || 'none';
-      if (newType === 'general') {
-        var gen = state.cache && state.cache.general;
-        if ((mode === 'existing' || mode === 'new') && isDirty(current, baseline)) {
-          if (!confirmLoseChanges()) return false;
-        }
-        if (gen) {
-          state.draft = { id: gen.id, annType: 'general', content: gen.content, coords: undefined };
-          beginEditingExisting(state.draft);
-        } else {
-          state.draft = Object.assign({}, state.draft, { id: undefined, annType: 'general', coords: undefined });
-          beginCreatingNew({ id: undefined, annType: 'general', content: state.draft.content || '', coords: undefined });
-        }
-        if (window.RedPenEditorPanel && window.RedPenEditorPanel.setDraft) window.RedPenEditorPanel.setDraft(state.draft);
-        return true;
-      }
       if (mode === 'existing' && isDirty(current, baseline)) { if (!confirmLoseChanges()) return false; }
       if (mode === 'new' && isDirty(current, baseline)) { if (!confirmLoseChanges()) return false; }
       var next = Object.assign({}, state.draft, { annType: newType });

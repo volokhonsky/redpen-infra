@@ -1,9 +1,10 @@
 ~~~meta
-type: general
+type: comment
 id: ann-test-1
+target: [120, 640]
 ~~~
 
-This is a general annotation without a target.
+This is a comment annotation anchored by coordinates.
 
 ~~~meta
 type: main

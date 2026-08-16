@@ -253,12 +253,23 @@ def test_editor_post_creates_annotation_and_persists(client):
     assert published == page_data["annotations"]
 
 
-def test_editor_post_general_annotation_without_coords(client):
+def test_editor_post_rejects_retired_general_type(client):
+    """`general` (общий комментарий к странице) is retired: it had no anchor on
+    the scan. Old clients must fail loudly rather than create an annotation the
+    viewer cannot place."""
     r = client.post(
         "/api/editor/medinsky11klass/22",
         json={"annType": "general", "text": "overview"},
     )
-    assert r.status_code == 200
+    assert r.status_code == 400
+
+
+def test_editor_post_rejects_unknown_type(client):
+    r = client.post(
+        "/api/editor/medinsky11klass/22",
+        json={"annType": "footnote", "text": "что-то"},
+    )
+    assert r.status_code == 400
 
 
 @pytest.mark.parametrize(
