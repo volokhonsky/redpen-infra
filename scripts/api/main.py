@@ -250,22 +250,26 @@ def _parse_annotation_body(body: Dict[str, Any]) -> Dict[str, Any]:
 
     if not isinstance(ann_type, str) or ann_type.strip() == "":
         raise HTTPException(status_code=400, detail="annType must be a string")
+    # "general" (общий комментарий к странице) is retired: it had no anchor on
+    # the scan, and with per-page addresses every comment needs one. Rejected
+    # rather than silently accepted so old clients fail loudly.
+    if ann_type not in ANNOTATION_TYPES:
+        raise HTTPException(status_code=400, detail=f"annType must be one of {', '.join(ANNOTATION_TYPES)}")
     if not isinstance(text, str):
         raise HTTPException(status_code=400, detail="text must be a string")
 
     ann: Dict[str, Any] = {"annType": ann_type, "text": text}
 
-    if ann_type != "general":
-        if coords is not None:
-            if (
-                    isinstance(coords, list)
-                    and len(coords) >= 2
-                    and isinstance(coords[0], int)
-                    and isinstance(coords[1], int)
-            ):
-                ann["coords"] = [coords[0], coords[1]]
-            else:
-                raise HTTPException(status_code=400, detail="coords must be [x,y] integers")
+    if coords is not None:
+        if (
+                isinstance(coords, list)
+                and len(coords) >= 2
+                and isinstance(coords[0], int)
+                and isinstance(coords[1], int)
+        ):
+            ann["coords"] = [coords[0], coords[1]]
+        else:
+            raise HTTPException(status_code=400, detail="coords must be [x,y] integers")
 
     if "id" in body and isinstance(body["id"], str) and body["id"].strip() != "":
         ann["id"] = body["id"].strip()
@@ -849,7 +853,9 @@ async def delete_editor_annotation(docId: str, pageNum: str, annId: str, user: D
 # ===== CABINET (stage 3) =====
 
 ANNOTATION_STATUSES = ("published", "draft", "deleted")
-ANNOTATION_TYPES = ("main", "comment", "general")
+# "general" ушёл: см. docs/general-migration-map.json. Строки со status='deleted'
+# могут по-прежнему иметь ann_type='general' — их никто не читает, кроме истории.
+ANNOTATION_TYPES = ("main", "comment")
 
 
 async def require_editor_read(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:

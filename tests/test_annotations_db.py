@@ -130,8 +130,8 @@ def test_page_num_stores_nonstandard_keys_as_is():
     assert db.list_page_annotations("doc1", "-01")[0]["text"] == "cover"
 
 
-def test_general_annotation_has_no_coords():
-    ann = db.upsert_annotation_db("doc1", "006", "ann-1", "general", "note")
+def test_annotation_without_coords_stores_nulls():
+    ann = db.upsert_annotation_db("doc1", "006", "ann-1", "comment", "note")
     assert ann["coordX"] is None
     assert ann["coordY"] is None
 

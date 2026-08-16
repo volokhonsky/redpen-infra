@@ -35,10 +35,12 @@ target: page_007_line003
 Main annotation.
 
 ~~~meta
-type: general
+type: comment
+id: ann-2
+target: [400, 600]
 ~~~
 
-General comment.
+Second annotation.
 """
 
 
@@ -155,7 +157,8 @@ def test_converted_annotation_json_is_valid(synthetic_project, tmp_path):
     assert isinstance(data, list) and len(data) == 2
     assert data[0]["annType"] == "main"
     assert data[0]["targetBlock"] == "page_007_line003"
-    assert data[1]["annType"] == "general"
+    assert data[1]["annType"] == "comment"
+    assert data[1]["coords"] == [400, 600]
 
 
 # ---------------------------------------------------------------------------

@@ -16,5 +16,9 @@ __pycache__/
 # уже оставил здесь 17 МБ чужих пакетов.
 node_modules/
 
+# Рабочий каталог сборок: бэкапы publish-дерева (build_website.py) и
+# офлайн-архивы (make_offline_bundle.py) — сотни мегабайт, месту в git не подлежат.
+/tmp/
+
 # macOS
 .DS_Store

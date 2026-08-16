@@ -27,7 +27,7 @@ def _fresh_db(tmp_path, monkeypatch):
 
 def test_export_writes_bare_array_files(tmp_path):
     db.upsert_annotation_db("doc1", "006", "ann-1", "comment", "hi", coord_x=1, coord_y=2)
-    db.upsert_annotation_db("doc1", "007", "ann-1", "general", "note")
+    db.upsert_annotation_db("doc1", "007", "ann-1", "main", "note", coord_x=3, coord_y=4)
     db.upsert_annotation_db("doc2", "-01", "ann-1", "comment", "cover")
 
     out = str(tmp_path / "export")

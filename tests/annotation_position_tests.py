@@ -115,15 +115,28 @@ def start_http_server(directory, port):
     return httpd
 
 def get_circle_positions(page):
-    """Get positions of all circles on the page"""
+    """Get positions of all circles on the page.
+
+    Ключевые значения — relX/relY: центр маркера относительно левого верхнего угла
+    картинки страницы. Именно они и проверяются: абсолютные centerX/centerY гуляют
+    от любой правки шапки или полей страницы, из-за чего бейзлайн устаревал сам собой
+    (последний раз — на 7.5 px по всем маркерам сразу). Абсолютные значения оставлены
+    в выдаче для отладки.
+    """
     return page.evaluate('''() => {
+        const img = document.getElementById('page-image');
+        const imgRect = img ? img.getBoundingClientRect() : { left: 0, top: 0 };
         const circles = Array.from(document.querySelectorAll('.circle'));
         return circles.map((circle, index) => {
             const rect = circle.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
             return {
                 id: circle.id || `circle-${index}`,
-                centerX: rect.left + rect.width / 2,
-                centerY: rect.top + rect.height / 2,
+                relX: centerX - imgRect.left,
+                relY: centerY - imgRect.top,
+                centerX: centerX,
+                centerY: centerY,
                 left: rect.left,
                 top: rect.top,
                 width: rect.width,
@@ -170,15 +183,13 @@ def compare_positions(actual, expected, tolerance=TOLERANCE):
             all_match = False
             continue
 
-        # Check centerX
-        if abs(act['centerX'] - exp['centerX']) > tolerance:
-            print(f"Circle {act.get('id', i)} centerX mismatch: actual={act['centerX']}, expected={exp['centerX']}")
-            all_match = False
-
-        # Check centerY
-        if abs(act['centerY'] - exp['centerY']) > tolerance:
-            print(f"Circle {act.get('id', i)} centerY mismatch: actual={act['centerY']}, expected={exp['centerY']}")
-            all_match = False
+        # Сверяем положение относительно картинки страницы; на старых бейзлайнах
+        # (без relX/relY) откатываемся к абсолютным координатам.
+        keys = ('relX', 'relY') if ('relX' in act and 'relX' in exp) else ('centerX', 'centerY')
+        for key in keys:
+            if abs(act[key] - exp[key]) > tolerance:
+                print(f"Circle {act.get('id', i)} {key} mismatch: actual={act[key]}, expected={exp[key]}")
+                all_match = False
 
     return all_match
 

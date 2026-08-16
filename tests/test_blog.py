@@ -8,6 +8,7 @@ Tests for ``scripts/blog.py`` — статический блог сайта «�
 
 import importlib.util
 import os
+import re
 
 import pytest
 
@@ -126,13 +127,28 @@ def test_blog_pages_use_relative_paths_only(tmp_path, source_dir):
     index_html = (out / "blog" / "index.html").read_text(encoding="utf-8")
     post_html = (out / "blog" / "svezhaya" / "index.html").read_text(encoding="utf-8")
 
-    # Офлайн-инвариант: никаких абсолютных путей и внешних ресурсов.
+    # Офлайн-инвариант: страница не должна ЗАГРУЖАТЬ ничего по абсолютному
+    # адресу — иначе копия с флешки полезет в сеть или отвалится.
+    #
+    # canonical и og:url при этом обязаны быть абсолютными: это метаданные для
+    # поисковика и соцсетей, браузер их не запрашивает, и офлайн они безвредны.
+    # Поэтому проверяем именно загружаемые ресурсы, а не наличие "https://".
+    resource_re = re.compile(r'<(link|script|img|iframe|source)\b([^>]*)>', re.IGNORECASE)
+    url_re = re.compile(r'(?:src|href)="([^"]+)"', re.IGNORECASE)
     for html in (index_html, post_html):
-        assert 'href="/' not in html and 'src="/' not in html
-        assert "http://" not in html and "https://" not in html
+        for tag, attrs in resource_re.findall(html):
+            if 'rel="canonical"' in attrs:      # метаданные, не ресурс
+                continue
+            for url in url_re.findall(attrs):
+                assert not url.startswith(('http://', 'https://', '//')), f"внешний ресурс: {url}"
+                assert not url.startswith('/'), f"абсолютный путь: {url}"
 
     assert 'href="../css/main.css"' in index_html
     assert 'href="../../css/main.css"' in post_html
+
+    # Метаданные — наоборот, абсолютные.
+    assert '<link rel="canonical" href="https://medinsky.net/blog/"/>' in index_html
+    assert '<link rel="canonical" href="https://medinsky.net/blog/svezhaya/"/>' in post_html
 
 
 def test_build_blog_without_posts_is_noop(tmp_path):

@@ -1,0 +1,393 @@
+/*
+ * Стили страницы разбора (<doc>/pages/<label>/index.html).
+ *
+ * Эти страницы не используют responsive.css: тот описывает SPA-просмотрщик с
+ * его #global-comment-container и войной !important. Здесь раскладка своя и
+ * целиком на медиазапросах — JS в неё не вмешивается.
+ */
+
+/* --- Навигационная цепочка -------------------------------------------- */
+
+.breadcrumbs {
+  background: #eee;
+  padding: 0.6rem 1rem;
+  font-size: 0.85rem;
+  line-height: 1.7;
+  color: #555;
+}
+
+.breadcrumbs a {
+  color: #c00;
+  text-decoration: none;
+  margin-right: 0;
+  font-weight: normal;
+}
+
+.breadcrumbs a:hover {
+  text-decoration: underline;
+}
+
+.breadcrumbs__sep {
+  color: #aaa;
+  margin: 0 0.35rem;
+}
+
+/* --- Панель страницы --------------------------------------------------- */
+
+#page-panel {
+  padding: 1.25rem;
+  background: #fff;
+  border-top: 3px solid #DC143C;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+/* main.css красит любой header в алый — панели это не касается. */
+#panel-context {
+  background: none;
+  color: inherit;
+  text-align: left;
+  font-size: inherit;
+  padding: 0 0 0.75rem;
+  border-bottom: 1px solid #eee;
+  margin-bottom: 0.75rem;
+}
+
+.panel-context__title {
+  font-size: 1.35rem;
+  margin: 0 0 0.25rem;
+  color: #222;
+}
+
+.panel-context__section {
+  margin: 0 0 0.25rem;
+  font-size: 0.9rem;
+  color: #666;
+}
+
+.panel-context__count {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #999;
+}
+
+.panel-empty {
+  color: #888;
+  font-style: italic;
+}
+
+/* --- Теги -------------------------------------------------------------- */
+
+.panel-tags {
+  margin-bottom: 1rem;
+  font-size: 0.85rem;
+}
+
+.panel-tags summary {
+  cursor: pointer;
+  color: #666;
+  padding: 0.25rem 0;
+}
+
+.panel-chips {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.panel-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 999px;
+  background: #fafafa;
+  color: #555;
+  text-decoration: none;
+  font-size: 0.8rem;
+}
+
+.panel-chip:hover {
+  border-color: #DC143C;
+  color: #DC143C;
+}
+
+.panel-chip.is-active {
+  background: #DC143C;
+  border-color: #DC143C;
+  color: #fff;
+}
+
+.panel-chip__count {
+  opacity: 0.6;
+  font-size: 0.75em;
+}
+
+/* --- Список аннотаций --------------------------------------------------- */
+
+.panel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.panel-item {
+  display: flex;
+  /* Без переноса строка тегов встаёт третьей колонкой рядом с номером и
+     текстом и сплющивает текст до одной буквы в строке. */
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 0.9rem 0.5rem;
+  border-bottom: 1px solid #f0f0f0;
+  scroll-margin-top: 1rem;
+  transition: background-color 0.15s;
+}
+
+.panel-item:last-child {
+  border-bottom: none;
+}
+
+.panel-item.is-active,
+.panel-item.is-highlighted {
+  background: #fff6f7;
+}
+
+.panel-item__num {
+  flex: 0 0 auto;
+  width: 1.7rem;
+  height: 1.7rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  font-weight: bold;
+  color: #fff;
+  background: #0000FF;
+}
+
+.panel-item--main .panel-item__num {
+  background: #DC143C;
+}
+
+.panel-item__body {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: #333;
+}
+
+.panel-item__body p:first-child {
+  margin-top: 0;
+}
+
+.panel-item__body p:last-child {
+  margin-bottom: 0;
+}
+
+.panel-item__tags {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  flex-basis: 100%;
+}
+
+.panel-item__tag {
+  font-size: 0.72rem;
+  color: #888;
+  background: #f4f4f4;
+  border-radius: 3px;
+  padding: 0.05rem 0.35rem;
+}
+
+/* Черновики (?showDrafts=1) — визуально отделены от опубликованного. */
+.panel-item.is-draft {
+  opacity: 0.85;
+  border-left: 3px dashed #888;
+  padding-left: 0.5rem;
+}
+
+.panel-item.is-draft .panel-item__num {
+  background: #888;
+}
+
+/* --- Навигация по страницам -------------------------------------------- */
+
+.page-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem;
+  background: #eee;
+}
+
+.page-nav a {
+  color: #c00;
+  text-decoration: none;
+  font-weight: bold;
+  margin-right: 0;
+}
+
+.page-nav a:hover {
+  text-decoration: underline;
+}
+
+.page-nav__index {
+  font-weight: normal;
+}
+
+/* --- Оглавление документа ----------------------------------------------- */
+
+.toc {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 3rem;
+}
+
+.toc h1 {
+  margin: 0 0 0.5rem;
+  font-size: 1.8rem;
+}
+
+.toc-intro {
+  margin: 0 0 0.25rem;
+  color: #555;
+}
+
+.toc-stats {
+  margin: 0 0 2rem;
+  color: #888;
+  font-size: 0.9rem;
+}
+
+.toc-chapter {
+  margin: 2rem 0 0.5rem;
+  font-size: 1.2rem;
+  color: #DC143C;
+  border-bottom: 1px solid #f0d0d5;
+  padding-bottom: 0.3rem;
+}
+
+.toc-section {
+  margin: 1.2rem 0 0.5rem;
+  font-size: 1rem;
+  font-weight: normal;
+  color: #444;
+}
+
+.toc-pages {
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.toc-page {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  min-width: 2.4rem;
+  justify-content: center;
+  padding: 0.25rem 0.45rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background: #fff;
+  color: #c00;
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+
+.toc-page:hover {
+  border-color: #DC143C;
+  background: #fff6f7;
+}
+
+/* Страницы без опубликованного разбора видно, но они не притягивают взгляд. */
+.toc-page--empty {
+  color: #aaa;
+  background: #fafafa;
+}
+
+.toc-page__count {
+  font-size: 0.7rem;
+  color: #fff;
+  background: #DC143C;
+  border-radius: 999px;
+  padding: 0 0.3rem;
+  line-height: 1.4;
+}
+
+/* --- Маркеры ------------------------------------------------------------ */
+
+.circle.is-highlighted {
+  outline: 3px solid #DC143C;
+  outline-offset: 2px;
+}
+
+/* --- Раскладка ---------------------------------------------------------- */
+
+/* Панель всегда под сканом, во всю ширину: основная механика чтения — поп-ап
+   при наведении поверх страницы, а список внизу это индексируемый слой и
+   способ прочитать разбор подряд. Правой колонкой он отбирал ширину у скана и
+   дублировал то, что и так показывает поп-ап. */
+#layout {
+  flex-direction: column;
+}
+
+@media (min-width: 768px) {
+  /* Длинные строки во всю ширину монитора нечитаемы. */
+  #page-panel {
+    max-width: 60rem;
+    margin: 0 auto;
+  }
+
+  .mobile-overlay {
+    display: none !important;
+  }
+}
+
+@media (max-width: 767px) {
+  /* На телефоне комментарий показывает #mobile-overlay по тапу. */
+  .comment-popup {
+    display: none !important;
+  }
+
+  .breadcrumbs {
+    font-size: 0.78rem;
+  }
+}
+
+/* --- Сворачиваемый список ------------------------------------------------ */
+
+/* Там, где есть курсор, список всегда раскрыт и выглядит обычным — заголовок
+   не нужен. На тач-устройстве он сворачивается (см. syncListWrap в
+   page-view.js), иначе под сканом высотой 700px оказывается стена текста
+   в 3000+px.
+
+   Условие — наличие курсора, а не ширина: тем же признаком пользуется JS, и
+   если развести их, появится состояние «свёрнут, но развернуть нечем». */
+.panel-list-wrap > summary {
+  display: none;
+}
+
+@media (hover: none) {
+  .panel-list-wrap > summary {
+    display: block;
+    cursor: pointer;
+    padding: 0.6rem 0.2rem;
+    font-weight: bold;
+    color: #DC143C;
+    list-style: revert;
+  }
+}

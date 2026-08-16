@@ -213,15 +213,23 @@ def render_markdown(text):
 # Страницы
 # --------------------------------------------------------------------------
 
-def _page(title, description, prefix, timestamp, body_html):
+SITE_URL = os.getenv('REDPEN_SITE_URL', 'https://medinsky.net').rstrip('/')
+
+
+def _page(title, description, prefix, timestamp, body_html, canonical_path=''):
     """
     Общая обёртка страницы блога.
 
     prefix — относительный путь до корня сайта ('' для blog/index.html,
     '../' для blog/<slug>/index.html). Абсолютных путей здесь быть не должно:
     сайт обязан открываться из любой папки.
+
+    canonical_path — путь страницы от корня сайта ('blog/', 'blog/<slug>/').
+    Только canonical и og:url обязаны быть абсолютными; всё, что страница
+    реально загружает, остаётся относительным.
     """
     up = '../' + prefix  # из blog/ до корня — ещё один уровень
+    canonical = f"{SITE_URL}/{canonical_path}"
     return f"""<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -229,6 +237,12 @@ def _page(title, description, prefix, timestamp, body_html):
   <title>{_esc(title)}</title>
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <meta name="description" content="{_esc(description, quote=True)}"/>
+  <link rel="canonical" href="{_esc(canonical, quote=True)}"/>
+  <meta property="og:type" content="article"/>
+  <meta property="og:site_name" content="Мединский.нет"/>
+  <meta property="og:title" content="{_esc(title, quote=True)}"/>
+  <meta property="og:description" content="{_esc(description, quote=True)}"/>
+  <meta property="og:url" content="{_esc(canonical, quote=True)}"/>
   <link rel="stylesheet" href="{up}css/main.css">
   <link rel="stylesheet" href="{up}css/components.css">
   <link rel="stylesheet" href="{up}css/landing.css">
@@ -320,7 +334,7 @@ def build_blog(output_dir, source_dir=None, timestamp=None, auto_header=''):
         f.write(auto_header + _page(
             'Блог — Мединский.нет',
             'Заметки проекта «Мединский.нет»: как устроен разбор единого учебника истории.',
-            '', timestamp, index_body))
+            '', timestamp, index_body, canonical_path='blog/'))
 
     # Страницы постов
     for post in posts:
@@ -339,7 +353,7 @@ def build_blog(output_dir, source_dir=None, timestamp=None, auto_header=''):
             f.write(auto_header + _page(
                 f"{post['title']} — Мединский.нет",
                 post.get('summary') or post['title'],
-                '../', timestamp, body))
+                '../', timestamp, body, canonical_path=f"blog/{post['slug']}/"))
 
     print(f"[+] Built blog: {len(posts)} post(s) in {blog_dir}")
     return posts
