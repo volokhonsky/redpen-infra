@@ -27,6 +27,16 @@
     return undefined;
   }
 
+  // annotations.js рендерит опубликованные маркеры с DOM-only префиксом
+  // "circle-" (annotations.js:124); серверный id — то, что после него.
+  // Всё, что читает id аннотации из DOM, обязано идти через это: иначе префикс
+  // уезжает в PUT /api/editor/.../<annId> и создаёт дубликат вместо правки.
+  function annIdFromDom(raw){
+    var s = (raw == null ? '' : String(raw)).trim();
+    if (s.indexOf('circle-') === 0) s = s.slice('circle-'.length);
+    return s === '' ? undefined : s;
+  }
+
   function ensureSelectedStyleInjected(){
     if (document.getElementById('redpen-editor-selected-style')) return;
     var style = document.createElement('style');
@@ -235,7 +245,9 @@
             var cy = Math.round(mr.top + mr.height/2 - ir.top);
             coords = clientToOriginal(cx, cy);
           }
-          var item = { id: el.id, annType: annType, text: (typeof ds.text==='string'?ds.text:''), coords: coords };
+          var annId = annIdFromDom(el.id);
+          if (!annId) return;
+          var item = { id: annId, annType: annType, text: (typeof ds.text==='string'?ds.text:''), coords: coords };
           if (ds.draft === 'true') item.draft = true;
           list.push(item);
         });
@@ -560,16 +572,13 @@
       if (!st || (st.ui && st.ui.annDeepLinkApplied)) return;
       var annId = getAnnDeepLinkId();
       if (!annId) { if (st.ui) st.ui.annDeepLinkApplied = true; return; }
-      // Published markers are rendered by annotations.js with a "circle-"
-      // prefixed DOM id (snapshotDomMarkersToState reads el.id verbatim),
-      // while draft markers seeded here use the raw annotation id -- match
-      // both so the deep-link works for either.
-      var found = (st.page.annotations || []).find(function(a){ return a.id === annId || a.id === 'circle-' + annId; });
+      // Ids in st.page.annotations are always server-side ids: everything that
+      // reads them off the DOM goes through annIdFromDom(), so the "circle-"
+      // prefix annotations.js uses never gets in here.
+      var found = (st.page.annotations || []).find(function(a){ return a.id === annId; });
       if (!found) return; // may still arrive via a later snapshot/draft merge
       st.ui.annDeepLinkApplied = true;
       try { window.RedPenEditor.markers.selectById(annId); } catch (e) { /* noop */ }
-      // Use the URL's annId (the true server-side id), not found.id, which
-      // may carry the DOM-only "circle-" prefix.
       var draft = { id: annId, annType: found.annType, content: found.text || '', coords: found.coords, status: found.draft ? 'draft' : 'published' };
       st.ui.selectedAnnotationId = annId;
       st.draft = Object.assign({}, st.draft, draft);
@@ -675,8 +684,7 @@
       if ((mode === 'existing' || mode === 'new') && isDirty(currentDraft, baseline)) {
         if (!confirmLoseChanges()) return;
       }
-      var rawId = (marker.id || '').trim();
-      var id = rawId === '' ? undefined : rawId;
+      var id = annIdFromDom(marker.id);
       var ds = marker.dataset || {};
       var coords = parseCoords(ds.coords);
       if (!Array.isArray(coords)) {
@@ -873,7 +881,10 @@
         var ctx = ensureContainer();
         var host = ctx.host;
         if (!host) return;
-        var el = document.getElementById(ann.id);
+        // Маркер мог быть отрисован annotations.js под префиксным DOM-id —
+        // тогда обновляем его, а не создаём второй кружок поверх (симметрично
+        // selectById ниже).
+        var el = document.getElementById(ann.id) || document.getElementById('circle-' + ann.id);
         if (!el) {
           el = document.createElement('div');
           el.id = ann.id;
@@ -1049,7 +1060,7 @@
           var isDraftFlag = status === 'draft' ? true : undefined;
           if (!found) { st.page.annotations.push({ id: idToUse, annType: annType, text: content, coords: coords, draft: isDraftFlag }); }
           else { found.id = idToUse; found.annType = annType; found.text = content; if (Array.isArray(coords)) found.coords = coords; found.draft = isDraftFlag; }
-          if (oldId && serverId && oldId !== serverId) { var oldEl = document.getElementById(oldId); if (oldEl && oldEl.parentNode) oldEl.parentNode.removeChild(oldEl); }
+          if (oldId && serverId && oldId !== serverId) { var oldEl = document.getElementById(oldId) || document.getElementById('circle-' + oldId); if (oldEl && oldEl.parentNode) oldEl.parentNode.removeChild(oldEl); }
           window.RedPenEditor.markers.upsert({ id: idToUse, annType: annType, text: content, coords: coords, draft: isDraftFlag });
           window.RedPenEditor.markers.selectById(idToUse);
           st.ui.selectedAnnotationId = idToUse;
