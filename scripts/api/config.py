@@ -69,9 +69,16 @@ LOG_DIR: str = os.getenv("LOG_DIR", DEFAULT_LOG_DIR)
 CORS_ALLOW_ORIGINS_RAW: str = os.getenv("CORS_ALLOW_ORIGINS", DEFAULT_CORS_ENV)
 CORS_ALLOW_ORIGINS = _parse_cors_origins(CORS_ALLOW_ORIGINS_RAW)
 
-# Editor access tokens: "token1:username1,token2:username2" -> {token: username}.
-# Empty/missing -> {} (token login disabled).
-EDITOR_TOKENS: Dict[str, str] = _parse_editor_tokens(os.getenv("EDITOR_TOKENS", ""))
+# Agent access tokens: "token1:agentname1,token2:agentname2" -> {token: name}.
+# Empty/missing -> {} (token login disabled). Это вход для агентов: правки
+# агента ничем не хуже человеческих, но авторство у них другой природы —
+# за ними стоит прогон с версией промпта (таблица agent_runs).
+# EDITOR_TOKENS — прежнее имя той же переменной, читается для совместимости.
+AGENT_TOKENS: Dict[str, str] = _parse_editor_tokens(
+    os.getenv("AGENT_TOKENS", "") or os.getenv("EDITOR_TOKENS", "")
+)
+#: Deprecated alias, оставлен чтобы не ломать существующие вызовы.
+EDITOR_TOKENS: Dict[str, str] = AGENT_TOKENS
 
 # SQLite database for users/sessions/allowlist (stage 1). Deliberately NOT
 # under STORAGE_DIR: that path is the mounted redpen-publish working copy, and
@@ -79,10 +86,19 @@ EDITOR_TOKENS: Dict[str, str] = _parse_editor_tokens(os.getenv("EDITOR_TOKENS", 
 DEFAULT_DB_PATH = "/var/redpen-db/redpen.db"
 DB_PATH: str = os.getenv("DB_PATH", DEFAULT_DB_PATH)
 
-# Emails granted the admin role unconditionally (comma-separated).
-ADMIN_EMAILS: List[str] = [
-    e.strip() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()
-]
+# Перец для хеширования идентификатора Google (`sub`). Живёт только здесь, в
+# окружении сервера, и НЕ попадает ни в БД, ни в её бэкапы: утечка бэкапа даёт
+# непрозрачные хеши, которые без содействия Google ни к кому не привязать.
+#
+# Пустое значение — это НЕ «выключено»: без перца хеш вырождается в обычный
+# sha256 от `sub`, поэтому вход через Google в таком случае отвечает 503.
+# Потеря перца = все участники перерегистрируются по инвайтам; цена известна.
+IDENTITY_PEPPER: str = os.getenv("IDENTITY_PEPPER", "")
+
+# Одноразовый код для выдачи первой роли admin на пустой базе. Список
+# администраторов по email намеренно упразднён: он хранил бы личности в
+# открытом виде в окружении прода, рядом с бэкапами БД.
+BOOTSTRAP_INVITE_CODE: str = os.getenv("BOOTSTRAP_INVITE_CODE", "")
 
 # Google Identity Services OAuth client id (audience for ID-token verification).
 # Empty -> POST /api/auth/google responds 503 (not configured).

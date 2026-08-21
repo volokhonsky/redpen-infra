@@ -1,5 +1,20 @@
 /* Main CSS for RedPen application */
 
+/* Палитра категорий аннотаций — шесть приёмов пропаганды + «Прочее».
+   Обоснование и проверка контраста: docs/annotation-classification-2026-08.md.
+   Значения продублированы в scripts/annotation_categories.py и
+   templates/js/redpen-categories.js — маркеры на скане красятся из JS. */
+:root {
+  --cat-omission:  #1B4F9C;  /* 1. Умолчание */
+  --cat-language:  #00695C;  /* 2. Обтекаемый язык */
+  --cat-sides:     #C08A00;  /* 3. Двойной стандарт */
+  --cat-evidence:  #6A1B9A;  /* 4. Нечем подтвердить */
+  --cat-apparatus: #C2185B;  /* 5. Ответ подсказан заранее */
+  --cat-today:     #8E1B14;  /* 6. История под сегодняшнюю политику */
+  --cat-other:     #546E7A;  /* 0. Прочее */
+  --cat-sides-ink: #241C10;  /* тёмная цифра на янтарном */
+}
+
 * {
   box-sizing: border-box;
 }

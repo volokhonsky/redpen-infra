@@ -1,0 +1,36 @@
+#!/bin/sh
+# Ежедневный бэкап боевой SQLite. Ставится в /etc/cron.daily/redpen-db-backup.
+#
+# История: прежняя версия молча не работала с 2026-07-09. `VACUUM INTO` в SQLite
+# ОТКАЗЫВАЕТСЯ писать в существующий файл — первый запуск создал backup.db, все
+# следующие падали на этой строке. `set -e` не было, ошибка никуда не уходила, и
+# каталог с бэкапами оставался пустым при живой базе на 6,4 МБ.
+#
+# Отсюда два правила этого скрипта: цель удаляется перед VACUUM, и любая ошибка
+# роняет весь скрипт (cron пришлёт вывод root'у).
+set -eu
+
+DEST=/root/backups/redpen-db
+COMPOSE=/root/apps/redpen/infra/docker-compose.yml
+KEEP_DAYS=14
+STAMP=$(date +%Y%m%d)
+
+mkdir -p "$DEST"
+CID=$(docker compose -f "$COMPOSE" ps -q api)
+[ -n "$CID" ] || { echo "redpen-db-backup: контейнер api не найден" >&2; exit 1; }
+
+# Временное имя, чтобы недописанный файл нельзя было принять за готовый бэкап.
+docker exec "$CID" sh -c '
+  set -eu
+  rm -f /var/redpen-db/backup.tmp.db
+  python -c "import sqlite3; sqlite3.connect(\"/var/redpen-db/redpen.db\").execute(\"VACUUM INTO '\''/var/redpen-db/backup.tmp.db'\''\")"
+'
+docker cp "$CID":/var/redpen-db/backup.tmp.db "$DEST/redpen-$STAMP.db"
+docker exec "$CID" rm -f /var/redpen-db/backup.tmp.db
+
+# Проверяем, что получилось нечто осмысленное, а не пустышка.
+SIZE=$(wc -c < "$DEST/redpen-$STAMP.db")
+[ "$SIZE" -gt 1000000 ] || { echo "redpen-db-backup: подозрительно мал ($SIZE б)" >&2; exit 1; }
+
+find "$DEST" -name 'redpen-*.db' -mtime +$KEEP_DAYS -delete
+echo "redpen-db-backup: $DEST/redpen-$STAMP.db ($SIZE б)"

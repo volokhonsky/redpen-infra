@@ -218,7 +218,11 @@ def test_nonstandard_page_keys_support_full_crud_and_publish(client, page_key):
     assert updated.status_code == 200
 
     published = _published_annotations(doc, page_key)
-    assert published == [{"id": ann_id, "text": "updated", "annType": "main", "coords": [2, 2]}]
+    assert published == [{
+        "id": ann_id, "text": "updated", "annType": "main", "coords": [2, 2],
+        # Категория есть у каждой аннотации; по умолчанию — «Прочее».
+        "category": "other",
+    }]
 
     deleted = client.delete(f"/api/editor/{doc}/{page_key}/{ann_id}")
     assert deleted.status_code == 200
@@ -390,10 +394,11 @@ def test_startup_self_heals_publish_dir():
 
 
 def test_viewer_delete_editor_annotation_is_forbidden(client):
-    # A fresh Google-login user defaults to the viewer role (no allowlist entry).
-    # Email must be unique across the whole test session (users.email UNIQUE).
+    # Роль приезжает с приглашением; система знает про участника только хеш
+    # его Google `sub` (docs/anonymity-model.md).
     c = TestClient(main.app)
-    viewer_user = db.get_or_create_user_google("sub-viewer-test-api", "viewer-test-api@example.com", "Viewer", None)
+    viewer_user = db.login_with_google_sub(
+        "sub-viewer-test-api", invite_code=db.create_invite(role="viewer")[0])
     session_id = db.create_session(viewer_user["id"])
     c.cookies.set("redpen_session", session_id)
 
@@ -734,8 +739,8 @@ def test_editor_get_draft_visibility_matrix(role):
         c = TestClient(main.app)
     elif role == "viewer":
         c = TestClient(main.app)
-        viewer_user = db.get_or_create_user_google(
-            f"sub-viewer-draft-{page}", f"viewer-draft-{page}@example.com", "Viewer", None
+        viewer_user = db.login_with_google_sub(
+            f"sub-viewer-draft-{page}", invite_code=db.create_invite(role="viewer")[0]
         )
         c.cookies.set("redpen_session", db.create_session(viewer_user["id"]))
     else:
@@ -891,3 +896,97 @@ def test_stale_client_page_sha_returns_409_on_put(client):
     )
     assert r.status_code == 409
     assert r.json()["detail"] == "conflict"
+
+
+# ===== КАТЕГОРИИ =====
+# Категория — своё поле, ровно одно на аннотацию, по умолчанию «Прочее».
+# Теги описывают, что не так с фрагментом; категория — каким одним приёмом.
+
+
+def test_new_annotation_defaults_to_other(client):
+    doc, page = "medinsky11klass", "401"
+    created = client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "x", "coords": [1, 1]},
+    ).json()
+    published = _published_annotations(doc, "401")[0]
+    assert published["category"] == "other"
+    # Дефолтную категорию тегом не зеркалим — она стояла бы на всех сразу.
+    assert "tags" not in published
+    assert created["published"] is True
+
+
+def test_post_accepts_category_and_mirrors_it_as_tag(client):
+    doc, page = "medinsky11klass", "402"
+    client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "x", "coords": [1, 1],
+              "category": "today", "tags": ["anachronism"]},
+    )
+    published = _published_annotations(doc, "402")[0]
+    assert published["category"] == "today"
+    assert published["tags"] == ["anachronism", "cat:today"]
+
+
+def test_put_without_category_preserves_it(client):
+    """У редактора нет UI категорий; обычное сохранение текста не должно
+    сбрасывать категорию в «Прочее»."""
+    doc, page = "medinsky11klass", "403"
+    ann_id = client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "x", "coords": [1, 1], "category": "sides"},
+    ).json()["id"]
+
+    client.put(
+        f"/api/editor/{doc}/{page}/{ann_id}",
+        json={"annType": "comment", "text": "edited", "coords": [2, 2]},
+    )
+    assert _published_annotations(doc, "403")[0]["category"] == "sides"
+
+
+def test_put_can_change_category(client):
+    doc, page = "medinsky11klass", "404"
+    ann_id = client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "x", "coords": [1, 1], "category": "sides"},
+    ).json()["id"]
+
+    client.put(
+        f"/api/editor/{doc}/{page}/{ann_id}",
+        json={"annType": "comment", "text": "x", "coords": [1, 1], "category": "omission"},
+    )
+    published = _published_annotations(doc, "404")[0]
+    assert published["category"] == "omission"
+    assert published["tags"] == ["cat:omission"]
+
+
+def test_unknown_category_is_rejected(client):
+    doc, page = "medinsky11klass", "405"
+    r = client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "x", "coords": [1, 1], "category": "propaganda"},
+    )
+    assert r.status_code == 400
+    assert "propaganda" in r.json()["detail"]
+
+
+def test_cat_tag_cannot_be_authored(client):
+    """Зеркало производное. Если бы `cat:*` принимался тегом, поле и тег
+    разъехались бы и снова встал бы вопрос, какой из них главный."""
+    doc, page = "medinsky11klass", "406"
+    r = client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "x", "coords": [1, 1], "tags": ["cat:today"]},
+    )
+    assert r.status_code == 400
+    assert "category" in r.json()["detail"]
+
+
+def test_editor_get_exposes_category(client):
+    doc, page = "medinsky11klass", "407"
+    client.post(
+        f"/api/editor/{doc}/{page}",
+        json={"annType": "comment", "text": "x", "coords": [1, 1], "category": "evidence"},
+    )
+    ann = client.get(f"/api/editor/{doc}/{page}").json()["annotations"][0]
+    assert ann["category"] == "evidence"

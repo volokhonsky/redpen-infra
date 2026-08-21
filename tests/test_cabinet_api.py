@@ -16,43 +16,27 @@ import db  # noqa: E402
 import main  # noqa: E402
 
 
+from _auth_helpers import anon, login, with_csrf  # noqa: E402
+
+
 @pytest.fixture(autouse=True)
 def _google_configured(monkeypatch):
     monkeypatch.setattr(config, "GOOGLE_CLIENT_ID", "test-client-id.apps.googleusercontent.com")
-    monkeypatch.setattr(config, "ADMIN_EMAILS", [])
+    monkeypatch.setattr(config, "BOOTSTRAP_INVITE_CODE", "")
 
 
-def _mock_verify(monkeypatch, claims):
-    monkeypatch.setattr(main, "verify_google_token", lambda credential: claims)
-
-
-def _claims(email, sub=None):
-    return {"sub": sub or ("sub-" + email), "email": email, "email_verified": True, "name": email.split("@")[0], "picture": None}
-
-
-def _login_google(monkeypatch, email, admin=False) -> TestClient:
-    if admin:
-        admins = list(config.ADMIN_EMAILS) + [email]
-        monkeypatch.setattr(config, "ADMIN_EMAILS", admins)
-    _mock_verify(monkeypatch, _claims(email))
-    c = TestClient(main.app)
-    r = c.post("/api/auth/google", json={"credential": "fake"})
-    assert r.status_code == 200, r.text
-    return c
+def _login_google(monkeypatch, sub, admin=False) -> TestClient:
+    return login(monkeypatch, sub, role="admin" if admin else "viewer", csrf=False)
 
 
 def _with_csrf(c: TestClient) -> TestClient:
-    r = c.get("/api/auth/csrf")
-    assert r.status_code == 200
-    c.headers.update({"X-CSRF-Token": r.json()["csrfToken"]})
-    return c
+    return with_csrf(c)
 
 
-def _editor(monkeypatch, email):
-    admin = _login_google(monkeypatch, "boss-" + email, admin=True)
-    _with_csrf(admin)
-    admin.post("/api/admin/allowlist", json={"email": email, "role": "editor"})
-    return _login_google(monkeypatch, email)
+def _editor(monkeypatch, sub) -> TestClient:
+    """Клиент с ролью editor. Роль приезжает с приглашением, а не со списка
+    email-ов: списка больше нет (docs/anonymity-model.md)."""
+    return login(monkeypatch, sub, role="editor")
 
 
 # ---------------------------------------------------------------------------
@@ -320,3 +304,58 @@ def test_admin_users_admin_200_no_google_sub(monkeypatch):
     users = r.json()["users"]
     assert len(users) >= 1
     assert all("googleSub" not in u for u in users)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/annotations -- фильтры по категории и её источнику
+# ---------------------------------------------------------------------------
+
+
+def _seed_categorized(doc_id):
+    """Три аннотации с одинаковой категорией 'other', но разной судьбой."""
+    db.upsert_annotation_db(doc_id, "006", "ann-untouched", "comment", "никто не смотрел",
+                            coord_x=1, coord_y=1, action="create")
+    db.upsert_annotation_db(doc_id, "006", "ann-by-human", "comment", "человек выбрал Прочее",
+                            coord_x=2, coord_y=2, action="create",
+                            category="other", author_id=1)
+    db.upsert_annotation_db(doc_id, "006", "ann-by-agent", "comment", "решение агента",
+                            coord_x=3, coord_y=3, action="create",
+                            category="today", category_source="agent", author_id=2)
+
+
+def test_annotations_expose_category_source(monkeypatch):
+    doc = "catdoc-expose"
+    _seed_categorized(doc)
+    c = _editor(monkeypatch, "cat-expose@example.com")
+    r = c.get(f"/api/annotations?docId={doc}")
+    assert r.status_code == 200, r.text
+    by_id = {item["id"] if "id" in item else item["annId"]: item for item in r.json()["items"]}
+    assert by_id["ann-untouched"]["categorySource"] == "default"
+    assert by_id["ann-by-human"]["categorySource"] == "human"
+    assert by_id["ann-by-agent"]["categorySource"] == "agent"
+
+
+def test_filter_by_category_source_separates_unclassified_from_other(monkeypatch):
+    doc = "catdoc-filter"
+    _seed_categorized(doc)
+    c = _editor(monkeypatch, "cat-filter@example.com")
+
+    # По значению категории «Прочее» неотличимо: две аннотации.
+    r = c.get(f"/api/annotations?docId={doc}&category=other")
+    assert r.status_code == 200
+    assert r.json()["total"] == 2
+
+    # По источнику — ровно одна неразобранная. Это и есть очередь приёмки.
+    r = c.get(f"/api/annotations?docId={doc}&categorySource=default")
+    assert r.json()["total"] == 1
+    assert r.json()["items"][0]["annId"] == "ann-untouched"
+
+    r = c.get(f"/api/annotations?docId={doc}&categorySource=agent")
+    assert r.json()["total"] == 1
+    assert r.json()["items"][0]["annId"] == "ann-by-agent"
+
+
+def test_bad_category_and_source_are_rejected(monkeypatch):
+    c = _editor(monkeypatch, "cat-bad@example.com")
+    assert c.get("/api/annotations?category=nonsense").status_code == 400
+    assert c.get("/api/annotations?categorySource=oracle").status_code == 400

@@ -77,15 +77,33 @@
     return me();
   }
 
-  async function loginWithGoogle(credential){
+  // invite — одноразовый код приглашения. Нужен только при первом входе:
+  // круг участников закрыт, и попасть в него можно лишь по коду, переданному
+  // вне системы (docs/anonymity-model.md). Дальше вход идёт без него.
+  async function loginWithGoogle(credential, invite){
+    const body = { credential: credential };
+    if (invite) body.invite = invite;
     const res = await fetch(apiBase('/api/auth/google'), {
       method: 'POST',
       headers: withJsonHeaders(),
-      body: JSON.stringify({ credential: credential }),
+      body: JSON.stringify(body),
       credentials: 'include',
     });
+    if (res.status === 403) throw new Error('invite_required');
     if (!res.ok) throw new Error('google_login_failed');
     return me();
+  }
+
+  async function setDisplayName(displayName){
+    const csrf = await getCsrf();
+    const res = await fetch(apiBase('/api/auth/display-name'), {
+      method: 'POST',
+      headers: withJsonHeaders({ 'X-CSRF-Token': csrf.csrfToken }),
+      body: JSON.stringify({ displayName: displayName }),
+      credentials: 'include',
+    });
+    if (!res.ok) throw new Error('display_name_failed');
+    return res.json();
   }
 
   async function logout(){
@@ -124,7 +142,9 @@
   }
 
   // onLogin(user) on success, onLogin(null, error) on failure.
-  function renderGoogleButton(el, onLogin){
+  // getInvite() — необязательный колбэк, отдающий введённый код приглашения;
+  // он нужен только тому, кто входит впервые.
+  function renderGoogleButton(el, onLogin, getInvite){
     loadGis(function(){
       try {
         if (!window.google || !window.google.accounts || !window.google.accounts.id) return;
@@ -133,7 +153,8 @@
           client_id: window.REDPEN_GOOGLE_CLIENT_ID,
           callback: async function(credentialResponse){
             try {
-              var user = await loginWithGoogle(credentialResponse.credential);
+              var invite = getInvite ? getInvite() : null;
+              var user = await loginWithGoogle(credentialResponse.credential, invite);
               if (onLogin) onLogin(user);
             } catch (error) {
               console.error('[RedPenAuth] Google login error:', error);
@@ -154,6 +175,7 @@
     me: me,
     loginWithToken: loginWithToken,
     loginWithGoogle: loginWithGoogle,
+    setDisplayName: setDisplayName,
     logout: logout,
     loadGis: loadGis,
     renderGoogleButton: renderGoogleButton,

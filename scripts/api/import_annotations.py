@@ -24,6 +24,12 @@ import secrets
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+# Общий модуль категорий лежит в scripts/, а на sys.path у контейнера только
+# scripts/api (см. scripts/api/Dockerfile). Репозиторий скопирован целиком,
+# поэтому каталог достаточно добавить руками.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import annotation_categories  # noqa: E402
 import config
 import db
 
@@ -105,6 +111,15 @@ def import_file(doc_id: str, page_num: str, path: str, overwrite: bool, dry_run:
 
         # Absent "tags" leaves an existing annotation's tags alone; unknown or
         # reserved tags abort the file rather than land half-imported.
+        # Категория: как и теги, отсутствие ключа = «не трогать», чтобы повторный
+        # импорт не сбрасывал уже проставленные категории в «Прочее».
+        category = None
+        if "category" in ann:
+            try:
+                category = annotation_categories.normalize_category(ann["category"])
+            except annotation_categories.CategoryError as exc:
+                raise SystemExit(f"{path}: {exc}")
+
         tags = None
         if "tags" in ann:
             try:
@@ -132,6 +147,11 @@ def import_file(doc_id: str, page_num: str, path: str, overwrite: bool, dry_run:
                 author_id=None,
                 action="import",
                 tags=tags,
+                category=category,
+                # Импорт идёт из конвейера агента-аннотатора, значит категория
+                # в файле — машинное решение и ждёт приёмки, а не решение
+                # человека. None здесь означало бы «человек», см. db.upsert.
+                category_source="agent" if category is not None else None,
             )
         counts["imported"] += 1
 

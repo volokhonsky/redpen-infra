@@ -36,7 +36,10 @@ def test_export_writes_bare_array_files(tmp_path):
 
     with open(os.path.join(out, "doc1", "annotations", "page_006.json"), encoding="utf-8") as f:
         data = json.load(f)
-    assert data == [{"id": "ann-1", "text": "hi", "annType": "comment", "coords": [1, 2]}]
+    assert data == [{
+        "id": "ann-1", "text": "hi", "annType": "comment", "coords": [1, 2],
+        "category": "other",
+    }]
 
     # tempfile.mkstemp() defaults to mode 0600 (owner-only); exported files
     # must stay world-readable (e.g. once committed/synced elsewhere).

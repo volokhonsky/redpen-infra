@@ -167,12 +167,20 @@
   font-size: 0.85rem;
   font-weight: bold;
   color: #fff;
-  background: #0000FF;
+  background: var(--cat-other);
 }
 
-.panel-item--main .panel-item__num {
-  background: #DC143C;
-}
+/* Цвет номера — категория приёма (см. docs/annotation-classification-2026-08.md).
+   Раньше он шёл от annType: main — малиновый, comment — синий. Размер, форма и
+   всё остальное не изменились. Янтарный — единственный светлый в палитре,
+   поэтому у него тёмная цифра. */
+.panel-item--cat-omission  .panel-item__num { background: var(--cat-omission); }
+.panel-item--cat-language  .panel-item__num { background: var(--cat-language); }
+.panel-item--cat-sides     .panel-item__num { background: var(--cat-sides); color: var(--cat-sides-ink); }
+.panel-item--cat-evidence  .panel-item__num { background: var(--cat-evidence); }
+.panel-item--cat-apparatus .panel-item__num { background: var(--cat-apparatus); }
+.panel-item--cat-today     .panel-item__num { background: var(--cat-today); }
+.panel-item--cat-other     .panel-item__num { background: var(--cat-other); }
 
 .panel-item__body {
   flex: 1 1 0;

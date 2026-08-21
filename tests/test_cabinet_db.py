@@ -18,14 +18,18 @@ import db  # noqa: E402
 def _fresh_db(tmp_path, monkeypatch):
     db_path = os.path.join(tmp_path, "redpen.db")
     monkeypatch.setattr(config, "DB_PATH", db_path)
+    monkeypatch.setattr(config, "IDENTITY_PEPPER", "unit-test-pepper")
+    monkeypatch.setattr(config, "BOOTSTRAP_INVITE_CODE", "")
     db.init_db()
     yield
     db._conn.close()
     db._conn = None
 
 
-def _user(email, name="Alice", role="editor"):
-    return db.get_or_create_user_google(f"sub-{email}", email, name, None)
+def _user(sub, name="Alice", role="editor"):
+    """Участник, опознаваемый только хешем `sub` и своим псевдонимом."""
+    user = db.login_with_google_sub(sub, invite_code=db.create_invite(role=role)[0])
+    return db.set_display_name(user["id"], name)
 
 
 # ---------------------------------------------------------------------------
@@ -33,26 +37,31 @@ def _user(email, name="Alice", role="editor"):
 # ---------------------------------------------------------------------------
 
 
-def test_list_annotations_includes_author_name_and_email():
-    u = _user("author@example.com", name="Author One")
+def test_list_annotations_shows_the_author_pseudonym():
+    u = _user("sub-author", name="Author One")
     db.upsert_annotation_db("doc1", "006", "a1", "comment", "hello", author_id=u["id"])
 
     items = db.list_annotations(doc_id="doc1")
     assert len(items) == 1
     assert items[0]["authorName"] == "Author One"
-    assert items[0]["authorEmail"] == "author@example.com"
+
+
+def test_list_annotations_never_exposes_an_email():
+    # Поле authorEmail упразднено вместе с самим хранением email.
+    u = _user("sub-author-2", name="Author Two")
+    db.upsert_annotation_db("doc1", "006", "a1", "comment", "hello", author_id=u["id"])
+    assert "authorEmail" not in db.list_annotations(doc_id="doc1")[0]
 
 
 def test_list_annotations_author_fields_null_for_imported():
     db.upsert_annotation_db("doc1", "006", "a1", "comment", "hello", author_id=None)
     items = db.list_annotations(doc_id="doc1")
     assert items[0]["authorName"] is None
-    assert items[0]["authorEmail"] is None
 
 
 def test_list_annotations_filters_by_doc_page_type_status_author():
-    u1 = _user("u1@example.com")
-    u2 = _user("u2@example.com")
+    u1 = _user("sub-u1")
+    u2 = _user("sub-u2")
     db.upsert_annotation_db("doc1", "006", "a1", "comment", "x", author_id=u1["id"])
     db.upsert_annotation_db("doc1", "007", "a2", "main", "y", author_id=u2["id"], status="draft")
     db.upsert_annotation_db("doc2", "006", "a3", "comment", "z", author_id=u1["id"])
@@ -97,7 +106,7 @@ def test_count_annotations_matches_filters():
 
 
 def test_list_history_filters_and_order():
-    u = _user("hist@example.com", name="Historian")
+    u = _user("sub-hist", name="Historian")
     db.upsert_annotation_db("doc1", "006", "a1", "comment", "v1", author_id=u["id"], action="create")
     db.upsert_annotation_db("doc1", "006", "a1", "comment", "v2", author_id=u["id"], action="update")
     db.soft_delete_annotation("doc1", "006", "a1", author_id=u["id"])
@@ -138,12 +147,12 @@ def test_get_history_record_returns_snapshot_or_none():
 # ---------------------------------------------------------------------------
 
 
-def test_list_users_excludes_google_sub():
-    _user("someone@example.com", name="Someone")
+def test_list_users_exposes_no_google_identity():
+    _user("sub-someone", name="Someone", role="viewer")
     users = db.list_users()
     assert len(users) == 1
-    assert "googleSub" not in users[0]
-    assert users[0]["email"] == "someone@example.com"
+    assert set(users[0]) == {"id", "kind", "displayName", "role", "createdAt", "lastLoginAt"}
+    assert users[0]["displayName"] == "Someone"
     assert users[0]["role"] == "viewer"
 
 

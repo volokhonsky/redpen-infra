@@ -28,13 +28,17 @@
     (SQLite: users/sessions/annotations/history), `publisher.py` (рендер статики
     из БД), `import_annotations.py` / `export_annotations.py` (миграции данных);
     см. `scripts/api/README.md`
-- `templates/` — `index.html`, `document_index.html`, `cabinet/` (страница
-  кабинета), `css/`, `js/` (просмотрщик, редактор, `redpen-auth.js`), `favicon.svg`
+- `templates/` — `document_index.html` (старый SPA, сегодня носитель режима
+  редактора), `cabinet/` (страница кабинета), `css/`, `js/` (просмотрщик
+  `page-view.js`, старый SPA, редактор, `redpen-auth.js`), `favicon.svg`.
+  Постраничные страницы и оглавление генерирует `scripts/page_html.py`
 - `tests/` — pytest-набор и опциональные e2e (см. `tests/README.md`)
 
 > Историческая заметка: отдельный модуль `generate_annotations.py` удалён при
-> переходе на аннотации в Markdown. Аннотации теперь пишутся вручную и
-> конвертируются в JSON (`annotation_converter.py` / `build_website.py`).
+> переходе на аннотации в Markdown. Актуальный конвейер другой: черновики пишет
+> агент-аннотатор (`docs/annotation-agent-prompt.md`), канон — SQLite, правки
+> редактора идут через API. Конвертация md→JSON в `build_website.py` по
+> умолчанию выключена (флаг `--annotations-from-md`), см. корневой `CLAUDE.md`.
 
 ## Контент (`redpen-content`)
 

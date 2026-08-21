@@ -22,6 +22,12 @@ try:
 except Exception:
     pass
 
+# Общий модуль категорий лежит в scripts/, а на sys.path у контейнера только
+# scripts/api (см. scripts/api/Dockerfile). Репозиторий скопирован целиком,
+# поэтому каталог достаточно добавить руками.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import annotation_categories  # noqa: E402
 import config
 import db
 import publisher
@@ -163,12 +169,12 @@ async def require_user(request: Request) -> Dict[str, Any]:
         "sessionId": session["id"],
         "csrf": session["csrf"],
         "userId": user["id"],
-        "email": user["email"],
-        "name": user["name"],
-        "pictureUrl": user["pictureUrl"],
+        "kind": user["kind"],
+        "displayName": user["displayName"],
         "role": user["role"],
-        # username: kept for the token-login/legacy frontend shape.
-        "username": user["name"] or user["email"] or str(user["id"]),
+        # username: подпись актора в интерфейсе. Псевдоним, а не имя из Google —
+        # его там больше нет (docs/anonymity-model.md).
+        "username": user["displayName"] or f"Участник №{user['id']}",
     }
 
 
@@ -185,11 +191,10 @@ async def get_optional_user(request: Request) -> Optional[Dict[str, Any]]:
         "sessionId": session["id"],
         "csrf": session["csrf"],
         "userId": user["id"],
-        "email": user["email"],
-        "name": user["name"],
-        "pictureUrl": user["pictureUrl"],
+        "kind": user["kind"],
+        "displayName": user["displayName"],
         "role": user["role"],
-        "username": user["name"] or user["email"] or str(user["id"]),
+        "username": user["displayName"] or f"Участник №{user['id']}",
     }
 
 
@@ -202,10 +207,24 @@ async def require_csrf(request: Request, user: Dict[str, str] = Depends(require_
     return user
 
 
+#: Лестница ролей: viewer < editor < reviewer < admin. `reviewer` появился
+#: тогда, когда основную массу текста стали производить агенты: публикация —
+#: единственное по-настоящему доверенное действие, и его отделяют от «писать».
+EDITOR_ROLES = ("editor", "reviewer", "admin")
+REVIEWER_ROLES = ("reviewer", "admin")
+
+
 async def require_editor(user: Dict[str, Any] = Depends(require_csrf)) -> Dict[str, Any]:
-    """FastAPI dependency: authenticated + CSRF-checked + editor/admin role."""
-    if user.get("role") not in ("editor", "admin"):
+    """FastAPI dependency: authenticated + CSRF-checked + editor role or above."""
+    if user.get("role") not in EDITOR_ROLES:
         raise HTTPException(status_code=403, detail="editor role required")
+    return user
+
+
+async def require_reviewer(user: Dict[str, Any] = Depends(require_csrf)) -> Dict[str, Any]:
+    """FastAPI dependency: authenticated + CSRF-checked + reviewer role or above."""
+    if user.get("role") not in REVIEWER_ROLES:
+        raise HTTPException(status_code=403, detail="reviewer role required")
     return user
 
 
@@ -286,6 +305,25 @@ def _parse_annotation_body(body: Dict[str, Any]) -> Dict[str, Any]:
             ann["tags"] = db.normalize_tags(body["tags"])
         except db.TagError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+
+    # Категория — ровно одна на аннотацию, отдельным полем. Отсутствие ключа =
+    # «не трогать» (см. _resolve_category), null = сбросить в 'other'.
+    if "category" in body:
+        try:
+            ann["category"] = annotation_categories.normalize_category(body["category"])
+        except annotation_categories.CategoryError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    # Резюме правки — как в Википедии: одна строка «что и зачем изменено»,
+    # видимая в истории комментария и в ленте изменений. Необязательное:
+    # заставлять писать его на каждое движение маркера не за что.
+    if "summary" in body and body["summary"] is not None:
+        summary = str(body["summary"]).strip()
+        if len(summary) > MAX_SUMMARY_LENGTH:
+            raise HTTPException(
+                status_code=400,
+                detail=f"summary must be at most {MAX_SUMMARY_LENGTH} characters")
+        ann["summary"] = summary or None
 
     return ann
 
@@ -370,13 +408,14 @@ async def login(request: Request, response: Response):
         logger.warning("login: invalid token (length=%d)", len(token))
         raise HTTPException(status_code=401, detail="invalid token")
 
-    # Dev-fallback: token users always get the editor role (see db.get_or_create_user_token).
-    user = db.get_or_create_user_token(username)
+    # Вход по токену — это вход агента: его правки ничем не хуже человеческих,
+    # но авторство у них другой природы (за ними стоит прогон, agent_runs).
+    user = db.get_or_create_agent_actor(username)
     session_id = db.create_session(user["id"])
     _set_session_cookie(response, session_id)
 
-    logger.info("login: success username=%s userId=%s", username, user["id"])
-    return {"userId": user["id"], "username": username}
+    logger.info("login: success agent=%s userId=%s", username, user["id"])
+    return {"userId": user["id"], "username": username, "kind": user["kind"]}
 
 
 @app.get("/api/auth/csrf")
@@ -391,14 +430,13 @@ async def get_csrf(user: Dict[str, Any] = Depends(require_user)):
 @app.get("/api/auth/me")
 async def get_me(user: Dict[str, Any] = Depends(require_user)):
     """Return current user info from session"""
-    logger.info("auth/me: success username=%s role=%s", user["username"], user["role"])
+    logger.info("auth/me: success userId=%s role=%s", user["userId"], user["role"])
     return {
         "userId": user["userId"],
-        "email": user["email"],
-        "name": user["name"],
-        "picture": user["pictureUrl"],
         "role": user["role"],
-        # username: kept for the existing frontend shape (token + Google logins alike).
+        "kind": user["kind"],
+        "displayName": user["displayName"],
+        # username: подпись актора в интерфейсе; email и аватара больше нет.
         "username": user["username"],
     }
 
@@ -434,71 +472,141 @@ async def auth_google(request: Request, response: Response):
         logger.warning("google auth: token verification failed: %s", type(e).__name__)
         raise HTTPException(status_code=401, detail="invalid credential")
 
-    if not claims.get("email_verified"):
-        logger.warning("google auth: email not verified")
-        raise HTTPException(status_code=401, detail="email not verified")
-
+    # Из токена берётся ровно `sub`. Email, имя и аватар не читаются и никуда
+    # не сохраняются: у изъятого сервера должно быть нечего забрать.
     sub = claims.get("sub")
-    email = claims.get("email")
-    if not sub or not email:
+    if not sub:
         raise HTTPException(status_code=401, detail="invalid credential")
-    name = claims.get("name") or email.split("@")[0]
-    picture = claims.get("picture")
 
-    user = db.get_or_create_user_google(sub, email, name, picture)
+    invite = body.get("invite") if isinstance(body, dict) else None
+    try:
+        user = db.login_with_google_sub(sub, invite_code=invite)
+    except db.IdentityError:
+        logger.error("google auth: IDENTITY_PEPPER is not configured")
+        raise HTTPException(status_code=503, detail="identity is not configured")
+
+    if user is None:
+        # Не «неверный пароль», а «доступ не выдан»: круг участников закрыт, и
+        # вход в него — только по коду, переданному вне системы.
+        logger.info("google auth: rejected, no account and no valid invite")
+        raise HTTPException(status_code=403, detail="invite required")
+
     session_id = db.create_session(user["id"])
     _set_session_cookie(response, session_id)
 
     logger.info("google auth: success userId=%s role=%s", user["id"], user["role"])
     return {
         "userId": user["id"],
-        "email": user["email"],
-        "name": user["name"],
-        "picture": user["pictureUrl"],
         "role": user["role"],
+        "kind": user["kind"],
+        "displayName": user["displayName"],
     }
 
 
 # ===== ADMIN: EDITOR ALLOWLIST =====
 
-@app.get("/api/admin/allowlist")
-async def get_allowlist(user: Dict[str, Any] = Depends(require_admin)):
-    return {"allowlist": db.list_allowlist()}
+@app.get("/api/admin/invites")
+async def get_invites(user: Dict[str, Any] = Depends(require_admin)):
+    """Выданные приглашения. Кодов здесь нет — в БД лежат только их хеши."""
+    return {"invites": db.list_invites()}
 
 
-@app.post("/api/admin/allowlist")
-async def upsert_allowlist_entry(request: Request, user: Dict[str, Any] = Depends(require_admin_csrf)):
+@app.post("/api/admin/invites")
+async def create_invite(request: Request, user: Dict[str, Any] = Depends(require_admin_csrf)):
+    """Выписать одноразовое приглашение.
+
+    Код возвращается ровно один раз и передаётся человеку вне системы. Ни email,
+    ни имени приглашаемого система не знает и знать не должна: список участников
+    в открытом виде — это и есть то, чего мы не храним."""
     try:
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="body must be a JSON object")
 
-    email = body.get("email") if isinstance(body, dict) else None
     role = body.get("role") if isinstance(body, dict) else None
-    if not isinstance(email, str) or not email.strip():
-        raise HTTPException(status_code=400, detail="email is required")
-    if role not in ("editor", "admin"):
-        raise HTTPException(status_code=400, detail="role must be 'editor' or 'admin'")
+    note = body.get("note") if isinstance(body, dict) else None
+    if role is None:
+        role = "editor"
+    if role not in ("viewer", "editor", "reviewer", "admin"):
+        raise HTTPException(status_code=400,
+                            detail="role must be viewer, editor, reviewer or admin")
+    if note is not None and not isinstance(note, str):
+        raise HTTPException(status_code=400, detail="note must be a string")
+    if isinstance(note, str) and len(note) > 200:
+        raise HTTPException(status_code=400, detail="note must be at most 200 characters")
 
-    db.upsert_allowlist(email.strip(), role, user.get("email"))
-    logger.info("admin: allowlist upsert email=%s role=%s by=%s", email, role, user.get("email"))
-    return {"allowlist": db.list_allowlist()}
+    code, invite = db.create_invite(role=role, note=note, created_by=user["userId"])
+    logger.info("admin: invite created role=%s by=%s", role, user["userId"])
+    # Единственный раз, когда код виден. Потерянный не восстанавливается.
+    return {"code": code, "invite": invite, "invites": db.list_invites()}
 
 
-@app.delete("/api/admin/allowlist/{email}")
-async def delete_allowlist_entry(email: str, user: Dict[str, Any] = Depends(require_admin_csrf)):
-    removed = db.delete_allowlist(email)
-    if not removed:
-        raise HTTPException(status_code=404, detail="not found")
-    logger.info("admin: allowlist delete email=%s by=%s", email, user.get("email"))
-    return {"allowlist": db.list_allowlist()}
+@app.delete("/api/admin/invites/{codeHash}")
+async def revoke_invite(codeHash: str, user: Dict[str, Any] = Depends(require_admin_csrf)):
+    if not db.revoke_invite(codeHash):
+        raise HTTPException(status_code=404, detail="not found or already used")
+    logger.info("admin: invite revoked by=%s", user["userId"])
+    return {"invites": db.list_invites()}
+
+
+@app.post("/api/admin/users/{userId}/role")
+async def set_user_role(userId: int, request: Request,
+                        user: Dict[str, Any] = Depends(require_admin_csrf)):
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    role = body.get("role") if isinstance(body, dict) else None
+    try:
+        updated = db.set_user_role(userId, role)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    logger.info("admin: role set userId=%s role=%s by=%s", userId, role, user["userId"])
+    return {"user": updated}
+
+
+@app.post("/api/admin/users/{userId}/retire")
+async def retire_user(userId: int, user: Dict[str, Any] = Depends(require_admin_csrf)):
+    """Отвязать участника от аккаунта, сохранив связность истории."""
+    updated = db.retire_user(userId)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    logger.info("admin: user retired userId=%s by=%s", userId, user["userId"])
+    return {"user": updated}
+
+
+@app.post("/api/auth/display-name")
+async def set_display_name(request: Request, user: Dict[str, Any] = Depends(require_csrf)):
+    """Выбрать псевдоним. Это единственное имя, которым система оперирует."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    name = body.get("displayName") if isinstance(body, dict) else None
+    if name is not None and not isinstance(name, str):
+        raise HTTPException(status_code=400, detail="displayName must be a string")
+    if isinstance(name, str) and len(name.strip()) > 60:
+        raise HTTPException(status_code=400, detail="displayName must be at most 60 characters")
+    updated = db.set_display_name(user["userId"], name)
+    return {"user": updated}
+
+
+@app.post("/api/auth/leave")
+async def leave_project(user: Dict[str, Any] = Depends(require_csrf)):
+    """«Покинуть проект»: то же, что admin retire, но по своей воле."""
+    db.retire_user(user["userId"])
+    logger.info("auth: user left userId=%s", user["userId"])
+    return {"ok": True}
 
 
 @app.post("/api/admin/publish-all")
 async def admin_publish_all(user: Dict[str, Any] = Depends(require_admin_csrf)):
     """Republish every page in the DB to PUBLISH_DIR (volume self-heal / manual repair)."""
     result = publisher.publish_all()
-    logger.info("admin: publish-all pages=%d failed=%d by=%s", result["pages"], result["failed"], user.get("email"))
+    logger.info("admin: publish-all pages=%d failed=%d by=%s",
+                result["pages"], result["failed"], user["userId"])
     return result
 
 
@@ -686,6 +794,13 @@ def _resolve_status(parsed: Dict[str, Any], existing: Optional[Dict[str, Any]]) 
     return "published"
 
 
+def _resolve_category(parsed: Dict[str, Any]) -> Optional[str]:
+    """None ("category" absent) tells upsert_annotation_db to leave the category
+    alone -- the editor has no category UI yet and must not reset everything to
+    'other' just by saving a text edit."""
+    return parsed.get("category") if "category" in parsed else None
+
+
 def _resolve_tags(parsed: Dict[str, Any]) -> Optional[List[str]]:
     """None ("tags" absent) tells upsert_annotation_db to leave the tag set
     alone -- the editor doesn't send tags yet and must not wipe them. An
@@ -710,22 +825,30 @@ async def get_editor_page(docId: str, pageNum: str, user: Optional[Dict[str, Any
         raise HTTPException(status_code=400, detail="invalid pageNum")
 
     rendered = publisher.render_page(docId, page_num_str)
+    # sha считается по «голому» render_page ДО обогащения: категория и теги в
+    # него не входят и входить не должны (см. docstring render_page).
     sha = publisher.compute_page_sha(rendered)
-    tags_by_id = {ann["annId"]: ann["tags"] for ann in db.list_page_annotations(docId, page_num_str)}
+    published_rows = db.list_page_annotations(docId, page_num_str)
+    tags_by_id = {ann["annId"]: ann["tags"] for ann in published_rows}
+    category_by_id = {ann["annId"]: ann["category"] for ann in published_rows}
     annotations = []
     for item in rendered:
         item = dict(item)
         if tags_by_id.get(item["id"]):
             item["tags"] = tags_by_id[item["id"]]
+        item["category"] = annotation_categories.normalize_category(
+            category_by_id.get(item["id"])
+        )
         annotations.append(item)
 
-    if user is not None and user.get("role") in ("editor", "admin"):
+    if user is not None and user.get("role") in EDITOR_ROLES:
         for ann in db.list_annotations(doc_id=docId, page_num=page_num_str, status="draft", limit=1000):
             item: Dict[str, Any] = {"id": ann["annId"], "text": ann["text"], "annType": ann["annType"], "draft": True}
             if ann["coordX"] is not None and ann["coordY"] is not None:
                 item["coords"] = [ann["coordX"], ann["coordY"]]
             if ann["tags"]:
                 item["tags"] = ann["tags"]
+            item["category"] = annotation_categories.normalize_category(ann.get("category"))
             annotations.append(item)
 
     logger.info("GET editor docId=%s pageKey=%s anns=%d", docId, page_num_str, len(annotations))
@@ -770,6 +893,8 @@ async def post_editor_annotation(docId: str, pageNum: str, request: Request, use
         docId, page_num_str, ann["id"], ann["annType"], ann["text"],
         coord_x=coord_x, coord_y=coord_y, status=status, author_id=user["userId"], action=action,
         tags=_resolve_tags(ann),
+        category=_resolve_category(ann),
+        summary=ann.get("summary"),
     )
     write_ok = publisher.publish_page(docId, page_num_str)
     published = write_ok and status == "published"
@@ -815,6 +940,8 @@ async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: R
         docId, page_num_str, annId, parsed["annType"], parsed["text"],
         coord_x=coord_x, coord_y=coord_y, status=status, author_id=user["userId"], action=action,
         tags=_resolve_tags(parsed),
+        category=_resolve_category(parsed),
+        summary=parsed.get("summary"),
     )
     write_ok = publisher.publish_page(docId, page_num_str)
     published = write_ok and status == "published"
@@ -836,7 +963,8 @@ async def delete_editor_annotation(docId: str, pageNum: str, annId: str, user: D
     if page_num_str is None:
         raise HTTPException(status_code=400, detail="invalid pageNum")
 
-    deleted = db.soft_delete_annotation(docId, page_num_str, annId, author_id=user["userId"])
+    deleted = db.soft_delete_annotation(docId, page_num_str, annId,
+                                        author_id=user["userId"])
     if not deleted:
         raise HTTPException(status_code=404, detail="annotation not found")
 
@@ -852,6 +980,8 @@ async def delete_editor_annotation(docId: str, pageNum: str, annId: str, user: D
 
 # ===== CABINET (stage 3) =====
 
+#: Резюме правки: одна строка, а не второй текст аннотации.
+MAX_SUMMARY_LENGTH = 200
 ANNOTATION_STATUSES = ("published", "draft", "deleted")
 # "general" ушёл: см. docs/general-migration-map.json. Строки со status='deleted'
 # могут по-прежнему иметь ann_type='general' — их никто не читает, кроме истории.
@@ -859,8 +989,8 @@ ANNOTATION_TYPES = ("main", "comment")
 
 
 async def require_editor_read(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
-    """Editor/admin role, no CSRF (GET-only cabinet list endpoints)."""
-    if user.get("role") not in ("editor", "admin"):
+    """Editor role or above, no CSRF (GET-only cabinet list endpoints)."""
+    if user.get("role") not in EDITOR_ROLES:
         raise HTTPException(status_code=403, detail="editor role required")
     return user
 
@@ -898,6 +1028,8 @@ async def list_annotations(
     authorId: Optional[int] = None,
     q: Optional[str] = None,
     tag: Optional[str] = None,
+    category: Optional[str] = None,
+    categorySource: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     user: Dict[str, Any] = Depends(require_editor_read),
@@ -908,15 +1040,41 @@ async def list_annotations(
             tag = db.normalize_tag(tag)
         except db.TagError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+    # Категория и её источник — вход очереди приёмки: «показать неразобранное»
+    # это categorySource=default, «проверить решения агента» — categorySource=agent.
+    if category is not None:
+        try:
+            category = annotation_categories.normalize_category(category)
+        except annotation_categories.CategoryError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    if categorySource is not None:
+        try:
+            categorySource = db.normalize_category_source(categorySource)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     items = db.list_annotations(
         doc_id=docId, page_num=validated["pageKey"], ann_type=annType, status=status,
         author_id=authorId, q=q, limit=limit, offset=offset, tag=tag,
+        category=category, category_source=categorySource,
     )
     total = db.count_annotations(
         doc_id=docId, page_num=validated["pageKey"], ann_type=annType, status=status,
         author_id=authorId, q=q, tag=tag,
+        category=category, category_source=categorySource,
     )
     return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/sections")
+async def get_sections(docId: str, user: Dict[str, Any] = Depends(require_editor_read)):
+    """Параграфы документа со сводкой — доска работ редактора.
+
+    Сводка включает число черновиков и неразобранных по категориям, поэтому
+    эндпоинт редакторский, хотя сама разметка параграфов публична (она приезжает
+    из manifest metadata.json через scripts/api/import_sections.py)."""
+    if not _validate_doc_id(docId):
+        raise HTTPException(status_code=400, detail="invalid docId")
+    return {"sections": db.list_sections(docId)}
 
 
 @app.get("/api/tags")
@@ -976,13 +1134,14 @@ async def revert_history(histId: int, user: Dict[str, Any] = Depends(require_edi
         # Only snapshots taken after tags existed carry the key; older ones must
         # leave the current tag set alone rather than clear it.
         tags=snapshot["tags"] if "tags" in snapshot else None,
+        category=snapshot.get("category"),
     )
     published = publisher.publish_page(doc_id, page_num)
     new_sha = _current_page_sha(doc_id, page_num)
 
     logger.info(
         "revert histId=%s docId=%s pageKey=%s annId=%s by=%s",
-        histId, doc_id, page_num, ann_id, user.get("email"),
+        histId, doc_id, page_num, ann_id, user["userId"],
     )
     return {"annId": ann_id, "docId": doc_id, "pageNum": page_num, "serverPageSha": new_sha, "published": published}
 

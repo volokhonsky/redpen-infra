@@ -23,6 +23,13 @@
   <div id="cab-login-screen" class="cab-card" style="display:none;">
     <h2>Вход</h2>
     <div id="cab-google-btn"></div>
+    <!-- Код нужен только при первом входе: круг участников закрыт, и код
+         передаётся вне системы. Дальше вход идёт без него. -->
+    <label class="cab-invite-field">
+      <span>Код приглашения — только при первом входе</span>
+      <input id="cab-invite-input" type="text" placeholder="0000-0000-0000-0000"
+             autocomplete="off" spellcheck="false" />
+    </label>
     <div id="cab-token-login" style="display:none;">
       <input id="cab-token-input" type="text" placeholder="Личный токен" />
       <button id="cab-token-submit">Войти токеном</button>
@@ -48,7 +55,19 @@
   </div>
 
   <script>
-    window.REDPEN_API_BASE = window.REDPEN_API_BASE || 'https://api.medinsky.net';
+    // На localhost кабинет говорит с локальным API, а не с продом: иначе
+    // локальный стенд молча правит боевые данные. Порт задаётся
+    // ?api=<порт> либо берётся по умолчанию (8080).
+    (function(){
+      if (window.REDPEN_API_BASE) return;
+      var host = window.location.hostname;
+      if (host === 'localhost' || host === '127.0.0.1') {
+        var port = new URLSearchParams(window.location.search).get('api') || '8080';
+        window.REDPEN_API_BASE = 'http://' + host + ':' + port;
+        return;
+      }
+      window.REDPEN_API_BASE = 'https://api.medinsky.net';
+    })();
     window.REDPEN_GOOGLE_CLIENT_ID = window.REDPEN_GOOGLE_CLIENT_ID || '679121872329-tl9fk0aq6i1rjf6jgdb1460p0pvn50md.apps.googleusercontent.com';
   </script>
   <script src="../js/redpen-auth.js"></script>
