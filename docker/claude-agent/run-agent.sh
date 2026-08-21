@@ -32,6 +32,13 @@ LOG="$BASE/${LABEL}.log"
 TOKEN_FILE="$BASE/oauth-token"
 STATE_DIR="$BASE/state/$LABEL"
 
+# launchd hands us a bare PATH (/usr/bin:/bin:/usr/sbin:/sbin) with no
+# /usr/local/bin, where the Docker CLI symlink lives. Without this, `docker info`
+# fails as "command not found", ensure_docker misreads it as a dead daemon, waits
+# out the full 300s and then `docker run` exits 127 — which is NOT in RETRY_RE, so
+# the whole scheduled run dies without a retry. (Seen 2026-08-15, §29 at 16:15.)
+export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.pyenv/shims:$PATH"
+
 RETRY_INTERVAL="${RETRY_INTERVAL:-1200}"   # seconds between attempts (20 min)
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-24}"         # 24 × 20 min ≈ 8 h of waiting out the limit
 
@@ -68,6 +75,10 @@ HOST_UID="$(id -u)"
 # Scheduled runs can land while Docker Desktop is not up (the daemon is per-user and
 # does not autostart) — bring it up and wait, instead of failing on exit=125.
 ensure_docker() {
+  if ! command -v docker >/dev/null 2>&1; then
+    log "FATAL: no 'docker' on PATH ($PATH) — not a dead daemon, don't wait for one"
+    return 1
+  fi
   docker info >/dev/null 2>&1 && return 0
   log "docker daemon down — starting Docker Desktop"
   open -ga Docker 2>/dev/null || return 1
