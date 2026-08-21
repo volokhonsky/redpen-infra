@@ -139,8 +139,28 @@ def write_app_config(staging_dir: Path, api_base_url: str) -> None:
         return
     (staging_dir / "app-config.js").write_text(f"window.APP_CONFIG={{apiBaseUrl:\"{api_base_url}\"}};", encoding="utf-8")
 
+#: Кому нужен адрес API — и только им. Раньше скрипт внедрялся во все HTML
+#: подряд, включая страницы читателя, которые к API не обращаются вовсе (у них
+#: инвариант офлайна: ни одного запроса, аннотации приходят инлайновым блоком).
+#: Лишний тег там не просто мусор: он уезжал в git-снапшот, то есть артефакт
+#: развёртывания попадал в переносимую копию сайта, а в офлайн-архиве
+#: абсолютный путь `/app-config.js` не разрешается.
+#:
+#: Список намеренно белый, а не чёрный: новый потребитель API должен появиться
+#: здесь осознанно. Редактор живёт отдельно от просмотрщика — это и есть форма
+#: этой независимости.
+#: Шаблоны путей от корня публикации. `document_index.html` лежит и в корне,
+#: и внутри каталога документа — отсюда две записи.
+API_CLIENT_HTML = ("document_index.html", "*/document_index.html", "cabinet/index.html")
+
+
 def inject_app_config_script(staging_dir: Path) -> None:
-    for html in staging_dir.rglob("*.html"):
+    targets = []
+    for pattern in API_CLIENT_HTML:
+        targets.extend(sorted(staging_dir.glob(pattern)))
+    for html in targets:
+        if not html.exists():
+            continue
         try:
             text = html.read_text(encoding="utf-8")
             if "app-config.js" in text:

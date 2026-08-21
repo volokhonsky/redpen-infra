@@ -56,6 +56,18 @@
         "/private/tmp/claude-502/-Users-Vladimir-Volokhonsky-Documents-redpen/4e4e84b7-4049-4ff5-9a6e-7d7e4257362b/scratchpad/dev/site"
       ],
       "port": 8125
+    },
+    {
+      "name": "redpen-10klass-check",
+      "runtimeExecutable": "/opt/homebrew/bin/python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8137",
+        "--directory",
+        "/private/tmp/claude-502/-Users-Vladimir-Volokhonsky-Documents-redpen/e2b15b0d-87b0-4f1b-bbe9-cbe2ee74355d/scratchpad/out10"
+      ],
+      "port": 8137
     }
   ]
 }
