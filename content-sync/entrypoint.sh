@@ -52,13 +52,22 @@ publish_from_repo() {
   # Sync to public (shared volume)
   rsync -a --delete --exclude "/*/annotations/" /srv/staging/ /srv/public/
 
-  # Ensure annotations/ exists and is writable by the API (uid 10001), which
-  # runs as a different user than this (root) sync process.
+  # Каталоги, куда пишет API (uid 10001): этот процесс работает от root, и после
+  # rsync владельцем снова становится root.
+  #
+  #   annotations — канон публикации, владелец API с этапа 2;
+  #   pages       — HTML читателя. У него два писателя: сборка (через git и этот
+  #                 rsync) и API, который перерисовывает затронутую страницу на
+  #                 каждую правку. Просмотрщик читает аннотации не из JSON, а из
+  #                 инлайнового блока внутри этого HTML, поэтому без права записи
+  #                 сюда правка через редактор до читателя не доезжает.
   if [ -d /srv/public ]; then
     for doc_dir in /srv/public/*/; do
       [ -d "$doc_dir" ] || continue
-      mkdir -p "${doc_dir}annotations"
-      chown -R 10001:10001 "${doc_dir}annotations"
+      for owned in annotations pages; do
+        mkdir -p "${doc_dir}${owned}"
+        chown -R 10001:10001 "${doc_dir}${owned}"
+      done
     done
   fi
 

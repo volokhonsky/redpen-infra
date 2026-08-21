@@ -18,7 +18,22 @@
   'use strict';
 
   var MARKER_SIZES = { main: 90, comment: 50, small: 25 };
-  var MARKER_COLORS = { main: '#DC143C', comment: '#0000FF' };
+  // Размер по-прежнему задаётся annType (main/comment), а цвет — категорией
+  // приёма (redpen-categories.js). Раньше цвет тоже шёл от annType, поэтому
+  // привычка «красный = главное» на этих страницах больше не действует;
+  // легенда на титульной переписана под категории.
+  var CATEGORY_FALLBACK_COLOR = '#546E7A';
+
+  function markerColor(ann) {
+    var cats = window.RedPenCategories;
+    if (!cats) return CATEGORY_FALLBACK_COLOR;
+    return cats.COLORS[cats.categoryFor(ann)] || CATEGORY_FALLBACK_COLOR;
+  }
+
+  function categorySlug(ann) {
+    var cats = window.RedPenCategories;
+    return cats ? cats.categoryFor(ann) : 'other';
+  }
 
   var data = [];
   var visible = [];
@@ -87,7 +102,21 @@
     return { include: include, exclude: exclude };
   }
 
+  // ?only=<id> — постоянная ссылка на один комментарий: страница со сканом и
+  // единственным выделенным маркером. Это по-прежнему чистая фильтрация уже
+  // встроенных данных, ни одного запроса, поэтому инвариант офлайна цел.
+  // Черновик по такой ссылке показывается: ссылка адресная, а не обзорная,
+  // и просить ?tags=draft вдобавок было бы лишней церемонией.
+  function onlyId() {
+    var value = urlParam('only');
+    return value ? value.trim() : null;
+  }
+
   function applyFilter(annotations) {
+    var only = onlyId();
+    if (only) {
+      return annotations.filter(function (ann) { return String(ann.id) === only; });
+    }
     var filter = getFilter();
     return annotations.filter(function (ann) {
       var tags = annotationTags(ann);
@@ -105,7 +134,8 @@
   function isDefaultView(shown) {
     // Пре-рендер содержит ровно опубликованные аннотации в исходном порядке.
     // Если фильтр не изменил набор, перерисовывать нечего — не мигаем.
-    if (urlParam('tags') || urlParam('notags') || urlParam('showDrafts')) return false;
+    if (urlParam('tags') || urlParam('notags') || urlParam('showDrafts') ||
+        urlParam('only')) return false;
     var published = data.filter(function (a) { return !a.draft; });
     if (published.length !== shown.length) return false;
     for (var i = 0; i < published.length; i++) {
@@ -118,7 +148,8 @@
 
   function displayTags(ann) {
     return (ann.tags || []).filter(function (t) {
-      return t !== 'draft' && t.indexOf('confidence:') !== 0;
+      // `cat:*` — зеркало поля category, оно уже показано цветом.
+      return t !== 'draft' && t.indexOf('confidence:') !== 0 && t.indexOf('cat:') !== 0;
     });
   }
 
@@ -147,7 +178,8 @@
     list.innerHTML = '';
     shown.forEach(function (ann, index) {
       var item = document.createElement('li');
-      item.className = 'panel-item panel-item--' + (ann.annType || 'comment') + (ann.draft ? ' is-draft' : '');
+      item.className = 'panel-item panel-item--' + (ann.annType || 'comment')
+        + ' panel-item--cat-' + categorySlug(ann) + (ann.draft ? ' is-draft' : '');
       item.id = 'panel-item-' + ann.id;
       item.setAttribute('data-ann-id', ann.id);
 
@@ -460,10 +492,10 @@
       var diameter = (MARKER_SIZES[type] || MARKER_SIZES.comment) * (scaleX || 1);
       var cx = ann.coords[0] * scaleX;
       var cy = ann.coords[1] * scaleY;
-      var color = MARKER_COLORS[type] || MARKER_COLORS.comment;
+      var color = markerColor(ann);
 
       var circle = document.createElement('div');
-      circle.className = 'circle' + (ann.draft ? ' is-draft' : '');
+      circle.className = 'circle circle--cat-' + categorySlug(ann) + (ann.draft ? ' is-draft' : '');
       circle.id = 'circle-' + ann.id;
       circle.setAttribute('data-ann-id', ann.id);
       circle.style.width = diameter + 'px';

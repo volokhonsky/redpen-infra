@@ -31,6 +31,9 @@ os.environ.setdefault("PUBLISH_DIR", os.path.join(_TMP_ROOT, "public"))
 os.environ.setdefault("CORS_ALLOW_ORIGINS", "*")
 # TestClient talks over plain http; a Secure cookie would be dropped.
 os.environ.setdefault("COOKIE_SECURE", "false")
+# Опознание участников требует перца (см. docs/anonymity-model.md); без него
+# вход через Google отвечает 503, что для тестов равносильно «выключено».
+os.environ.setdefault("IDENTITY_PEPPER", "pytest-pepper")
 
 
 @pytest.fixture(autouse=True)

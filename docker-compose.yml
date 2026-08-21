@@ -27,14 +27,22 @@ services:
     build:
       context: .
       dockerfile: scripts/api/Dockerfile
+    # IDENTITY_PEPPER лежит здесь: файл с правами 600, в git не попадает.
+    # Без перца вход через Google отвечает 503 — это осознанный отказ, а не
+    # режим по умолчанию (docs/anonymity-model.md).
+    env_file:
+      - .env.secrets
     environment:
       - STORAGE_DIR=/var/redpen-data
       - LOG_LEVEL=${LOG_LEVEL}
       - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS}
       - DB_PATH=/var/redpen-db/redpen.db
+      # Вход агентов; EDITOR_TOKENS — прежнее имя, читается для совместимости.
+      - AGENT_TOKENS=${AGENT_TOKENS:-}
       - EDITOR_TOKENS=${EDITOR_TOKENS}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
-      - ADMIN_EMAILS=${ADMIN_EMAILS}
+      # ADMIN_EMAILS упразднён: список администраторов по email хранил бы
+      # личности открытым текстом в окружении прода. Роли выдаются приглашениями.
       - PUBLISH_DIR=/srv/public
     volumes:
       - ./redpen-publish:/var/redpen-data:rw

@@ -1,8 +1,13 @@
 """
-Tests for Google Sign-In, roles, and the admin allowlist API (stage 1).
+Опознание участников, роли и выдача доступа приглашениями.
 
-``main.verify_google_token`` is monkeypatched per-test instead of hitting
-Google, per docs/agent-instructions-stage-0-1.md section 1.7.
+Система знает про человека ровно одно: HMAC его Google `sub`. Email, имя и
+аватар не читаются из токена и никуда не сохраняются, а доступ выдаётся
+одноразовым кодом, переданным вне системы. Обоснование и модель угрозы —
+docs/anonymity-model.md.
+
+``main.verify_google_token`` подменяется в тестах: `credential` трактуется как
+`sub`, поэтому разные клиенты различаются просто разными credential.
 """
 
 import pytest
@@ -13,270 +18,273 @@ pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
 import config  # noqa: E402
+import db  # noqa: E402
 import main  # noqa: E402
+
+from _auth_helpers import invite, login, mock_google, with_csrf  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def _google_configured(monkeypatch):
     monkeypatch.setattr(config, "GOOGLE_CLIENT_ID", "test-client-id.apps.googleusercontent.com")
-    monkeypatch.setattr(config, "ADMIN_EMAILS", [])
+    monkeypatch.setattr(config, "BOOTSTRAP_INVITE_CODE", "")
 
 
-def _mock_verify(monkeypatch, claims_or_exc):
-    def fake_verify(credential):
-        if isinstance(claims_or_exc, Exception):
-            raise claims_or_exc
-        return claims_or_exc
-    monkeypatch.setattr(main, "verify_google_token", fake_verify)
-
-
-def _claims(email, sub=None, name=None, verified=True, picture="http://pic"):
-    return {
-        "sub": sub or ("sub-" + email),
-        "email": email,
-        "email_verified": verified,
-        "name": name or email.split("@")[0],
-        "picture": picture,
-    }
-
-
-def _google_login(monkeypatch, email, **kwargs) -> TestClient:
-    _mock_verify(monkeypatch, _claims(email, **kwargs))
-    c = TestClient(main.app)
-    r = c.post("/api/auth/google", json={"credential": "fake"})
-    assert r.status_code == 200, r.text
-    return c, r.json()
-
-
-def _with_csrf(c: TestClient) -> TestClient:
-    r = c.get("/api/auth/csrf")
-    assert r.status_code == 200
-    c.headers.update({"X-CSRF-Token": r.json()["csrfToken"]})
-    return c
+def _login_raw(monkeypatch, sub, code=None):
+    mock_google(monkeypatch)
+    client = TestClient(main.app)
+    body = {"credential": sub}
+    if code is not None:
+        body["invite"] = code
+    return client, client.post("/api/auth/google", json=body)
 
 
 # ---------------------------------------------------------------------------
-# Google login: user creation, idempotency, email_verified, bad credential
+# Вход: закрытый круг, приглашение, повторный вход
 # ---------------------------------------------------------------------------
 
-def test_google_login_creates_new_viewer(monkeypatch):
-    c, data = _google_login(monkeypatch, "alice@example.com")
-    assert data["role"] == "viewer"
-    assert data["email"] == "alice@example.com"
-    assert isinstance(data["userId"], int)
+def test_login_without_invite_is_refused(monkeypatch):
+    # Не «неверный пароль», а «доступ не выдан»: круг участников закрыт.
+    _, response = _login_raw(monkeypatch, "stranger")
+    assert response.status_code == 403
+    assert response.json()["detail"] == "invite required"
 
 
-def test_google_login_is_idempotent_by_sub(monkeypatch):
-    c1, data1 = _google_login(monkeypatch, "bob@example.com", sub="sub-bob")
-    c2, data2 = _google_login(monkeypatch, "bob@example.com", sub="sub-bob")
-    assert data1["userId"] == data2["userId"]
+def test_invite_admits_and_grants_its_role(monkeypatch):
+    _, response = _login_raw(monkeypatch, "newcomer", code=invite("editor"))
+    assert response.status_code == 200
+    assert response.json()["role"] == "editor"
 
 
-def test_google_login_email_not_verified_is_401(monkeypatch):
-    _mock_verify(monkeypatch, _claims("carol@example.com", verified=False))
-    c = TestClient(main.app)
-    r = c.post("/api/auth/google", json={"credential": "fake"})
-    assert r.status_code == 401
+def test_login_response_carries_no_google_identity(monkeypatch):
+    _, response = _login_raw(monkeypatch, "quiet", code=invite("editor"))
+    body = response.json()
+    assert set(body) == {"userId", "role", "kind", "displayName"}
 
 
-def test_google_login_invalid_credential_is_401(monkeypatch):
-    _mock_verify(monkeypatch, ValueError("bad token"))
-    c = TestClient(main.app)
-    r = c.post("/api/auth/google", json={"credential": "not-a-jwt"})
-    assert r.status_code == 401
+def test_second_login_needs_no_invite(monkeypatch):
+    _, first = _login_raw(monkeypatch, "regular", code=invite("editor"))
+    _, again = _login_raw(monkeypatch, "regular")
+    assert again.status_code == 200
+    assert again.json()["userId"] == first.json()["userId"]
 
 
-def test_google_login_missing_credential_is_400(monkeypatch):
-    c = TestClient(main.app)
-    r = c.post("/api/auth/google", json={})
-    assert r.status_code == 400
+def test_used_invite_does_not_admit_a_second_person(monkeypatch):
+    code = invite("editor")
+    _login_raw(monkeypatch, "first", code=code)
+    _, second = _login_raw(monkeypatch, "second", code=code)
+    assert second.status_code == 403
+
+
+def test_invalid_credential_is_401(monkeypatch):
+    def boom(credential):
+        raise ValueError("bad token")
+    monkeypatch.setattr(main, "verify_google_token", boom)
+    client = TestClient(main.app)
+    assert client.post("/api/auth/google", json={"credential": "not-a-jwt"}).status_code == 401
+
+
+def test_missing_credential_is_400(monkeypatch):
+    assert TestClient(main.app).post("/api/auth/google", json={}).status_code == 400
 
 
 def test_google_client_id_unset_is_503(monkeypatch):
     monkeypatch.setattr(config, "GOOGLE_CLIENT_ID", "")
-    c = TestClient(main.app)
-    r = c.post("/api/auth/google", json={"credential": "fake"})
-    assert r.status_code == 503
+    assert TestClient(main.app).post(
+        "/api/auth/google", json={"credential": "fake"}).status_code == 503
+
+
+def test_missing_pepper_is_503_not_a_silent_downgrade(monkeypatch):
+    monkeypatch.setattr(config, "IDENTITY_PEPPER", "")
+    mock_google(monkeypatch)
+    response = TestClient(main.app).post(
+        "/api/auth/google", json={"credential": "x", "invite": "whatever"})
+    assert response.status_code == 503
 
 
 # ---------------------------------------------------------------------------
-# Roles: ADMIN_EMAILS, allowlist, viewer/editor permission checks
+# Псевдоним и /api/auth/me
 # ---------------------------------------------------------------------------
 
-def test_admin_emails_grants_admin_role(monkeypatch):
-    monkeypatch.setattr(config, "ADMIN_EMAILS", ["admin@example.com"])
-    c, data = _google_login(monkeypatch, "admin@example.com")
-    assert data["role"] == "admin"
+def test_me_reports_pseudonym_not_google_name(monkeypatch):
+    client = login(monkeypatch, "named", display_name="Корректор")
+    body = client.get("/api/auth/me").json()
+    assert body["displayName"] == "Корректор"
+    assert body["username"] == "Корректор"
+    assert "email" not in body and "picture" not in body
 
 
-def test_allowlist_grants_editor_role(monkeypatch):
-    import db
-    db.upsert_allowlist("editor@example.com", "editor", "admin@example.com")
-    c, data = _google_login(monkeypatch, "editor@example.com")
-    assert data["role"] == "editor"
+def test_participant_without_a_pseudonym_is_shown_by_number(monkeypatch):
+    client = login(monkeypatch, "anon-1")
+    body = client.get("/api/auth/me").json()
+    assert body["displayName"] is None
+    assert body["username"].startswith("Участник №")
 
 
-def test_viewer_cannot_write_editor_annotation(monkeypatch):
-    c, _ = _google_login(monkeypatch, "viewer@example.com")
-    _with_csrf(c)
-    r = c.post(
-        "/api/editor/medinsky11klass/50",
-        json={"annType": "comment", "text": "x", "coords": [1, 1]},
-    )
-    assert r.status_code == 403
+def test_display_name_requires_csrf(monkeypatch):
+    client = login(monkeypatch, "nocsrf", csrf=False)
+    assert client.post("/api/auth/display-name",
+                       json={"displayName": "x"}).status_code == 403
 
 
-def test_editor_can_write_annotation(monkeypatch):
-    import db
-    db.upsert_allowlist("editor2@example.com", "editor", "admin@example.com")
-    c, data = _google_login(monkeypatch, "editor2@example.com")
-    assert data["role"] == "editor"
-    _with_csrf(c)
-    r = c.post(
-        "/api/editor/medinsky11klass/51",
-        json={"annType": "comment", "text": "x", "coords": [1, 1]},
-    )
-    assert r.status_code == 200
+def test_leaving_the_project_unlinks_the_account(monkeypatch):
+    client = login(monkeypatch, "departing")
+    assert client.post("/api/auth/leave").status_code == 200
+    # Сессия убита вместе с привязкой.
+    assert client.get("/api/auth/me").status_code == 401
+    # И прежний Google-аккаунт больше не узнаётся.
+    _, again = _login_raw(monkeypatch, "departing")
+    assert again.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Роли: лестница viewer < editor < reviewer < admin
+# ---------------------------------------------------------------------------
+
+def test_viewer_cannot_write_annotations(monkeypatch):
+    client = login(monkeypatch, "viewer-1", role="viewer")
+    response = client.post("/api/editor/medinsky11klass/50",
+                           json={"annType": "comment", "text": "x", "coords": [1, 1]})
+    assert response.status_code == 403
+
+
+def test_editor_can_write_annotations(monkeypatch):
+    client = login(monkeypatch, "editor-1", role="editor")
+    response = client.post("/api/editor/medinsky11klass/51",
+                           json={"annType": "comment", "text": "x", "coords": [1, 1]})
+    assert response.status_code == 200
+
+
+def test_reviewer_writes_like_an_editor(monkeypatch):
+    # reviewer — это editor плюс право принимать чужое, а не вместо него.
+    client = login(monkeypatch, "reviewer-1", role="reviewer")
+    response = client.post("/api/editor/medinsky11klass/52",
+                           json={"annType": "comment", "text": "x", "coords": [1, 1]})
+    assert response.status_code == 200
 
 
 def test_viewer_cannot_view_logs(monkeypatch):
-    c, _ = _google_login(monkeypatch, "viewer2@example.com")
-    assert c.get("/logs").status_code == 403
-    assert c.get("/api/logs").status_code == 403
+    client = login(monkeypatch, "viewer-2", role="viewer")
+    assert client.get("/logs").status_code == 403
+    assert client.get("/api/logs").status_code == 403
 
 
 def test_admin_can_view_logs(monkeypatch):
-    monkeypatch.setattr(config, "ADMIN_EMAILS", ["root@example.com"])
-    c, _ = _google_login(monkeypatch, "root@example.com")
-    assert c.get("/logs").status_code == 200
-    assert c.get("/api/logs").status_code == 200
+    client = login(monkeypatch, "root-1", role="admin")
+    assert client.get("/logs").status_code == 200
+    assert client.get("/api/logs").status_code == 200
+
+
+def test_admin_can_change_a_role(monkeypatch):
+    admin = login(monkeypatch, "boss-role", role="admin")
+    member = login(monkeypatch, "member-role", role="editor")
+    user_id = member.get("/api/auth/me").json()["userId"]
+
+    response = admin.post(f"/api/admin/users/{user_id}/role", json={"role": "reviewer"})
+    assert response.status_code == 200
+    # Роль читается из БД на каждом запросе, поэтому действует сразу.
+    assert member.get("/api/auth/me").json()["role"] == "reviewer"
+
+
+def test_admin_can_retire_a_participant(monkeypatch):
+    admin = login(monkeypatch, "boss-retire", role="admin")
+    member = login(monkeypatch, "member-retire", role="editor")
+    user_id = member.get("/api/auth/me").json()["userId"]
+
+    assert admin.post(f"/api/admin/users/{user_id}/retire").status_code == 200
+    assert member.get("/api/auth/me").status_code == 401
 
 
 # ---------------------------------------------------------------------------
-# Logout / session expiry
+# Logout / истечение сессии
 # ---------------------------------------------------------------------------
 
 def test_logout_then_me_is_401(monkeypatch):
-    c, _ = _google_login(monkeypatch, "dana@example.com")
-    assert c.get("/api/auth/me").status_code == 200
-    assert c.post("/api/auth/logout").status_code == 200
-    assert c.get("/api/auth/me").status_code == 401
+    client = login(monkeypatch, "dana")
+    assert client.get("/api/auth/me").status_code == 200
+    assert client.post("/api/auth/logout").status_code == 200
+    assert client.get("/api/auth/me").status_code == 401
 
 
 def test_expired_session_is_401(monkeypatch):
-    import db
     from datetime import datetime, timedelta
 
-    c, _ = _google_login(monkeypatch, "erin@example.com")
-    session_id = c.cookies.get("redpen_session")
+    client = login(monkeypatch, "erin")
+    session_id = client.cookies.get("redpen_session")
     conn = db.get_connection()
     past = (datetime.utcnow() - timedelta(seconds=1)).isoformat()
     conn.execute("UPDATE sessions SET expires_at = ? WHERE id = ?", (past, session_id))
     conn.commit()
 
-    assert c.get("/api/auth/me").status_code == 401
+    assert client.get("/api/auth/me").status_code == 401
 
 
 # ---------------------------------------------------------------------------
-# Admin allowlist CRUD
+# Приглашения через API
 # ---------------------------------------------------------------------------
 
-def test_allowlist_get_requires_admin(monkeypatch):
-    viewer, _ = _google_login(monkeypatch, "plainviewer@example.com")
-    assert viewer.get("/api/admin/allowlist").status_code == 403
+def test_invites_require_admin(monkeypatch):
+    editor = login(monkeypatch, "plain-editor", role="editor")
+    assert editor.get("/api/admin/invites").status_code == 403
+    assert editor.post("/api/admin/invites", json={"role": "editor"}).status_code == 403
 
-    monkeypatch.setattr(config, "ADMIN_EMAILS", ["boss@example.com"])
-    admin, _ = _google_login(monkeypatch, "boss@example.com")
-    assert admin.get("/api/admin/allowlist").status_code == 200
-
-
-def test_allowlist_post_requires_admin_and_csrf(monkeypatch):
-    monkeypatch.setattr(config, "ADMIN_EMAILS", ["boss2@example.com"])
-    admin, _ = _google_login(monkeypatch, "boss2@example.com")
-
-    # No CSRF header yet -> 403.
-    r = admin.post("/api/admin/allowlist", json={"email": "new@example.com", "role": "editor"})
-    assert r.status_code == 403
-
-    _with_csrf(admin)
-    r = admin.post("/api/admin/allowlist", json={"email": "new@example.com", "role": "editor"})
-    assert r.status_code == 200
-    emails = [e["email"] for e in r.json()["allowlist"]]
-    assert "new@example.com" in emails
+    admin = login(monkeypatch, "boss-invites", role="admin")
+    assert admin.get("/api/admin/invites").status_code == 200
 
 
-def test_allowlist_change_takes_effect_on_next_login(monkeypatch):
-    monkeypatch.setattr(config, "ADMIN_EMAILS", ["boss3@example.com"])
-    admin, _ = _google_login(monkeypatch, "boss3@example.com")
-    _with_csrf(admin)
-
-    # First login before being added to the allowlist -> viewer.
-    _, before = _google_login(monkeypatch, "promoted@example.com")
-    assert before["role"] == "viewer"
-
-    r = admin.post("/api/admin/allowlist", json={"email": "promoted@example.com", "role": "editor"})
-    assert r.status_code == 200
-
-    _, after = _google_login(monkeypatch, "promoted@example.com")
-    assert after["role"] == "editor"
+def test_creating_an_invite_requires_csrf(monkeypatch):
+    admin = login(monkeypatch, "boss-csrf", role="admin", csrf=False)
+    assert admin.post("/api/admin/invites", json={"role": "editor"}).status_code == 403
 
 
-def test_allowlist_delete(monkeypatch):
-    monkeypatch.setattr(config, "ADMIN_EMAILS", ["boss4@example.com"])
-    admin, _ = _google_login(monkeypatch, "boss4@example.com")
-    _with_csrf(admin)
+def test_invite_code_is_returned_once_and_never_stored(monkeypatch):
+    admin = login(monkeypatch, "boss-once", role="admin")
+    response = admin.post("/api/admin/invites", json={"role": "editor", "note": "для К."})
+    assert response.status_code == 200
+    code = response.json()["code"]
 
-    admin.post("/api/admin/allowlist", json={"email": "temp@example.com", "role": "editor"})
-    r = admin.delete("/api/admin/allowlist/temp@example.com")
-    assert r.status_code == 200
-    emails = [e["email"] for e in r.json()["allowlist"]]
-    assert "temp@example.com" not in emails
-
-    r = admin.delete("/api/admin/allowlist/temp@example.com")
-    assert r.status_code == 404
+    # В листинге кода нет — только хеш: живых ключей БД не хранит.
+    listed = admin.get("/api/admin/invites").json()["invites"]
+    assert all("code" not in entry for entry in listed)
+    assert any(entry["codeHash"] == db.hash_invite_code(code) for entry in listed)
 
 
-def test_allowlist_post_viewer_forbidden(monkeypatch):
-    viewer, _ = _google_login(monkeypatch, "notadmin@example.com")
-    _with_csrf(viewer)
-    r = viewer.post("/api/admin/allowlist", json={"email": "x@example.com", "role": "editor"})
-    assert r.status_code == 403
+def test_invite_role_is_validated(monkeypatch):
+    admin = login(monkeypatch, "boss-badrole", role="admin")
+    assert admin.post("/api/admin/invites", json={"role": "root"}).status_code == 400
+
+
+def test_unused_invite_can_be_revoked(monkeypatch):
+    admin = login(monkeypatch, "boss-revoke", role="admin")
+    code = admin.post("/api/admin/invites", json={"role": "editor"}).json()["code"]
+    code_hash = db.hash_invite_code(code)
+
+    assert admin.delete(f"/api/admin/invites/{code_hash}").status_code == 200
+    assert admin.delete(f"/api/admin/invites/{code_hash}").status_code == 404
+    # Отозванный код больше не пускает.
+    _, response = _login_raw(monkeypatch, "too-late", code=code)
+    assert response.status_code == 403
 
 
 # ---------------------------------------------------------------------------
-# POST /api/admin/publish-all (stage 2, A2.5)
+# POST /api/admin/publish-all
 # ---------------------------------------------------------------------------
 
 def test_publish_all_requires_admin(monkeypatch):
-    import db
-
-    viewer, _ = _google_login(monkeypatch, "publish-viewer@example.com")
-    _with_csrf(viewer)
-    assert viewer.post("/api/admin/publish-all").status_code == 403
-
-    monkeypatch.setattr(config, "ADMIN_EMAILS", ["publish-boss@example.com"])
-    db.upsert_allowlist("publish-editor@example.com", "editor", "publish-boss@example.com")
-    editor, _ = _google_login(monkeypatch, "publish-editor@example.com")
-    _with_csrf(editor)
+    editor = login(monkeypatch, "publish-editor", role="editor")
     assert editor.post("/api/admin/publish-all").status_code == 403
 
 
 def test_publish_all_writes_files_for_admin(monkeypatch):
     import os
 
-    import db
-
     db.upsert_annotation_db("publishalldoc", "006", "ann-1", "comment", "hi")
+    admin = login(monkeypatch, "publish-admin", role="admin")
 
-    monkeypatch.setattr(config, "ADMIN_EMAILS", ["publish-admin@example.com"])
-    admin, _ = _google_login(monkeypatch, "publish-admin@example.com")
-    _with_csrf(admin)
-
-    r = admin.post("/api/admin/publish-all")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["pages"] >= 1
-    assert body["failed"] == 0
+    response = admin.post("/api/admin/publish-all")
+    assert response.status_code == 200
+    assert response.json()["pages"] >= 1
+    assert response.json()["failed"] == 0
 
     path = os.path.join(config.PUBLISH_DIR, "publishalldoc", "annotations", "page_006.json")
     assert os.path.exists(path)

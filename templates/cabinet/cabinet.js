@@ -146,14 +146,24 @@
     return (map && map['page_' + pageNum]) || pageNum;
   }
 
-  function editorLink(docId, pageNum, annId){
+  // Ссылка на один комментарий: страница читателя со сканом и единственным
+  // выделенным маркером (?only=<id>).
+  //
+  // Раньше здесь строился адрес `<doc>/?p=<label>&editor=1&ann=<id>` — то есть
+  // оглавление, где редакторских скриптов нет вовсе, и кнопка просто не
+  // работала. Режим редактирования живёт только в старом SPA
+  // (`document_index.html`) и переезжает в отдельное приложение; пока переезд
+  // не сделан, честнее вести на рабочий просмотр, чем на сломанную правку.
+  function annotationLink(docId, pageNum, annId){
     var map = state.manifestCache[docId];
-    if (map && map['page_' + pageNum]) {
-      return '../' + encodeURIComponent(docId) + '/?p=' + encodeURIComponent(map['page_' + pageNum]) + '&editor=1&ann=' + encodeURIComponent(annId);
+    var label = map && map['page_' + pageNum];
+    if (!label) {
+      var n = parseInt(pageNum, 10);
+      if (isNaN(n) || n <= 0) return null;
+      label = String(n);
     }
-    var n = parseInt(pageNum, 10);
-    if (isNaN(n) || n <= 0) return null; // unreachable via legacy addressing
-    return '../' + encodeURIComponent(docId) + '/?page=' + n + '&editor=1&ann=' + encodeURIComponent(annId);
+    return '../' + encodeURIComponent(docId) + '/pages/' + encodeURIComponent(label) +
+           '/?only=' + encodeURIComponent(annId);
   }
 
   // ===== login / profile =====
@@ -168,12 +178,24 @@
     var host = document.getElementById('cab-login-screen');
     host.style.display = '';
     if (hasTokenAuthFlag()) document.getElementById('cab-token-login').style.display = '';
-    window.RedPenAuth.renderGoogleButton(document.getElementById('cab-google-btn'), function(user, error){
-      var errEl = document.getElementById('cab-login-error');
-      if (error || !user) { errEl.textContent = 'Не удалось войти через Google'; return; }
-      errEl.textContent = '';
-      refreshUserAndRender();
-    });
+    window.RedPenAuth.renderGoogleButton(
+      document.getElementById('cab-google-btn'),
+      function(user, error){
+        var errEl = document.getElementById('cab-login-error');
+        if (error && error.message === 'invite_required') {
+          // Отдельное сообщение: это не сбой входа, а отсутствие доступа.
+          errEl.textContent = 'Нужен код приглашения. Получите его у администратора ' +
+                              'и введите в поле ниже.';
+          return;
+        }
+        if (error || !user) { errEl.textContent = 'Не удалось войти через Google'; return; }
+        errEl.textContent = '';
+        refreshUserAndRender();
+      },
+      function(){
+        var el = document.getElementById('cab-invite-input');
+        return el ? (el.value || '').trim() : null;
+      });
   }
 
   function bindLoginForm(){
@@ -192,14 +214,15 @@
     });
   }
 
-  var ROLE_LABELS = { viewer: 'читатель', editor: 'редактор', admin: 'админ' };
+  var ROLE_LABELS = { viewer: 'читатель', editor: 'редактор', reviewer: 'приёмщик', admin: 'админ' };
 
   function renderProfile(){
     var host = document.getElementById('cab-profile');
     var u = state.user;
     var html = [];
-    if (u.pictureUrl) html.push('<img src="' + escapeHtml(u.pictureUrl) + '" alt="" />');
-    html.push('<span class="cab-profile-name">' + escapeHtml(u.name || u.username || u.email || '') + '</span>');
+    // Ни аватара, ни имени из Google: их в системе нет (docs/anonymity-model.md).
+    // Участника представляет выбранный им псевдоним.
+    html.push('<span class="cab-profile-name">' + escapeHtml(u.displayName || u.username || '') + '</span>');
     html.push('<span class="cab-profile-role">' + escapeHtml(ROLE_LABELS[u.role] || u.role) + '</span>');
     html.push('<button type="button" id="cab-logout-btn">Выйти</button>');
     host.innerHTML = html.join('');
@@ -369,7 +392,7 @@
 
     updateAuthorOptions(
       document.getElementById('cab-ann-author-filter'), data.items, 'authorId',
-      function(a){ return a.authorName || a.authorEmail; }
+      function(a){ return a.authorName; }
     );
     await prefetchManifests(data.items.map(function(a){ return a.docId; }));
     renderAnnotationsRows();
@@ -378,7 +401,7 @@
   function renderAnnotationsRows(){
     var tbody = document.getElementById('cab-ann-tbody');
     tbody.innerHTML = state.ann.items.map(function(a){
-      var link = editorLink(a.docId, a.pageNum, a.annId);
+      var link = annotationLink(a.docId, a.pageNum, a.annId);
       var openBtn = link
         ? '<a href="' + escapeHtml(link) + '" target="_blank" rel="noopener">Открыть</a>'
         : '<span class="cab-muted" title="страница вне легаси-нумерации">Открыть</span>';
@@ -398,7 +421,7 @@
         '<td>' + escapeHtml(pageDisplay(a.docId, a.pageNum)) + '</td>' +
         '<td>' + escapeHtml(a.annType) + '</td>' +
         '<td><span class="cab-badge ' + badgeClass + '">' + escapeHtml(a.status) + '</span></td>' +
-        '<td>' + escapeHtml(a.authorName || a.authorEmail || '—') + '</td>' +
+        '<td>' + escapeHtml(a.authorName || '—') + '</td>' +
         '<td>' + escapeHtml(formatDate(a.updatedAt)) + '</td>' +
         '<td>' + escapeHtml((a.text || '').slice(0, 80)) + '</td>' +
         '<td class="cab-row-actions">' + openBtn + toggleBtn + delBtn + histBtn + '</td>' +
@@ -557,7 +580,7 @@
     state.admin.loaded = true;
     var host = document.getElementById('cab-tab-admin');
     host.innerHTML =
-      '<div class="cab-admin-section" id="cab-admin-allowlist"><h3>Allowlist редакторов</h3></div>' +
+      '<div class="cab-admin-section" id="cab-admin-invites"><h3>Приглашения</h3></div>' +
       '<div class="cab-admin-section" id="cab-admin-users"><h3>Пользователи</h3></div>' +
       '<div class="cab-admin-section" id="cab-admin-publish"><h3>Публикация</h3>' +
         '<button type="button" id="cab-admin-publish-all-btn">Перепубликовать всё</button> ' +
@@ -577,41 +600,70 @@
     });
     document.getElementById('cab-admin-logs-refresh').addEventListener('click', loadAdminLogs);
 
-    await Promise.all([loadAllowlist(), loadAdminUsers(), loadAdminLogs()]);
+    await Promise.all([loadInvites(), loadAdminUsers(), loadAdminLogs()]);
   }
 
-  async function loadAllowlist(){
-    var host = document.getElementById('cab-admin-allowlist');
+  // Приглашение — одноразовый код, который админ передаёт человеку вне системы.
+  // Ни email, ни имени приглашаемого система не знает: именной список — это и
+  // есть то, чего мы не храним (docs/anonymity-model.md).
+  async function loadInvites(){
+    var host = document.getElementById('cab-admin-invites');
     var data;
-    try { data = await apiGet('/api/admin/allowlist'); }
+    try { data = await apiGet('/api/admin/invites'); }
     catch (e) { return; }
-    var rows = (data.allowlist || []).map(function(e){
-      return '<tr><td>' + escapeHtml(e.email) + '</td><td>' + escapeHtml(e.role) + '</td><td>' +
-        escapeHtml(e.addedBy || '') + '</td><td>' + escapeHtml(formatDate(e.addedAt)) + '</td>' +
-        '<td><button type="button" class="cab-btn-secondary cab-allow-del" data-email="' + escapeHtml(e.email) + '">Удалить</button></td></tr>';
+    var rows = (data.invites || []).map(function(inv){
+      var used = inv.usedAt
+        ? 'использовано ' + escapeHtml(formatDate(inv.usedAt))
+        : 'не использовано';
+      return '<tr><td><code>' + escapeHtml(inv.codeHash.slice(0, 12)) + '…</code></td>' +
+        '<td>' + escapeHtml(inv.role) + '</td>' +
+        '<td>' + escapeHtml(inv.note || '') + '</td>' +
+        '<td>' + escapeHtml(formatDate(inv.createdAt)) + '</td>' +
+        '<td>' + used + '</td>' +
+        '<td>' + (inv.usedAt ? '' :
+          '<button type="button" class="cab-btn-secondary cab-invite-del" data-hash="' +
+          escapeHtml(inv.codeHash) + '">Отозвать</button>') + '</td></tr>';
     }).join('');
-    host.innerHTML = '<h3>Allowlist редакторов</h3>' +
-      '<table class="cab-table"><thead><tr><th>Email</th><th>Роль</th><th>Добавил</th><th>Когда</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
-      '<form id="cab-allow-form" class="cab-admin-form">' +
-        '<input type="email" name="email" placeholder="email@example.com" required />' +
-        '<select name="role"><option value="editor">editor</option><option value="admin">admin</option></select>' +
-        '<button type="submit">Добавить</button>' +
-      '</form>';
+    host.innerHTML = '<h3>Приглашения</h3>' +
+      '<p class="cab-hint">Код показывается один раз при выписке — передайте его ' +
+      'вне системы. Потерянный код не восстанавливается, выпишите новый.</p>' +
+      '<table class="cab-table"><thead><tr><th>Код (хеш)</th><th>Роль</th><th>Пометка</th>' +
+      '<th>Выписано</th><th>Статус</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<form id="cab-invite-form" class="cab-admin-form">' +
+        '<select name="role">' +
+          '<option value="editor">editor</option>' +
+          '<option value="reviewer">reviewer</option>' +
+          '<option value="admin">admin</option>' +
+          '<option value="viewer">viewer</option>' +
+        '</select>' +
+        '<input type="text" name="note" placeholder="пометка (без имён)" maxlength="200" />' +
+        '<button type="submit">Выписать</button>' +
+      '</form>' +
+      '<div id="cab-invite-code"></div>';
 
-    document.getElementById('cab-allow-form').addEventListener('submit', async function(ev){
+    document.getElementById('cab-invite-form').addEventListener('submit', async function(ev){
       ev.preventDefault();
       var f = new FormData(ev.target);
       try {
-        await apiMutate('POST', '/api/admin/allowlist', { email: f.get('email'), role: f.get('role') });
-        setStatus('Добавлено в allowlist', false);
-        loadAllowlist();
+        var result = await apiMutate('POST', '/api/admin/invites',
+                                     { role: f.get('role'), note: f.get('note') || null });
+        document.getElementById('cab-invite-code').innerHTML =
+          '<p class="cab-invite-code">Код: <code>' + escapeHtml(result.code) + '</code><br>' +
+          'Скопируйте сейчас — второй раз он не покажется.</p>';
+        setStatus('Приглашение выписано', false);
+        // Список перерисовывается отдельно, чтобы код остался на экране.
+        loadInvites().then(function(){
+          document.getElementById('cab-invite-code').innerHTML =
+            '<p class="cab-invite-code">Код: <code>' + escapeHtml(result.code) + '</code><br>' +
+            'Скопируйте сейчас — второй раз он не покажется.</p>';
+        });
       } catch (e) { /* status already shown */ }
     });
-    Array.prototype.forEach.call(host.querySelectorAll('.cab-allow-del'), function(btn){
+    Array.prototype.forEach.call(host.querySelectorAll('.cab-invite-del'), function(btn){
       btn.addEventListener('click', async function(){
         try {
-          await apiMutate('DELETE', '/api/admin/allowlist/' + encodeURIComponent(btn.dataset.email));
-          loadAllowlist();
+          await apiMutate('DELETE', '/api/admin/invites/' + encodeURIComponent(btn.dataset.hash));
+          loadInvites();
         } catch (e) { /* status already shown */ }
       });
     });
@@ -623,11 +675,15 @@
     try { data = await apiGet('/api/admin/users'); }
     catch (e) { return; }
     var rows = (data.users || []).map(function(u){
-      return '<tr><td>' + escapeHtml(u.email) + '</td><td>' + escapeHtml(u.name || '') + '</td><td>' + escapeHtml(u.role) + '</td>' +
-        '<td>' + escapeHtml(formatDate(u.createdAt)) + '</td><td>' + escapeHtml(formatDate(u.lastLoginAt)) + '</td></tr>';
+      return '<tr><td>' + escapeHtml(u.displayName || ('Участник №' + u.id)) + '</td>' +
+        '<td>' + escapeHtml(u.kind === 'agent' ? 'агент' : 'человек') + '</td>' +
+        '<td>' + escapeHtml(ROLE_LABELS[u.role] || u.role) + '</td>' +
+        '<td>' + escapeHtml(formatDate(u.createdAt)) + '</td>' +
+        '<td>' + escapeHtml(formatDate(u.lastLoginAt)) + '</td></tr>';
     }).join('');
-    host.innerHTML = '<h3>Пользователи</h3>' +
-      '<table class="cab-table"><thead><tr><th>Email</th><th>Имя</th><th>Роль</th><th>Создан</th><th>Последний вход</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    host.innerHTML = '<h3>Участники</h3>' +
+      '<table class="cab-table"><thead><tr><th>Псевдоним</th><th>Вид</th><th>Роль</th>' +
+      '<th>Создан</th><th>Последний вход</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
 
   async function loadAdminLogs(){

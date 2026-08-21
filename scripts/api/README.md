@@ -5,10 +5,16 @@ FastAPI-сервис для хранения входящих данных и р
 `storage.py`, `config.py`).
 
 С этапа 2 аннотации редактора хранятся в SQLite (`db.py`, таблицы
-`annotations`/`annotation_history`), а не в файлах. `publisher.py` рендерит
-их в статические `<docId>/annotations/page_NNN.json` (тот же «голый массив»,
-который читает просмотрщик) при каждой мутации — это единственное, что
-пишется в `PUBLISH_DIR`. `storage.py` теперь отвечает только за inbox
+`annotations`/`annotation_history`), а не в файлах. При каждой мутации
+`publisher.py` делает два шага: пишет `<docId>/annotations/page_NNN.json`
+(«голый массив») и перерисовывает `<docId>/pages/<label>/index.html`.
+
+Второй шаг обязателен: постраничный просмотрщик **не читает** JSON — он вообще
+ничего не загружает (инвариант офлайна) и берёт аннотации из инлайнового блока
+`redpen-page-data` внутри HTML. JSON остался для старого SPA и офлайн-бандла.
+Оглавление и `sitemap.xml` перерисовываются только полной сборкой.
+
+`storage.py` отвечает только за inbox
 (`/api/store*`); CLI `import_annotations.py`/`export_annotations.py`
 переносят данные между файлами и БД (см. ниже).
 
@@ -20,11 +26,12 @@ FastAPI-сервис для хранения входящих данных и р
 | `LOG_DIR` | `/app/logs` | Каталог для файла лога `redpen-api.log` |
 | `LOG_LEVEL` | `INFO` | Уровень логирования |
 | `CORS_ALLOW_ORIGINS` | `_` (→ `*`) | Список origin через запятую; `_`/`*` = разрешить все |
-| `EDITOR_TOKENS` | (пусто) | Токены личного входа: `token1:username1,token2:username2`. Пусто = вход по токену отключён |
-| `DB_PATH` | `/var/redpen-db/redpen.db` | SQLite-файл: users/sessions/allowlist (стадия 1) + annotations/annotation_history (стадия 2). Не должен лежать в `STORAGE_DIR` |
+| `AGENT_TOKENS` | (пусто) | Токены входа агентов: `token1:agent1,token2:agent2`. Пусто = вход по токену отключён. `EDITOR_TOKENS` — прежнее имя, читается для совместимости |
+| `DB_PATH` | `/var/redpen-db/redpen.db` | SQLite-файл: users/sessions/invites + annotations/annotation_history/sections/agent_runs. Не должен лежать в `STORAGE_DIR` |
 | `PUBLISH_DIR` | (пусто) | Куда `publisher.py` пишет `<docId>/annotations/page_NNN.json`. Пусто = публикация отключена (тесты, dev без volume) |
 | `GOOGLE_CLIENT_ID` | (пусто) | OAuth client id для верификации Google ID-token. Пусто = `POST /api/auth/google` отвечает 503 |
-| `ADMIN_EMAILS` | (пусто) | Email через запятую, получающие роль `admin` безусловно |
+| `IDENTITY_PEPPER` | (пусто) | **Обязателен.** Перец для `HMAC(перец, google_sub)`. Пусто = `POST /api/auth/google` отвечает 503. Только в `.env.secrets`, никогда в git и в БД — см. `docs/anonymity-model.md` |
+| `BOOTSTRAP_INVITE_CODE` | (пусто) | Одноразовый код, дающий роль `admin` первому вошедшему на пустой базе. Заменил `ADMIN_EMAILS` |
 | `COOKIE_SECURE` | `true` | Флаг `Secure` у cookie `redpen_session`. `false` — для локальной разработки по http |
 
 > `LOG_DIR` вынесен в конфиг, чтобы сервис можно было запускать и тестировать
@@ -48,8 +55,8 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 
 > 🔒 = требует сессию с ролью `editor`/`admin` + заголовок `X-CSRF-Token`
 > (иначе `401`/`403`). ⛔ = требует роль `admin` (⛔🔒 дополнительно требует
-> CSRF). Читающие эндпоинты остаются публичными. Роли: `viewer` (по умолчанию
-> после входа через Google) `< editor < admin` — см. раздел «Роли» ниже.
+> CSRF). Читающие эндпоинты остаются публичными. Роли:
+> `viewer < editor < reviewer < admin` — см. раздел «Роли» ниже.
 
 Служебные:
 - `GET /api/health` → `{"status":"ok"}`
@@ -72,9 +79,15 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
   (`{pageId, serverPageSha, annotations}`). `pageNum` — 1..999. Анонимно/для
   `viewer` возвращает только `status='published'`; для сессии `editor`/`admin`
   дополнительно включает черновики (`status='draft'`) с флагом `draft: true`
-  в каждом элементе — черновики никогда не попадают в статический JSON.
+  в каждом элементе. В анонимный ответ черновики не попадают. В статический
+  `page_NNN.json` они, наоборот, попадают с 2026-08-15 — помеченные
+  `"draft": true` и тегом `draft` (см. `publisher.py` и
+  `docs/annotation_specification.md`); просмотрщик скрывает их по умолчанию
+  и раскрывает по `?tags=draft`.
 - 🔒 `POST /api/editor/{docId}/{pageNum}` — добавить/обновить аннотацию.
-  Тело: `{annType, text, coords?[x,y], id?, clientPageSha?, status?}`.
+  Тело: `{annType, text, coords?[x,y], id?, clientPageSha?, status?, tags?}`.
+  `tags` — список строк; отсутствие поля означает «не трогать теги», `[]` —
+  «очистить». Имена `draft`/`published`/`deleted` зарезервированы.
   `status` — `"draft"` или `"published"` (иначе `400`); если поле не
   передано, у существующей аннотации статус сохраняется, у новой —
   `"published"`. Можно передать целочисленные
@@ -96,11 +109,15 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 таблицы `annotations`/`annotation_history`:
 - 🔒 `GET /api/annotations?docId&pageKey&annType&status&authorId&q&limit&offset`
   (роль `editor`/`admin`, CSRF не требуется — чтение) → `{items, total, limit, offset}`.
-  `items[]` — как `_annotation_row_to_dict` + `authorName`/`authorEmail`
-  (`null` для импортированных). Валидация: `docId`/`pageKey` — как в
+  `items[]` — как `_annotation_row_to_dict` + `authorName` (псевдоним автора;
+  `null` для импортированных). Дополнительные фильтры: `category` (один из семи
+  слагов) и `categorySource` (`default`/`tags-backfill`/`agent`/`human`) — вход
+  очереди приёмки. Валидация: `docId`/`pageKey` — как в
   `/api/editor/...`; `status ∈ {published,draft,deleted}`;
   `annType ∈ {main,comment}`; `limit ≤ 200` (по умолчанию 50);
   `offset ≥ 0`; `len(q) ≤ 200` — иначе `400`.
+- 🔒 `GET /api/tags?docId` (роль `editor`/`admin`, чтение) →
+  `{"tags": [{tag, count}, …]}` (по убыванию частоты, без удалённых аннотаций) — словарь тегов для фильтра в кабинете.
 - 🔒 `GET /api/history?docId&pageKey&annId&authorId&action&limit&offset`
   (та же защита) → `{items, hasMore, limit, offset}`; `items[].snapshot` —
   распарсенное состояние аннотации на момент записи.
@@ -110,14 +127,25 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
   состояние из снапшота истории (включая его `status` — откат к записи
   `action='delete'` повторно удаляет) и республикует страницу. `404`, если
   записи нет. Ответ: `{annId, docId, pageNum, serverPageSha, published}`.
-- ⛔ `GET /api/admin/users` → `{"users": [{id,email,name,pictureUrl,role,createdAt,lastLoginAt}, …]}`
-  (без `google_sub`). Роли меняются существующим allowlist-API ниже.
+- 🔒 `GET /api/sections?docId` (роль `editor` и выше, чтение) →
+  `{"sections": [{sectionId, chapterId, chapterTitle, title, pageStart, pageEnd,
+  counts: {total, published, draft, unclassified}, lastActivity}, …]}` — доска
+  работ по параграфам. Заливается `scripts/api/import_sections.py` из
+  `metadata.json`.
+- ⛔ `GET /api/admin/users` → `{"users": [{id, kind, displayName, role,
+  createdAt, lastLoginAt}, …]}`. Ни email, ни имени из Google, ни аватара —
+  см. `docs/anonymity-model.md`.
+- ⛔🔒 `POST /api/admin/users/{userId}/role` `{role}` → сменить роль
+- ⛔🔒 `POST /api/admin/users/{userId}/retire` → отвязать участника от аккаунта
+  (история сохраняется, связь с аккаунтом теряется)
 
-Администрирование (allowlist редакторов, публикация):
-- ⛔ `GET /api/admin/allowlist` → `{"allowlist": [{email, role, addedBy, addedAt}, …]}`
-- ⛔🔒 `POST /api/admin/allowlist` `{email, role: "editor"|"admin"}` → upsert,
-  возвращает обновлённый список
-- ⛔🔒 `DELETE /api/admin/allowlist/{email}` → удаляет запись (404, если не было)
+Администрирование (приглашения, публикация):
+- ⛔ `GET /api/admin/invites` → `{"invites": [{codeHash, role, note, createdBy,
+  createdAt, expiresAt, usedAt, usedBy}, …]}`. Кодов здесь нет — только их хеши.
+- ⛔🔒 `POST /api/admin/invites` `{role?, note?}` → `{code, invite, invites}`.
+  **`code` возвращается ровно один раз**; передаётся человеку вне системы.
+- ⛔🔒 `DELETE /api/admin/invites/{codeHash}` → отзывает неиспользованное
+  приглашение (404, если не найдено или уже погашено)
 - ⛔🔒 `POST /api/admin/publish-all` → перепубликовать все страницы из БД в
   `PUBLISH_DIR` (`{"pages": N, "failed": M}`); то же самое выполняется
   автоматически при старте сервиса (самолечение volume после пересоздания
@@ -125,25 +153,38 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 
 ### Роли
 
-Вход через Google доступен кому угодно, но роль определяется на сервере
-(`resolve_role`, пересчитывается при каждом входе):
-- `admin` — email в `ADMIN_EMAILS`;
-- `editor` — email в таблице `editor_allowlist` (роль там же может быть `admin`);
-- `viewer` — все остальные (может читать, не может писать).
+Лестница: `viewer` < `editor` < `reviewer` < `admin`.
 
-Токен-вход (`EDITOR_TOKENS`) — dev-fallback, роль всегда `editor`.
+- `viewer` — читает, не пишет;
+- `editor` — пишет черновики и правит;
+- `reviewer` — плюс к этому принимает чужие черновики и предложения категорий;
+- `admin` — плюс приглашения, роли и служебные операции.
+
+**Круг участников закрыт.** Роль выдаётся приглашением при первом входе и
+хранится в `users.role`; она не пересчитывается при каждом входе, а меняется
+явно (`POST /api/admin/users/{id}/role`). Прежний механизм — `ADMIN_EMAILS` +
+таблица `editor_allowlist` по email — упразднён вместе с хранением email;
+модель и обоснование — `docs/anonymity-model.md`, миграция —
+`scripts/api/scrub_identities.py`.
+
+Токен-вход (`AGENT_TOKENS`) — вход агентов: актор заводится с `kind='agent'`.
 
 Аутентификация (пользователи и сессии — в SQLite, `DB_PATH`):
-- `POST /api/auth/login` `{token}` — dev-fallback, токены из `EDITOR_TOKENS`,
-  роль всегда `editor` → `{userId, username}` + cookie `redpen_session`
-- `POST /api/auth/google` `{credential}` — ID-token из Google Identity
+- `POST /api/auth/login` `{token}` — вход агента, токены из `AGENT_TOKENS`
+  → `{userId, username, kind}` + cookie `redpen_session`
+- `POST /api/auth/google` `{credential, invite?}` — ID-token из Google Identity
   Services; верифицируется `google-auth` (audience = `GOOGLE_CLIENT_ID`,
-  503 если не задан); роль считается через `resolve_role(email)` →
-  `{userId, email, name, picture, role}` + cookie `redpen_session`
+  503 если не задан). Из токена берётся **только** `sub`; он хешируется
+  `HMAC(IDENTITY_PEPPER, sub)` (503, если перец не задан). Неизвестному
+  участнику нужен `invite` — иначе `403 invite required`. →
+  `{userId, role, kind, displayName}` + cookie `redpen_session`
 - `GET /api/auth/csrf` (требует сессию) → `{csrfToken}`, привязанный к сессии;
   отправляйте его в заголовке `X-CSRF-Token` на все 🔒-эндпоинты, кроме `login`
-- `GET /api/auth/me` → `{userId, email, name, picture, role, username}`
-  (401 без валидной сессии); `username` сохранён для совместимости с фронтом
+- `GET /api/auth/me` → `{userId, role, kind, displayName, username}`
+  (401 без валидной сессии); `username` — псевдоним либо «Участник №N»
+- 🔒 `POST /api/auth/display-name` `{displayName}` → сменить псевдоним (≤60 симв.)
+- 🔒 `POST /api/auth/leave` → покинуть проект: аккаунт отвязывается, сессии
+  убиваются, история остаётся связной
 - `POST /api/auth/logout` → удаляет сессию, очищает cookie, `{"ok": true}`
 
 > Легаси: `GET /api/pages/{pageId}` (формат `{docId}_page_{NNN}`, например
@@ -162,6 +203,11 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
   обратный экспорт: пишет голые массивы из БД в `<dir>/<docId>/annotations/page_*.json`
   тем же рендером, что и `publisher.py`. Используется для синхронизации
   переносимого git-снапшота `redpen-publish` с БД.
+
+- `python scripts/api/backfill_tags.py <md_dir> [--doc <docId>] [--apply]` —
+  подтягивает `tags`/`confidence` из markdown-черновиков к уже импортированным
+  аннотациям (`confidence: high` → тег `confidence:high`). По умолчанию только
+  отчёт; запись — `--apply`.
 
 ## Примеры
 

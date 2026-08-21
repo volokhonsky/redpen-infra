@@ -24,12 +24,14 @@ Links are relative (`prefix`/`up`, as in scripts/blog.py) so the site keeps
 working from a subdirectory, from file:// and from a USB stick.
 """
 
+import datetime
 import html
 import json
 import os
 import re
 from typing import Any, Dict, List, Optional
 
+import annotation_categories
 import blog
 import chapters as chapters_mod
 
@@ -95,10 +97,15 @@ def page_href(label: str) -> str:
 
 def _display_tags(ann: Dict[str, Any]) -> List[str]:
     """Tags worth showing to a reader: technique/typical-comment labels, not
-    bookkeeping ones."""
+    bookkeeping ones.
+
+    `cat:*` тоже не показываем: это зеркало поля `category`, и категория уже
+    сообщена читателю цветом. Дублировать её ещё и чипом — шум."""
     return [
         t for t in (ann.get("tags") or [])
-        if t != "draft" and not t.startswith("confidence:")
+        if t != "draft"
+        and not t.startswith("confidence:")
+        and not t.startswith(annotation_categories.CAT_PREFIX)
     ]
 
 
@@ -154,13 +161,18 @@ def _panel_list(published: List[Dict[str, Any]]) -> str:
     for ann in published:
         number += 1
         ann_type = ann.get("annType") or "comment"
+        # Категория — готовое поле аннотации (ровно одно, по умолчанию «Прочее»).
+        # Не выводим её из тегов: этим занимался переходный код, теперь значение
+        # приезжает из БД через publisher._render_item.
+        category = annotation_categories.normalize_category(ann.get("category"))
         tags = _display_tags(ann)
         tags_html = ""
         if tags:
             chips = "".join(f'<li class="panel-item__tag">{_esc(t)}</li>' for t in tags)
             tags_html = f'\n          <ul class="panel-item__tags">{chips}</ul>'
         items.append(
-            f'        <li class="panel-item panel-item--{_esc(ann_type)}" '
+            f'        <li class="panel-item panel-item--{_esc(ann_type)} '
+            f'panel-item--cat-{_esc(category)}" '
             f'id="panel-item-{_esc(str(ann["id"]))}" data-ann-id="{_esc(str(ann["id"]))}">\n'
             f'          <span class="panel-item__num" aria-hidden="true">{number}</span>\n'
             f'          <div class="panel-item__body comment-content">{render_annotation_html(ann["text"])}</div>'
@@ -213,6 +225,9 @@ def _page_data_blob(annotations: List[Dict[str, Any]]) -> str:
         item = {
             "id": ann["id"],
             "annType": ann.get("annType") or "comment",
+            # Категория — то, чем просмотрщик красит маркер. Без неё всё
+            # схлопывается в «Прочее», поэтому она в блобе всегда.
+            "category": annotation_categories.normalize_category(ann.get("category")),
             "html": render_annotation_html(ann["text"]),
         }
         if is_anchored(ann):
@@ -327,6 +342,7 @@ def render_page(
   </div>
 
 {_page_data_blob(annotations)}
+  <script src="{root}js/redpen-categories.js"></script>
   <script src="{root}js/page-view.js"></script>
 </body>
 </html>
@@ -468,6 +484,108 @@ def load_annotations(doc_dir: str, page_file: str) -> List[Dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
+#: Метка «последнее обновление» — с точностью до дня, не до минуты.
+#: Читателю нужна свежесть, а минуты складываются в публичное расписание правок:
+#: часы суток выдают часовой пояс, а при двух-трёх участниках — и людей.
+#: С тех пор как страницы перерисовываются на каждое сохранение в редакторе,
+#: минутная метка была бы прямым журналом активности прямо на сайте.
+#: См. docs/anonymity-model.md.
+STAMP_FORMAT = "%d.%m.%Y"
+
+
+def day_stamp() -> str:
+    return datetime.datetime.now().strftime(STAMP_FORMAT)
+
+
+_STAMP_RE = re.compile(r"Последнее обновление: [^<]*")
+
+#: Шапка сгенерированного файла. Живёт здесь, а не только в build_website.py,
+#: потому что страницы пишут двое: сборка и публикатор API (на каждую правку).
+#: Разойдись они хоть одной строкой — и каждый цикл «сборка → снапшот» менял бы
+#: все 448 файлов разом, а в ночном коммите не было бы видно сути.
+AUTO_HEADER = "<!-- AUTO-GENERATED FILE. Do not edit directly. Run scripts/build_website.py -->\n"
+
+
+def _write_page_preserving_stamp(out_path: str, html_text: str) -> bool:
+    """Записать страницу; если изменилась только метка даты — не трогать.
+
+    True, если файл действительно изменился.
+
+    Две причины. Во-первых, честность: метка называется «последнее обновление»,
+    и у страницы, чьи аннотации никто не трогал полгода, она должна показывать
+    ту давнюю дату, а не день последней сборки. Во-вторых, диффы: без этого
+    любая пересборка меняет все 448 файлов разом, и в ночном коммите не видно,
+    что на самом деле поменялось."""
+    try:
+        with open(out_path, "r", encoding="utf-8") as f:
+            existing = f.read()
+    except OSError:
+        existing = None
+
+    if existing is not None:
+        if _STAMP_RE.sub("", existing) == _STAMP_RE.sub("", html_text):
+            return False
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(html_text)
+    return True
+
+
+def build_single_page(doc_dir: str, page_file: str,
+                      timestamp: Optional[str] = None,
+                      auto_header: Optional[str] = None) -> Optional[str]:
+    """Перерисовать HTML одной страницы. Возвращает путь или None.
+
+    Нужна публикатору API: просмотрщик читает аннотации не из
+    `annotations/page_NNN.json`, а из инлайнового блока `redpen-page-data`,
+    вшитого сюда. Пока перерисовки не было, правка через редактор обновляла
+    JSON, но до читателя не доезжала вовсе.
+
+    None означает «страницу отрисовать нечем» — нет манифеста или в нём нет
+    такого файла. Это не ошибка: в `PUBLISH_DIR` может не быть собранного
+    сайта (dev без тома), и падать из-за этого публикация не должна.
+    """
+    metadata_path = os.path.join(doc_dir, "metadata.json")
+    if not os.path.exists(metadata_path):
+        return None
+    with open(metadata_path, "r", encoding="utf-8") as f:
+        metadata = json.load(f)
+
+    pages = metadata.get("pages")
+    if not isinstance(pages, list) or not pages:
+        return None
+
+    index = next((i for i, page in enumerate(pages) if page.get("file") == page_file), None)
+    if index is None:
+        return None
+
+    page = pages[index]
+    label = str(page.get("label") or "")
+    if not label:
+        return None
+
+    doc_id = os.path.basename(os.path.normpath(doc_dir))
+    html_text = render_page(
+        doc_id=doc_id,
+        doc_title=metadata.get("title") or doc_id,
+        label=label,
+        page_file=page_file,
+        page_name=page.get("name"),
+        annotations=load_annotations(doc_dir, page_file),
+        located=locate_label(metadata.get("chapters") or [], label),
+        prev_label=str(pages[index - 1].get("label")) if index > 0 else None,
+        next_label=str(pages[index + 1].get("label")) if index + 1 < len(pages) else None,
+        timestamp=timestamp or day_stamp(),
+    )
+
+    out_dir = os.path.join(doc_dir, PAGES_DIRNAME, label)
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, "index.html")
+    header = AUTO_HEADER if auto_header is None else auto_header
+    _write_page_preserving_stamp(out_path, header + html_text)
+    return out_path
+
+
 def build_pages(doc_dir: str, timestamp: str, auto_header: str = "") -> List[str]:
     """Write <doc_dir>/pages/<label>/index.html for every page in the manifest.
 
@@ -536,8 +654,7 @@ def build_pages(doc_dir: str, timestamp: str, auto_header: str = "") -> List[str
             next_label=str(pages[i + 1].get("label")) if i + 1 < len(pages) else None,
             timestamp=timestamp,
         )
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.write(auto_header + html_text)
+        _write_page_preserving_stamp(out_path, auto_header + html_text)
         written.append(out_path)
 
     # The contents page: without it every per-page file is an orphan that

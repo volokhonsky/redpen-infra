@@ -75,7 +75,11 @@ def test_publish_page_writes_valid_bare_array(tmp_path):
     path = os.path.join(config.PUBLISH_DIR, "doc1", "annotations", "page_006.json")
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
-    assert data == [{"id": "ann-1", "text": "one", "annType": "comment", "coords": [1, 2]}]
+    assert data == [{
+        "id": "ann-1", "text": "one", "annType": "comment", "coords": [1, 2],
+        # Категория — своё поле, по умолчанию «Прочее», плюс зеркальный тег.
+        "category": "other",
+    }]
 
 
 def test_publish_page_writes_world_readable_file(tmp_path):
@@ -115,7 +119,7 @@ def test_render_page_static_marks_drafts_with_flag_and_tag():
     rendered = publisher.render_page_static("doc1", "006")
     assert rendered == [
         {"id": "d-1", "text": "wip", "annType": "comment", "coords": [3, 4],
-         "draft": True, "tags": ["draft"]}
+         "draft": True, "category": "other", "tags": ["draft"]}
     ]
 
 
@@ -192,3 +196,24 @@ def test_publish_all_counts_pages(tmp_path):
     for doc_id, page_num in [("doc1", "006"), ("doc1", "007"), ("doc2", "-01")]:
         path = os.path.join(config.PUBLISH_DIR, doc_id, "annotations", f"page_{page_num}.json")
         assert os.path.exists(path)
+
+
+def test_render_page_stays_frozen_when_category_changes():
+    """render_page() — вход compute_page_sha(), то есть оптимистической блокировки
+    редактора. Категория в него попасть не должна: иначе классификация всех 1272
+    аннотаций отвалила бы 409 каждой открытой сессии редактора."""
+    db.upsert_annotation_db("doc1", "006", "p-1", "comment", "live", coord_x=1, coord_y=2)
+    before = publisher.render_page("doc1", "006")
+    sha_before = publisher.compute_page_sha(before)
+
+    db.upsert_annotation_db("doc1", "006", "p-1", "comment", "live", coord_x=1, coord_y=2,
+                            category="today")
+
+    after = publisher.render_page("doc1", "006")
+    assert after == before
+    assert "category" not in after[0]
+    assert publisher.compute_page_sha(after) == sha_before
+    # А в файл на диске категория, наоборот, обязана попасть.
+    static = publisher.render_page_static("doc1", "006")
+    assert static[0]["category"] == "today"
+    assert "cat:today" in static[0]["tags"]

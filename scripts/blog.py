@@ -312,7 +312,7 @@ def build_blog(output_dir, source_dir=None, timestamp=None, auto_header=''):
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         source_dir = os.path.join(project_root, BLOG_SOURCE_DIRNAME)
     if timestamp is None:
-        timestamp = datetime.datetime.now().strftime('%d.%m.%Y %H:%M')
+        timestamp = datetime.datetime.now().strftime('%d.%m.%Y')
 
     posts = load_posts(source_dir)
     if not posts:

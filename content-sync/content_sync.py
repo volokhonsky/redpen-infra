@@ -195,19 +195,32 @@ def publish_from_parent(parent: Path, public_dir: Path, staging_dir: Path, api_b
         log("failed to write publish stamp:", e)
 
 
+#: Каталоги в томе, куда пишет API (uid 10001). content-sync работает от root,
+#: и после каждого rsync владелец возвращается к root — поэтому владение
+#: восстанавливается здесь, после публикации.
+#:
+#: `annotations` — канон публикации, его владелец API с этапа 2.
+#: `pages` — HTML читателя. У него два писателя: сборка (через git и rsync) и
+#: API, который перерисовывает затронутую страницу на каждую правку. Просмотрщик
+#: читает аннотации не из JSON, а из инлайнового блока внутри этого HTML, так что
+#: без права записи сюда правка через редактор до читателя не доезжает.
+_API_OWNED_DIRS = ("annotations", "pages")
+
+
 def _ensure_annotations_dirs_owned_by_api(public_dir: Path) -> None:
-    """Create <docId>/annotations/ for any new docId and fix ownership on
-    existing ones. content-sync runs as root, but the API container writes
-    page_NNN.json as uid 10001 -- without this, a fresh docId directory (or one
-    still owned by root from before stage 2) makes the API's writes fail."""
+    """Create the API-owned directories for any new docId and fix ownership on
+    existing ones. content-sync runs as root, but the API container writes as
+    uid 10001 -- without this, a fresh docId directory (or one still owned by
+    root after an rsync) makes the API's writes fail."""
     if not public_dir.exists():
         return
     for doc_dir in public_dir.iterdir():
         if not doc_dir.is_dir():
             continue
-        ann = doc_dir / "annotations"
-        ann.mkdir(exist_ok=True)
-        subprocess.call(["chown", "-R", "10001:10001", str(ann)])
+        for name in _API_OWNED_DIRS:
+            target = doc_dir / name
+            target.mkdir(exist_ok=True)
+            subprocess.call(["chown", "-R", "10001:10001", str(target)])
 
 def bump_parent_submodules(parent: Path, msg: str) -> bool:
     """No-op in independent-repos mode.

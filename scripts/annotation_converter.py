@@ -62,6 +62,9 @@ def convert_json_to_md(json_file_path):
             md_content += f"target: {target_block}\n"
 
         # Tags round-trip too, so json -> md -> json doesn't lose them
+        category = annotation.get('category')
+        if category and category != 'other':
+            md_content += f"category: {category}\n"
         tags = annotation.get('tags') or []
         if tags:
             md_content += f"tags: [{', '.join(tags)}]\n"
@@ -149,6 +152,13 @@ def parse_markdown_annotation(md_content):
             "text": content.strip(),
             "annType": ann_type
         }
+
+        # Категория — своё поле (ровно одно, по умолчанию «Прочее»), а не тег.
+        # В md она пишется отдельной строкой `category: <slug>`; пустая или
+        # отсутствующая означает «приём не назначен».
+        category = (metadata_dict.get('category') or '').strip().lower()
+        if category:
+            annotation["category"] = category
 
         tags = parse_tags_field(metadata_dict.get('tags'))
         confidence = (metadata_dict.get('confidence') or '').strip().lower()

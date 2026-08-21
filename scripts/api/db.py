@@ -5,16 +5,25 @@ No ORM: a single module-level connection (check_same_thread=False, guarded by
 a lock) is enough since the API runs as a single uvicorn worker.
 """
 
+import hashlib
+import hmac
 import json
 import os
 import re
 import secrets
 import sqlite3
+import sys
 import threading
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import config
+
+# Категории живут одним модулем на весь проект (его же читают сборка и тесты).
+# В контейнере на sys.path только scripts/api, а репозиторий скопирован целиком
+# (см. Dockerfile: COPY . /app/), поэтому добавляем каталог scripts/ руками.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import annotation_categories  # noqa: E402
 
 SESSION_TTL_SECONDS = 30 * 86400  # 30 days, matches the auth cookie max_age
 
@@ -51,8 +60,38 @@ def init_db() -> None:
               picture_url TEXT,
               role TEXT NOT NULL DEFAULT 'viewer',
               created_at TEXT NOT NULL,
-              last_login_at TEXT
+              last_login_at TEXT,
+              -- Актор бывает двух видов: человек и агент. Правки агента ничем
+              -- не хуже человеческих, но авторство у них разное по природе:
+              -- у агента за правкой стоит прогон с версией промпта (agent_runs).
+              kind TEXT NOT NULL DEFAULT 'human',
+              display_name TEXT,
+              -- HMAC(IDENTITY_PEPPER, google_sub). Ни email, ни имени, ни аватара:
+              -- см. docs/anonymity-model.md. `sub` сам по себе непрозрачен, а с
+              -- перцем, которого нет в бэкапе, хеш ни к кому не привязывается.
+              sub_hash TEXT UNIQUE
             );
+            -- Прогон агента: что именно и с каким промптом породило правку.
+            -- Без этой таблицы «автор» машинной правки — просто токен, и вопрос
+            -- «откуда взялась эта формулировка» остаётся без ответа.
+            CREATE TABLE IF NOT EXISTS agent_runs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              actor_id INTEGER NOT NULL REFERENCES users(id),
+              agent_name TEXT NOT NULL,
+              agent_version TEXT NOT NULL,
+              model TEXT,
+              prompt_path TEXT,
+              prompt_sha256 TEXT,
+              params_json TEXT,
+              doc_id TEXT,
+              section_id TEXT,
+              status TEXT NOT NULL DEFAULT 'running',
+              notes TEXT,
+              started_at TEXT NOT NULL,
+              finished_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_agent_runs_actor
+              ON agent_runs(actor_id, id);
             CREATE TABLE IF NOT EXISTS sessions (
               id TEXT PRIMARY KEY,
               user_id INTEGER NOT NULL REFERENCES users(id),
@@ -60,12 +99,44 @@ def init_db() -> None:
               created_at TEXT NOT NULL,
               expires_at TEXT NOT NULL
             );
+            -- Приглашение: одноразовый код, выданный вне системы. Заменил
+            -- editor_allowlist по email — тот хранил личности открытым текстом
+            -- в БД, которая ежедневно уезжает в бэкап.
+            CREATE TABLE IF NOT EXISTS invites (
+              code_hash TEXT PRIMARY KEY,
+              role TEXT NOT NULL DEFAULT 'editor',
+              note TEXT,
+              created_by INTEGER REFERENCES users(id),
+              created_at TEXT NOT NULL,
+              expires_at TEXT,
+              used_at TEXT,
+              used_by INTEGER REFERENCES users(id)
+            );
+            -- Историческая таблица: заполнялась email-ами до перехода на инвайты.
+            -- Оставлена, пока scripts/api/scrub_identities.py не отработает на проде.
             CREATE TABLE IF NOT EXISTS editor_allowlist (
               email TEXT PRIMARY KEY,
               role TEXT NOT NULL DEFAULT 'editor',
               added_by TEXT,
               added_at TEXT NOT NULL
             );
+            -- Параграф учебника. Источник — manifest metadata.json
+            -- (chapters[].sections[]), заливается scripts/api/import_sections.py:
+            -- API не читает контент-файлы, а работа ведётся именно параграфами,
+            -- поэтому диапазоны страниц лежат рядом с аннотациями.
+            CREATE TABLE IF NOT EXISTS sections (
+              doc_id TEXT NOT NULL,
+              section_id TEXT NOT NULL,
+              chapter_id TEXT,
+              chapter_title TEXT,
+              title TEXT NOT NULL,
+              page_start INTEGER,
+              page_end INTEGER,
+              sort_order INTEGER NOT NULL DEFAULT 0,
+              PRIMARY KEY (doc_id, section_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_sections_range
+              ON sections(doc_id, page_start, page_end);
             CREATE TABLE IF NOT EXISTS annotations (
               rowid_pk INTEGER PRIMARY KEY AUTOINCREMENT,
               ann_id TEXT NOT NULL,
@@ -76,6 +147,9 @@ def init_db() -> None:
               coord_x INTEGER,
               coord_y INTEGER,
               status TEXT NOT NULL DEFAULT 'published',
+              category TEXT NOT NULL DEFAULT 'other',
+              category_source TEXT NOT NULL DEFAULT 'default',
+              category_set_by INTEGER REFERENCES users(id),
               author_id INTEGER REFERENCES users(id),
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
@@ -88,6 +162,8 @@ def init_db() -> None:
               UNIQUE(annotation_pk, tag)
             );
             CREATE INDEX IF NOT EXISTS idx_annotation_tags_tag ON annotation_tags(tag);
+            -- Журнал ревизий. Строка в annotations — это материализованная
+            -- «голова» последней ревизии; вся история правок живёт здесь.
             CREATE TABLE IF NOT EXISTS annotation_history (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               doc_id TEXT NOT NULL,
@@ -96,8 +172,15 @@ def init_db() -> None:
               action TEXT NOT NULL,
               snapshot TEXT NOT NULL,
               author_id INTEGER,
-              created_at TEXT NOT NULL
+              created_at TEXT NOT NULL,
+              rev_no INTEGER,
+              parent_rev_id INTEGER,
+              agent_run_id INTEGER,
+              summary TEXT
             );
+            -- TODO(2026-08-21): таблица не используется ни одним кодом --
+            -- ревью-подсистему удалили как неподключённую. DDL оставлен, пока
+            -- не проверено, что на проде она пуста; после проверки удалить.
             CREATE TABLE IF NOT EXISTS annotation_reviews (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               doc_id TEXT NOT NULL,
@@ -114,16 +197,119 @@ def init_db() -> None:
               ON annotation_reviews(doc_id, page_num, ann_id);
             """
         )
+        _migrate_schema(_conn)
         _conn.commit()
+    ensure_bootstrap_invite()
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Догоняющие ALTER-ы для баз, созданных до появления колонки.
+
+    CREATE TABLE IF NOT EXISTS ничего не добавляет в уже существующую таблицу,
+    поэтому новые колонки заводим здесь. Дефолт 'other' («Прочее») означает,
+    что старые строки не ломаются: категория у них просто не проставлена.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(annotations)")}
+    if "category" not in columns:
+        conn.execute(
+            "ALTER TABLE annotations ADD COLUMN category TEXT NOT NULL DEFAULT 'other'"
+        )
+    if "category_source" not in columns:
+        conn.execute(
+            "ALTER TABLE annotations ADD COLUMN category_source TEXT NOT NULL DEFAULT 'default'"
+        )
+    if "category_set_by" not in columns:
+        conn.execute(
+            "ALTER TABLE annotations ADD COLUMN category_set_by INTEGER REFERENCES users(id)"
+        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_annotations_category ON annotations(category)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_annotations_category_source "
+        "ON annotations(doc_id, category_source)"
+    )
+
+    users = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    if "sub_hash" not in users:
+        conn.execute("ALTER TABLE users ADD COLUMN sub_hash TEXT")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_sub_hash "
+            "ON users(sub_hash) WHERE sub_hash IS NOT NULL"
+        )
+    if "kind" not in users:
+        conn.execute("ALTER TABLE users ADD COLUMN kind TEXT NOT NULL DEFAULT 'human'")
+    if "display_name" not in users:
+        conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT")
+
+    hist = {row["name"] for row in conn.execute("PRAGMA table_info(annotation_history)")}
+    for column, ddl in (
+        ("rev_no", "rev_no INTEGER"),
+        ("parent_rev_id", "parent_rev_id INTEGER"),
+        ("agent_run_id", "agent_run_id INTEGER"),
+        ("summary", "summary TEXT"),
+    ):
+        if column not in hist:
+            conn.execute(f"ALTER TABLE annotation_history ADD COLUMN {ddl}")
+    # На annotation_history не было ни одного индекса, а на неё завязаны история
+    # комментария, «мои правки» и лента изменений — три главных экрана редактора.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_history_ann "
+        "ON annotation_history(doc_id, page_num, ann_id, id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_history_actor "
+        "ON annotation_history(author_id, id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_history_run "
+        "ON annotation_history(agent_run_id, id)"
+    )
+    _backfill_revision_numbers(conn)
+
+
+def _backfill_revision_numbers(conn: sqlite3.Connection) -> None:
+    """Проставить rev_no/parent_rev_id ревизиям, записанным до их появления.
+
+    Нумерация выводится из порядка id внутри (doc_id, page_num, ann_id): id —
+    автоинкремент, то есть порядок записи, и он надёжнее created_at (метки
+    времени огрубляются, а у импорта они и вовсе одинаковые в пределах пакета).
+    Идемпотентно: трогает только строки с NULL."""
+    if conn.execute(
+        "SELECT 1 FROM annotation_history WHERE rev_no IS NULL LIMIT 1"
+    ).fetchone() is None:
+        return
+    rows = conn.execute(
+        "SELECT id, doc_id, page_num, ann_id FROM annotation_history "
+        "ORDER BY doc_id, page_num, ann_id, id"
+    ).fetchall()
+    updates = []
+    key = None
+    rev_no = 0
+    parent = None
+    for row in rows:
+        row_key = (row["doc_id"], row["page_num"], row["ann_id"])
+        if row_key != key:
+            key, rev_no, parent = row_key, 0, None
+        rev_no += 1
+        updates.append((rev_no, parent, row["id"]))
+        parent = row["id"]
+    conn.executemany(
+        "UPDATE annotation_history SET rev_no = ?, parent_rev_id = ? WHERE id = ?",
+        updates,
+    )
 
 
 def _user_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    """Актор в том виде, в каком его знает система.
+
+    Ни email, ни имени из Google, ни аватара: их здесь больше не хранят
+    (docs/anonymity-model.md). Человека представляет выбранный им псевдоним,
+    и он же виден в истории правок."""
     return {
         "id": row["id"],
-        "googleSub": row["google_sub"],
-        "email": row["email"],
-        "name": row["name"],
-        "pictureUrl": row["picture_url"],
+        "kind": row["kind"],
+        "displayName": row["display_name"],
         "role": row["role"],
         "createdAt": row["created_at"],
         "lastLoginAt": row["last_login_at"],
@@ -137,71 +323,251 @@ def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
     return _user_row_to_dict(row) if row else None
 
 
-def resolve_role(email: Optional[str]) -> str:
-    """admin (ADMIN_EMAILS) > editor_allowlist role > viewer."""
-    if not email:
-        return "viewer"
-    if email in config.ADMIN_EMAILS:
-        return "admin"
+def list_users(limit: int = 200) -> List[Dict[str, Any]]:
     conn = get_connection()
     with _lock:
-        row = conn.execute(
-            "SELECT role FROM editor_allowlist WHERE email = ?", (email,)
-        ).fetchone()
-    return row["role"] if row else "viewer"
+        rows = conn.execute(
+            "SELECT * FROM users ORDER BY id LIMIT ?", (limit,)
+        ).fetchall()
+    return [_user_row_to_dict(row) for row in rows]
 
 
-def get_or_create_user_google(sub: str, email: str, name: str, picture: Optional[str]) -> Dict[str, Any]:
+# ===== Identity: хеш субъекта и приглашения =====
+
+
+class IdentityError(RuntimeError):
+    """Опознание невозможно настроенным образом."""
+
+
+def hash_subject(sub: str) -> str:
+    """HMAC-SHA256(перец, google_sub) — единственное, что мы знаем о человеке.
+
+    Перец живёт только в окружении сервера и не попадает ни в БД, ни в её
+    бэкапы. Пустой перец — это не «выключено», а ошибка: без него хеш
+    вырождается в обычный sha256 от `sub`, то есть считается кем угодно, у кого
+    оказался чужой `sub`."""
+    if not config.IDENTITY_PEPPER:
+        raise IdentityError("IDENTITY_PEPPER is not configured")
+    return hmac.new(
+        config.IDENTITY_PEPPER.encode("utf-8"),
+        sub.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def hash_invite_code(code: str) -> str:
+    """Код приглашения хранится хешем: БД не должна содержать живых ключей."""
+    return hashlib.sha256(code.strip().encode("utf-8")).hexdigest()
+
+
+def generate_invite_code() -> str:
+    """Код передаётся человеку вне системы, поэтому он должен читаться вслух."""
+    return "-".join(secrets.token_hex(2) for _ in range(4))
+
+
+def create_invite(role: str = "editor", note: Optional[str] = None,
+                  created_by: Optional[int] = None,
+                  expires_at: Optional[str] = None,
+                  code: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+    """Завести приглашение. Возвращает (код, запись).
+
+    Код возвращается ровно один раз — в БД лежит только его хеш. Потерянный код
+    не восстанавливается, выписывается новый."""
+    if role not in ("viewer", "editor", "reviewer", "admin"):
+        raise ValueError(f"unknown role {role!r}")
+    code = code or generate_invite_code()
     conn = get_connection()
-    role = resolve_role(email)
     now = _now_iso()
     with _lock:
-        row = conn.execute("SELECT * FROM users WHERE google_sub = ?", (sub,)).fetchone()
-        if row is None:
-            conn.execute(
-                """
-                INSERT INTO users (google_sub, email, name, picture_url, role, created_at, last_login_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (sub, email, name, picture, role, now, now),
-            )
-            conn.commit()
-            row = conn.execute("SELECT * FROM users WHERE google_sub = ?", (sub,)).fetchone()
-        else:
-            conn.execute(
-                """
-                UPDATE users SET email = ?, name = ?, picture_url = ?, role = ?, last_login_at = ?
-                WHERE id = ?
-                """,
-                (email, name, picture, role, now, row["id"]),
-            )
+        conn.execute(
+            """
+            INSERT INTO invites (code_hash, role, note, created_by, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (hash_invite_code(code), role, note, created_by, now, expires_at),
+        )
+        conn.commit()
+    return code, {"role": role, "note": note, "createdAt": now, "expiresAt": expires_at}
+
+
+def _invite_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "codeHash": row["code_hash"],
+        "role": row["role"],
+        "note": row["note"],
+        "createdBy": row["created_by"],
+        "createdAt": row["created_at"],
+        "expiresAt": row["expires_at"],
+        "usedAt": row["used_at"],
+        "usedBy": row["used_by"],
+    }
+
+
+def list_invites() -> List[Dict[str, Any]]:
+    conn = get_connection()
+    with _lock:
+        rows = conn.execute(
+            "SELECT * FROM invites ORDER BY created_at DESC, code_hash"
+        ).fetchall()
+    return [_invite_row_to_dict(row) for row in rows]
+
+
+def revoke_invite(code_hash: str) -> bool:
+    conn = get_connection()
+    with _lock:
+        cur = conn.execute(
+            "DELETE FROM invites WHERE code_hash = ? AND used_at IS NULL", (code_hash,)
+        )
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def _claim_invite(conn: sqlite3.Connection, code: str, now: str) -> Optional[str]:
+    """Погасить приглашение и вернуть выданную им роль. Вызывается под _lock."""
+    row = conn.execute(
+        "SELECT * FROM invites WHERE code_hash = ?", (hash_invite_code(code),)
+    ).fetchone()
+    if row is None or row["used_at"] is not None:
+        return None
+    if row["expires_at"] and row["expires_at"] < now:
+        return None
+    return row["role"]
+
+
+def login_with_google_sub(sub: str, invite_code: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Опознать участника по Google `sub`, при первом входе — по приглашению.
+
+    Возвращает None, если такого участника нет и приглашение не подошло. Это не
+    «неверный пароль», а «доступ не выдан»: круг участников закрыт, и вход в
+    него происходит только по коду, переданному вне системы.
+
+    Из токена Google берётся ровно `sub`. Email, имя и аватар не читаются и не
+    сохраняются — так у изъятого сервера нечего забрать."""
+    sub_hash = hash_subject(sub)
+    conn = get_connection()
+    now = _now_iso()
+    with _lock:
+        row = conn.execute("SELECT * FROM users WHERE sub_hash = ?", (sub_hash,)).fetchone()
+        if row is not None:
+            conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (now, row["id"]))
             conn.commit()
             row = conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
+            return _user_row_to_dict(row)
+
+        if not invite_code:
+            return None
+        role = _claim_invite(conn, invite_code, now)
+        if role is None:
+            return None
+        cur = conn.execute(
+            """
+            INSERT INTO users (role, created_at, last_login_at, kind, sub_hash)
+            VALUES (?, ?, ?, 'human', ?)
+            """,
+            (role, now, now, sub_hash),
+        )
+        user_id = cur.lastrowid
+        conn.execute(
+            "UPDATE invites SET used_at = ?, used_by = ? WHERE code_hash = ?",
+            (now, user_id, hash_invite_code(invite_code)),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     return _user_row_to_dict(row)
 
 
-def get_or_create_user_token(username: str) -> Dict[str, Any]:
-    """Dev-fallback token login: fixed 'editor' role, keyed by a synthetic email."""
+def set_display_name(user_id: int, display_name: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Псевдоним выбирает сам участник; он же виден в истории правок."""
+    name = (display_name or "").strip() or None
     conn = get_connection()
-    synthetic_email = f"token:{username}"
+    with _lock:
+        conn.execute("UPDATE users SET display_name = ? WHERE id = ?", (name, user_id))
+        conn.commit()
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return _user_row_to_dict(row) if row else None
+
+
+def set_user_role(user_id: int, role: str) -> Optional[Dict[str, Any]]:
+    if role not in ("viewer", "editor", "reviewer", "admin"):
+        raise ValueError(f"unknown role {role!r}")
+    conn = get_connection()
+    with _lock:
+        conn.execute("UPDATE users SET role = ? WHERE id = ?", (role, user_id))
+        conn.commit()
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return _user_row_to_dict(row) if row else None
+
+
+def retire_user(user_id: int) -> Optional[Dict[str, Any]]:
+    """«Уйти по-тихому»: отвязать аккаунт, сохранив связность истории.
+
+    Хеш субъекта и псевдоним стираются, сессии убиваются, роль падает до
+    viewer. Ревизии сохраняют author_id, поэтому история остаётся целой — но
+    соотнести её с чьим-либо аккаунтом больше нельзя."""
+    conn = get_connection()
+    with _lock:
+        conn.execute(
+            "UPDATE users SET sub_hash = NULL, display_name = ?, role = 'viewer' WHERE id = ?",
+            (f"Участник №{user_id}", user_id),
+        )
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        conn.commit()
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return _user_row_to_dict(row) if row else None
+
+
+def get_or_create_agent_actor(name: str) -> Dict[str, Any]:
+    """Актор-агент по имени токена. Роль берётся из конфигурации токена.
+
+    Раньше этот путь заводил пользователя с синтетическим email `token:<имя>` и
+    жёстко прошитой ролью editor. Email больше нет, а вид актора теперь честно
+    называется агентом — за его правками стоят прогоны (agent_runs)."""
+    conn = get_connection()
     now = _now_iso()
     with _lock:
-        row = conn.execute("SELECT * FROM users WHERE email = ?", (synthetic_email,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM users WHERE kind = 'agent' AND display_name = ?", (name,)
+        ).fetchone()
         if row is None:
-            conn.execute(
+            cur = conn.execute(
                 """
-                INSERT INTO users (google_sub, email, name, picture_url, role, created_at, last_login_at)
-                VALUES (NULL, ?, ?, NULL, 'editor', ?, ?)
+                INSERT INTO users (role, created_at, last_login_at, kind, display_name)
+                VALUES ('editor', ?, ?, 'agent', ?)
                 """,
-                (synthetic_email, username, now, now),
+                (now, now, name),
             )
             conn.commit()
-            row = conn.execute("SELECT * FROM users WHERE email = ?", (synthetic_email,)).fetchone()
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
         else:
             conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (now, row["id"]))
             conn.commit()
             row = conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
     return _user_row_to_dict(row)
+
+
+def ensure_bootstrap_invite() -> None:
+    """Выписать admin-приглашение из BOOTSTRAP_INVITE_CODE, пока админов нет.
+
+    Заменяет ADMIN_EMAILS: тот хранил бы личности открытым текстом в окружении
+    прода, рядом с бэкапами БД. Код одноразовый и гасится при первом входе; пока
+    в системе есть хоть один админ, переменная не делает ничего."""
+    if not config.BOOTSTRAP_INVITE_CODE:
+        return
+    conn = get_connection()
+    with _lock:
+        if conn.execute("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1").fetchone():
+            return
+        code_hash = hash_invite_code(config.BOOTSTRAP_INVITE_CODE)
+        if conn.execute("SELECT 1 FROM invites WHERE code_hash = ?", (code_hash,)).fetchone():
+            return
+        conn.execute(
+            """
+            INSERT INTO invites (code_hash, role, note, created_by, created_at)
+            VALUES (?, 'admin', 'bootstrap', NULL, ?)
+            """,
+            (code_hash, _now_iso()),
+        )
+        conn.commit()
 
 
 def create_session(user_id: int) -> str:
@@ -266,46 +632,6 @@ def set_session_csrf(session_id: str, token: str) -> None:
         conn.commit()
 
 
-def list_allowlist() -> List[Dict[str, Any]]:
-    conn = get_connection()
-    with _lock:
-        rows = conn.execute(
-            "SELECT * FROM editor_allowlist ORDER BY added_at DESC"
-        ).fetchall()
-    return [
-        {
-            "email": row["email"],
-            "role": row["role"],
-            "addedBy": row["added_by"],
-            "addedAt": row["added_at"],
-        }
-        for row in rows
-    ]
-
-
-def upsert_allowlist(email: str, role: str, added_by: Optional[str]) -> None:
-    conn = get_connection()
-    now = _now_iso()
-    with _lock:
-        conn.execute(
-            """
-            INSERT INTO editor_allowlist (email, role, added_by, added_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(email) DO UPDATE SET role = excluded.role, added_by = excluded.added_by
-            """,
-            (email, role, added_by, now),
-        )
-        conn.commit()
-
-
-def delete_allowlist(email: str) -> bool:
-    conn = get_connection()
-    with _lock:
-        cur = conn.execute("DELETE FROM editor_allowlist WHERE email = ?", (email,))
-        conn.commit()
-        return cur.rowcount > 0
-
-
 # ===== Annotation tags =====
 
 # `status` stays the canonical draft/published/deleted flag; the matching tags
@@ -314,6 +640,36 @@ def delete_allowlist(email: str) -> bool:
 # error, wherever the write comes from -- the API, import_annotations.py or the
 # backfill script -- hence the check lives here rather than in main.py.
 RESERVED_TAGS = frozenset({"draft", "published", "deleted"})
+
+# Префикс зеркального тега категории. Тег `cat:<slug>` появляется в
+# опубликованном JSON сам (publisher._render_item) и целиком выводится из
+# колонки category; принимать его от клиента нельзя — иначе поле и тег
+# разъедутся и снова встанет вопрос, какой из них главный.
+CATEGORY_TAG_PREFIX = annotation_categories.CAT_PREFIX
+
+#: Откуда взялась категория. Отвечает на вопрос, которого не может ответить сама
+#: колонка `category`: «Прочее» там значит одновременно и честное «не приём, а
+#: пояснение» (13 % корпуса), и «никто этим не занимался». Приёмка держится ровно
+#: на этом различии, а в опубликованный JSON источник не попадает — он служебный.
+#:
+#:   default       — никто не назначал, стоит дефолт колонки;
+#:   tags-backfill — грубая догадка category_for_tags(), требует проверки;
+#:   agent         — решение агента-классификатора, ждёт приёмки;
+#:   human         — назначено человеком, принято.
+CATEGORY_SOURCES = ("default", "tags-backfill", "agent", "human")
+DEFAULT_CATEGORY_SOURCE = "default"
+#: Источник по умолчанию, когда категорию передали явно, а источник — нет.
+#: Явная категория без указания источника приходит из редактора, то есть от человека.
+EXPLICIT_CATEGORY_SOURCE = "human"
+
+
+def normalize_category_source(raw: Any) -> str:
+    if raw is None:
+        return EXPLICIT_CATEGORY_SOURCE
+    if raw not in CATEGORY_SOURCES:
+        known = ", ".join(CATEGORY_SOURCES)
+        raise ValueError(f"unknown category source {raw!r}; allowed: {known}")
+    return raw
 
 MAX_TAG_LENGTH = 64
 MAX_TAGS_PER_ANNOTATION = 32
@@ -338,6 +694,11 @@ def normalize_tag(raw: Any) -> str:
         raise TagError(f"tag too long (max {MAX_TAG_LENGTH}): {tag[:MAX_TAG_LENGTH]}...")
     if tag in RESERVED_TAGS:
         raise TagError(f"tag '{tag}' is reserved (mirrors the status column, not stored)")
+    if tag.startswith(CATEGORY_TAG_PREFIX):
+        raise TagError(
+            f"tag '{tag}' is reserved: the category is a field of its own, "
+            f"set it via \"category\" instead"
+        )
     if not _TAG_RE.match(tag):
         raise TagError(f"tag '{tag}' has invalid characters (allowed: a-z 0-9 - :)")
     return tag
@@ -422,6 +783,290 @@ def list_all_tags(doc_id: Optional[str] = None) -> List[Dict[str, Any]]:
     return [{"tag": row["tag"], "count": row["n"]} for row in rows]
 
 
+# ===== Agent runs (прогоны агентов) =====
+
+
+def _agent_run_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "id": row["id"],
+        "actorId": row["actor_id"],
+        "agentName": row["agent_name"],
+        "agentVersion": row["agent_version"],
+        "model": row["model"],
+        "promptPath": row["prompt_path"],
+        "promptSha256": row["prompt_sha256"],
+        "docId": row["doc_id"],
+        "sectionId": row["section_id"],
+        "status": row["status"],
+        "notes": row["notes"],
+        "startedAt": row["started_at"],
+        "finishedAt": row["finished_at"],
+    }
+
+
+def start_agent_run(
+    actor_id: int,
+    agent_name: str,
+    agent_version: str,
+    model: Optional[str] = None,
+    prompt_path: Optional[str] = None,
+    prompt_sha256: Optional[str] = None,
+    params_json: Optional[str] = None,
+    doc_id: Optional[str] = None,
+    section_id: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Открыть прогон. Его id проставляется каждой ревизии этого прогона."""
+    conn = get_connection()
+    with _lock:
+        cur = conn.execute(
+            """
+            INSERT INTO agent_runs
+              (actor_id, agent_name, agent_version, model, prompt_path, prompt_sha256,
+               params_json, doc_id, section_id, status, notes, started_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)
+            """,
+            (actor_id, agent_name, agent_version, model, prompt_path, prompt_sha256,
+             params_json, doc_id, section_id, notes, _now_iso()),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM agent_runs WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return _agent_run_row_to_dict(row)
+
+
+def finish_agent_run(run_id: int, status: str = "done",
+                     notes: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    conn = get_connection()
+    with _lock:
+        conn.execute(
+            "UPDATE agent_runs SET status = ?, finished_at = ?, "
+            "notes = COALESCE(?, notes) WHERE id = ?",
+            (status, _now_iso(), notes, run_id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM agent_runs WHERE id = ?", (run_id,)).fetchone()
+    return _agent_run_row_to_dict(row) if row else None
+
+
+def get_agent_run(run_id: int) -> Optional[Dict[str, Any]]:
+    conn = get_connection()
+    with _lock:
+        row = conn.execute("SELECT * FROM agent_runs WHERE id = ?", (run_id,)).fetchone()
+    return _agent_run_row_to_dict(row) if row else None
+
+
+def list_agent_runs(actor_id: Optional[int] = None, doc_id: Optional[str] = None,
+                    limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    clauses: List[str] = []
+    params: List[Any] = []
+    if actor_id is not None:
+        clauses.append("r.actor_id = ?")
+        params.append(actor_id)
+    if doc_id is not None:
+        clauses.append("r.doc_id = ?")
+        params.append(doc_id)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    conn = get_connection()
+    with _lock:
+        rows = conn.execute(
+            f"""
+            SELECT r.*, (SELECT COUNT(*) FROM annotation_history h
+                          WHERE h.agent_run_id = r.id) AS n_revisions
+            FROM agent_runs r {where}
+            ORDER BY r.id DESC LIMIT ? OFFSET ?
+            """,
+            params + [limit, offset],
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = _agent_run_row_to_dict(row)
+        item["revisionCount"] = row["n_revisions"]
+        result.append(item)
+    return result
+
+
+def list_run_revisions(run_id: int) -> List[Dict[str, Any]]:
+    """Ревизии одного прогона, старые первыми — что именно он натворил."""
+    conn = get_connection()
+    with _lock:
+        rows = conn.execute(
+            "SELECT doc_id, page_num, ann_id, id, rev_no, action, summary "
+            "FROM annotation_history WHERE agent_run_id = ? ORDER BY id",
+            (run_id,),
+        ).fetchall()
+    return [
+        {"id": r["id"], "docId": r["doc_id"], "pageNum": r["page_num"],
+         "annId": r["ann_id"], "revNo": r["rev_no"], "action": r["action"],
+         "summary": r["summary"]}
+        for r in rows
+    ]
+
+
+def plan_agent_run_revert(run_id: int) -> List[Dict[str, Any]]:
+    """Что нужно сделать, чтобы отменить прогон целиком.
+
+    Для каждой затронутой аннотации ищем ревизию, предшествующую первой ревизии
+    этого прогона, и возвращаем её как целевое состояние. Если такой ревизии нет,
+    аннотацию создал сам прогон — её нужно удалить (мягко: ничего не стирается).
+
+    Возвращается план, а не результат: откат прогона — операция на сотни строк,
+    и человек должен увидеть её объём до, а не после."""
+    conn = get_connection()
+    with _lock:
+        touched = conn.execute(
+            "SELECT doc_id, page_num, ann_id, MIN(id) AS first_id "
+            "FROM annotation_history WHERE agent_run_id = ? "
+            "GROUP BY doc_id, page_num, ann_id ORDER BY doc_id, page_num, ann_id",
+            (run_id,),
+        ).fetchall()
+        plan: List[Dict[str, Any]] = []
+        for row in touched:
+            before = conn.execute(
+                """
+                SELECT id, rev_no, snapshot FROM annotation_history
+                WHERE doc_id = ? AND page_num = ? AND ann_id = ? AND id < ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (row["doc_id"], row["page_num"], row["ann_id"], row["first_id"]),
+            ).fetchone()
+            item = {
+                "docId": row["doc_id"],
+                "pageNum": row["page_num"],
+                "annId": row["ann_id"],
+            }
+            if before is None:
+                item["action"] = "delete"
+                item["targetRevId"] = None
+                item["targetRevNo"] = None
+            else:
+                item["action"] = "restore"
+                item["targetRevId"] = before["id"]
+                item["targetRevNo"] = before["rev_no"]
+                try:
+                    item["snapshot"] = json.loads(before["snapshot"])
+                except (TypeError, ValueError):
+                    item["snapshot"] = None
+            plan.append(item)
+    return plan
+
+
+# ===== Sections (параграфы) =====
+
+
+def replace_sections(doc_id: str, sections: List[Dict[str, Any]]) -> int:
+    """Переписать список параграфов документа целиком.
+
+    Целиком, а не по одному: manifest — источник правды, и параграф, исчезнувший
+    из него, должен исчезнуть и здесь. Аннотации на параграфы не ссылаются
+    (связь выводится по диапазону страниц), так что удалять безопасно."""
+    conn = get_connection()
+    with _lock:
+        conn.execute("DELETE FROM sections WHERE doc_id = ?", (doc_id,))
+        conn.executemany(
+            """
+            INSERT INTO sections
+              (doc_id, section_id, chapter_id, chapter_title, title,
+               page_start, page_end, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (doc_id, str(s["sectionId"]), s.get("chapterId"), s.get("chapterTitle"),
+                 s["title"], s.get("pageStart"), s.get("pageEnd"), i)
+                for i, s in enumerate(sections)
+            ],
+        )
+        conn.commit()
+    return len(sections)
+
+
+def _section_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "docId": row["doc_id"],
+        "sectionId": row["section_id"],
+        "chapterId": row["chapter_id"],
+        "chapterTitle": row["chapter_title"],
+        "title": row["title"],
+        "pageStart": row["page_start"],
+        "pageEnd": row["page_end"],
+    }
+
+
+#: Страница принадлежит параграфу, если её числовой ключ попадает в диапазон.
+#: CAST по TEXT-ключу: '006' → 6, '000' → 0, '-01' → -1, то есть передний блок
+#: (обложка, титул) ни в какой параграф не попадает — так и задумано.
+_PAGE_IN_SECTION = (
+    "CAST(a.page_num AS INTEGER) BETWEEN s.page_start AND s.page_end"
+)
+
+
+def list_sections(doc_id: str) -> List[Dict[str, Any]]:
+    """Параграфы документа со сводкой по аннотациям.
+
+    Сводка — это доска работ: сколько всего, сколько опубликовано, сколько
+    черновиков и сколько ещё не разобрано по категориям (category_source =
+    'default'). Удалённые в счёт не идут."""
+    conn = get_connection()
+    with _lock:
+        rows = conn.execute(
+            f"""
+            SELECT s.*,
+              (SELECT COUNT(*) FROM annotations a
+                WHERE a.doc_id = s.doc_id AND a.status != 'deleted'
+                  AND {_PAGE_IN_SECTION}) AS n_total,
+              (SELECT COUNT(*) FROM annotations a
+                WHERE a.doc_id = s.doc_id AND a.status = 'published'
+                  AND {_PAGE_IN_SECTION}) AS n_published,
+              (SELECT COUNT(*) FROM annotations a
+                WHERE a.doc_id = s.doc_id AND a.status = 'draft'
+                  AND {_PAGE_IN_SECTION}) AS n_draft,
+              (SELECT COUNT(*) FROM annotations a
+                WHERE a.doc_id = s.doc_id AND a.status != 'deleted'
+                  AND a.category_source = 'default'
+                  AND {_PAGE_IN_SECTION}) AS n_unclassified,
+              (SELECT MAX(a.updated_at) FROM annotations a
+                WHERE a.doc_id = s.doc_id AND {_PAGE_IN_SECTION}) AS last_activity
+            FROM sections s
+            WHERE s.doc_id = ?
+            ORDER BY s.sort_order
+            """,
+            (doc_id,),
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = _section_row_to_dict(row)
+        item["counts"] = {
+            "total": row["n_total"],
+            "published": row["n_published"],
+            "draft": row["n_draft"],
+            "unclassified": row["n_unclassified"],
+        }
+        item["lastActivity"] = row["last_activity"]
+        result.append(item)
+    return result
+
+
+def find_section_for_page(doc_id: str, page_num: str) -> Optional[Dict[str, Any]]:
+    """Параграф, которому принадлежит страница, или None.
+
+    None — законный ответ, а не ошибка: передний блок и аппарат главы
+    (например стр. 269-277) не входят ни в один параграф."""
+    try:
+        page = int(page_num)
+    except (TypeError, ValueError):
+        return None
+    conn = get_connection()
+    with _lock:
+        row = conn.execute(
+            """
+            SELECT * FROM sections
+            WHERE doc_id = ? AND ? BETWEEN page_start AND page_end
+            ORDER BY sort_order LIMIT 1
+            """,
+            (doc_id, page),
+        ).fetchone()
+    return _section_row_to_dict(row) if row else None
+
+
 # ===== Annotations (stage 2: SQLite is the canonical store) =====
 
 
@@ -436,6 +1081,9 @@ def _annotation_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         "coordX": row["coord_x"],
         "coordY": row["coord_y"],
         "status": row["status"],
+        "category": row["category"],
+        "categorySource": row["category_source"],
+        "categorySetBy": row["category_set_by"],
         "authorId": row["author_id"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
@@ -458,13 +1106,34 @@ def _insert_history(
     action: str,
     snapshot: Dict[str, Any],
     author_id: Optional[int],
+    summary: Optional[str] = None,
+    agent_run_id: Optional[int] = None,
 ) -> None:
+    """Записать ревизию. Вызывается внутри той же транзакции, что и правка.
+
+    `rev_no` и `parent_rev_id` считаются здесь, а не триггером: нумерация ведётся
+    в пределах одной аннотации, а не всей таблицы, и должна быть непрерывной,
+    чтобы «версия 3» в ссылке означала то же самое завтра."""
+    prev = conn.execute(
+        """
+        SELECT id, rev_no FROM annotation_history
+        WHERE doc_id = ? AND page_num = ? AND ann_id = ?
+        ORDER BY id DESC LIMIT 1
+        """,
+        (doc_id, page_num, ann_id),
+    ).fetchone()
     conn.execute(
         """
-        INSERT INTO annotation_history (doc_id, page_num, ann_id, action, snapshot, author_id, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO annotation_history
+          (doc_id, page_num, ann_id, action, snapshot, author_id, created_at,
+           rev_no, parent_rev_id, agent_run_id, summary)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (doc_id, page_num, ann_id, action, json.dumps(snapshot, ensure_ascii=False), author_id, _now_iso()),
+        (doc_id, page_num, ann_id, action, json.dumps(snapshot, ensure_ascii=False),
+         author_id, _now_iso(),
+         (prev["rev_no"] or 0) + 1 if prev else 1,
+         prev["id"] if prev else None,
+         agent_run_id, summary),
     )
 
 
@@ -536,6 +1205,10 @@ def upsert_annotation_db(
     author_id: Optional[int] = None,
     action: str = "update",
     tags: Optional[List[str]] = None,
+    category: Optional[str] = None,
+    category_source: Optional[str] = None,
+    summary: Optional[str] = None,
+    agent_run_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Insert or update an annotation by (doc_id, page_num, ann_id) and record
     the resulting state in annotation_history, in the same transaction.
@@ -543,27 +1216,59 @@ def upsert_annotation_db(
     `tags` is deliberately outside the column upsert: None means "leave the tag
     set alone", [] means "clear it". That way callers that predate tags
     (import_annotations.py, the editor's PUT, history revert) cannot wipe them
-    just by not mentioning them."""
+    just by not mentioning them.
+
+    `category` follows the same rule for the same reason: None means "leave it
+    alone", so a caller that predates categories cannot silently reset an
+    annotation to 'other'. A brand-new row gets the column default ('other')
+    when the caller says nothing.
+
+    `category_source` moves only together with an explicit `category`: leaving the
+    category alone must not silently promote a guess to 'human'. Passing a
+    category without a source means a human set it (that is the editor's path);
+    CLI backfills name 'tags-backfill' or 'agent' for themselves."""
     conn = get_connection()
     now = _now_iso()
     if tags is not None:
         tags = normalize_tags(tags)
+    if category is not None:
+        category = annotation_categories.normalize_category(category)
+        category_source = normalize_category_source(category_source)
+    elif category_source is not None:
+        raise ValueError("category_source without category: the source of a category "
+                         "that is not being set has no meaning")
     with _lock:
         conn.execute(
             """
             INSERT INTO annotations
-              (ann_id, doc_id, page_num, ann_type, text, coord_x, coord_y, status, author_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (ann_id, doc_id, page_num, ann_type, text, coord_x, coord_y, status, category,
+               category_source, category_set_by, author_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(doc_id, page_num, ann_id) DO UPDATE SET
               ann_type = excluded.ann_type,
               text = excluded.text,
               coord_x = excluded.coord_x,
               coord_y = excluded.coord_y,
               status = excluded.status,
+              -- NULL в параметре означает «не трогать»: COALESCE оставляет то,
+              -- что уже стоит в строке.
+              category = COALESCE(?, annotations.category),
+              -- Источник и «кто назначил» едут только вместе с явной категорией:
+              -- обычное сохранение текста не должно превращать догадку в решение
+              -- человека.
+              category_source = CASE WHEN ? IS NULL THEN annotations.category_source
+                                     ELSE excluded.category_source END,
+              category_set_by = CASE WHEN ? IS NULL THEN annotations.category_set_by
+                                     ELSE excluded.category_set_by END,
               author_id = excluded.author_id,
               updated_at = excluded.updated_at
             """,
-            (ann_id, doc_id, page_num, ann_type, text, coord_x, coord_y, status, author_id, now, now),
+            (ann_id, doc_id, page_num, ann_type, text, coord_x, coord_y, status,
+             category or annotation_categories.DEFAULT_CATEGORY,
+             category_source or DEFAULT_CATEGORY_SOURCE,
+             author_id if category is not None else None,
+             author_id, now, now,
+             category, category, category),
         )
         row = conn.execute(
             "SELECT * FROM annotations WHERE doc_id = ? AND page_num = ? AND ann_id = ?",
@@ -573,12 +1278,15 @@ def upsert_annotation_db(
         if tags is not None:
             _set_tags(conn, ann["rowidPk"], tags)
         ann["tags"] = _read_tags(conn, ann["rowidPk"])
-        _insert_history(conn, doc_id, page_num, ann_id, action, ann, author_id)
+        _insert_history(conn, doc_id, page_num, ann_id, action, ann, author_id,
+                        summary=summary, agent_run_id=agent_run_id)
         conn.commit()
     return ann
 
 
-def soft_delete_annotation(doc_id: str, page_num: str, ann_id: str, author_id: Optional[int] = None) -> bool:
+def soft_delete_annotation(doc_id: str, page_num: str, ann_id: str,
+                           author_id: Optional[int] = None,
+                           summary: Optional[str] = None) -> bool:
     """Mark a published annotation as deleted and record history. Returns False
     if the annotation doesn't exist or is already deleted."""
     conn = get_connection()
@@ -600,7 +1308,8 @@ def soft_delete_annotation(doc_id: str, page_num: str, ann_id: str, author_id: O
         ).fetchone()
         ann = _annotation_row_to_dict(row)
         ann["tags"] = _read_tags(conn, ann["rowidPk"])
-        _insert_history(conn, doc_id, page_num, ann_id, "delete", ann, author_id)
+        _insert_history(conn, doc_id, page_num, ann_id, "delete", ann, author_id,
+                        summary=summary)
         conn.commit()
     return True
 
@@ -644,6 +1353,8 @@ def _annotation_filters(
     author_id: Optional[int],
     q: Optional[str],
     tag: Optional[str] = None,
+    category: Optional[str] = None,
+    category_source: Optional[str] = None,
 ) -> Tuple[str, List[Any]]:
     clauses: List[str] = []
     params: List[Any] = []
@@ -665,6 +1376,12 @@ def _annotation_filters(
     if q:
         clauses.append("a.text LIKE ? ESCAPE '\\'")
         params.append(f"%{_escape_like(q)}%")
+    if category is not None:
+        clauses.append("a.category = ?")
+        params.append(annotation_categories.normalize_category(category))
+    if category_source is not None:
+        clauses.append("a.category_source = ?")
+        params.append(normalize_category_source(category_source))
     if tag:
         # EXISTS rather than a JOIN, so count_annotations needs no DISTINCT.
         clauses.append(
@@ -685,13 +1402,16 @@ def list_annotations(
     limit: int = 50,
     offset: int = 0,
     tag: Optional[str] = None,
+    category: Optional[str] = None,
+    category_source: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    where, params = _annotation_filters(doc_id, page_num, ann_type, status, author_id, q, tag)
+    where, params = _annotation_filters(doc_id, page_num, ann_type, status, author_id, q,
+                                        tag, category, category_source)
     conn = get_connection()
     with _lock:
         rows = conn.execute(
             f"""
-            SELECT a.*, u.name AS author_name, u.email AS author_email
+            SELECT a.*, u.display_name AS author_name
             FROM annotations a
             LEFT JOIN users u ON u.id = a.author_id
             {where}
@@ -704,7 +1424,8 @@ def list_annotations(
         for row in rows:
             item = _annotation_row_to_dict(row)
             item["authorName"] = row["author_name"]
-            item["authorEmail"] = row["author_email"]
+            # authorEmail не отдаётся: email в системе больше нет
+            # (docs/anonymity-model.md).
             result.append(item)
         return _attach_tags(conn, result)
 
@@ -717,8 +1438,11 @@ def count_annotations(
     author_id: Optional[int] = None,
     q: Optional[str] = None,
     tag: Optional[str] = None,
+    category: Optional[str] = None,
+    category_source: Optional[str] = None,
 ) -> int:
-    where, params = _annotation_filters(doc_id, page_num, ann_type, status, author_id, q, tag)
+    where, params = _annotation_filters(doc_id, page_num, ann_type, status, author_id, q,
+                                        tag, category, category_source)
     conn = get_connection()
     with _lock:
         row = conn.execute(
@@ -759,7 +1483,7 @@ def list_history(
     with _lock:
         rows = conn.execute(
             f"""
-            SELECT h.*, u.name AS author_name
+            SELECT h.*, u.display_name AS author_name
             FROM annotation_history h
             LEFT JOIN users u ON u.id = h.author_id
             {where}
@@ -785,6 +1509,10 @@ def list_history(
                 "authorId": row["author_id"],
                 "authorName": row["author_name"],
                 "createdAt": row["created_at"],
+                "revNo": row["rev_no"],
+                "parentRevId": row["parent_rev_id"],
+                "agentRunId": row["agent_run_id"],
+                "summary": row["summary"],
             }
         )
     return result
@@ -795,7 +1523,7 @@ def get_history_record(hist_id: int) -> Optional[Dict[str, Any]]:
     with _lock:
         row = conn.execute(
             """
-            SELECT h.*, u.name AS author_name
+            SELECT h.*, u.display_name AS author_name
             FROM annotation_history h
             LEFT JOIN users u ON u.id = h.author_id
             WHERE h.id = ?
@@ -821,272 +1549,10 @@ def get_history_record(hist_id: int) -> Optional[Dict[str, Any]]:
     }
 
 
-# ===== Reviews (stage 4): per-reviewer verdicts and the quorum rule =====
-
-VERDICTS = ("excellent", "ok", "bad")
-
-#: How many positive verdicts publish an annotation. "excellent" and "ok" weigh
-#: the same -- the distinction is editorial signal, not voting power -- so this
-#: always means two *different* reviewers.
-POSITIVE_QUORUM = 2
-
-
-def _review_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
-    item = {
-        "id": row["id"],
-        "docId": row["doc_id"],
-        "pageNum": row["page_num"],
-        "annId": row["ann_id"],
-        "reviewerId": row["reviewer_id"],
-        "verdict": row["verdict"],
-        "note": row["note"],
-        "createdAt": row["created_at"],
-        "updatedAt": row["updated_at"],
-    }
-    keys = row.keys()
-    if "reviewer_name" in keys:
-        item["reviewerName"] = row["reviewer_name"]
-    if "reviewer_email" in keys:
-        item["reviewerEmail"] = row["reviewer_email"]
-    return item
-
-
-def summarize_reviews(reviews: List[Dict[str, Any]]) -> Dict[str, int]:
-    excellent = sum(1 for r in reviews if r["verdict"] == "excellent")
-    ok = sum(1 for r in reviews if r["verdict"] == "ok")
-    bad = sum(1 for r in reviews if r["verdict"] == "bad")
-    return {"excellent": excellent, "ok": ok, "bad": bad, "positive": excellent + ok}
-
-
-def derive_status(current_status: str, summary: Dict[str, int]) -> str:
-    """The quorum rule, as a pure function.
-
-    One "bad" hides the annotation until that verdict changes; two positives
-    from two different reviewers publish it. An annotation nobody has reviewed
-    keeps whatever status it already has -- that is what leaves the annotations
-    published before reviewing existed untouched on the site.
-
-    'deleted' is never overridden: undeleting is an explicit act, not something
-    a verdict should do behind the editor's back.
-    """
-    if current_status == "deleted":
-        return current_status
-    if summary["bad"] > 0:
-        return "draft"
-    if summary["positive"] >= POSITIVE_QUORUM:
-        return "published"
-    return current_status
-
-
-def list_reviews(doc_id: str, page_num: str, ann_id: str) -> List[Dict[str, Any]]:
-    conn = get_connection()
-    with _lock:
-        rows = conn.execute(
-            """
-            SELECT r.*, u.name AS reviewer_name, u.email AS reviewer_email
-            FROM annotation_reviews r
-            LEFT JOIN users u ON u.id = r.reviewer_id
-            WHERE r.doc_id = ? AND r.page_num = ? AND r.ann_id = ?
-            ORDER BY r.updated_at
-            """,
-            (doc_id, page_num, ann_id),
-        ).fetchall()
-    return [_review_row_to_dict(row) for row in rows]
-
-
-def reviews_for_annotations(keys: List[Tuple[str, str, str]]) -> Dict[Tuple[str, str, str], List[Dict[str, Any]]]:
-    """Batch-load reviews for a page of the annotations list, so rendering N
-    annotations costs one query rather than N."""
-    result: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {k: [] for k in keys}
-    if not keys:
-        return result
-    docs = sorted({k[0] for k in keys})
-    placeholders = ",".join("?" for _ in docs)
-    conn = get_connection()
-    with _lock:
-        rows = conn.execute(
-            f"""
-            SELECT r.*, u.name AS reviewer_name, u.email AS reviewer_email
-            FROM annotation_reviews r
-            LEFT JOIN users u ON u.id = r.reviewer_id
-            WHERE r.doc_id IN ({placeholders})
-            ORDER BY r.updated_at
-            """,
-            docs,
-        ).fetchall()
-    for row in rows:
-        key = (row["doc_id"], row["page_num"], row["ann_id"])
-        if key in result:
-            result[key].append(_review_row_to_dict(row))
-    return result
-
-
-def _apply_quorum(
-    conn: sqlite3.Connection, doc_id: str, page_num: str, ann_id: str, actor_id: Optional[int]
-) -> Optional[str]:
-    """Recompute the derived status inside an open transaction. Returns the new
-    status if it changed (and records history), else None."""
-    ann_row = conn.execute(
-        "SELECT * FROM annotations WHERE doc_id = ? AND page_num = ? AND ann_id = ?",
-        (doc_id, page_num, ann_id),
-    ).fetchone()
-    if ann_row is None:
-        return None
-    review_rows = conn.execute(
-        "SELECT verdict FROM annotation_reviews WHERE doc_id = ? AND page_num = ? AND ann_id = ?",
-        (doc_id, page_num, ann_id),
-    ).fetchall()
-    summary = summarize_reviews([{"verdict": r["verdict"]} for r in review_rows])
-    new_status = derive_status(ann_row["status"], summary)
-    if new_status == ann_row["status"]:
-        return None
-    conn.execute(
-        "UPDATE annotations SET status = ?, updated_at = ? WHERE doc_id = ? AND page_num = ? AND ann_id = ?",
-        (new_status, _now_iso(), doc_id, page_num, ann_id),
-    )
-    updated = conn.execute(
-        "SELECT * FROM annotations WHERE doc_id = ? AND page_num = ? AND ann_id = ?",
-        (doc_id, page_num, ann_id),
-    ).fetchone()
-    _insert_history(conn, doc_id, page_num, ann_id, "review", _annotation_row_to_dict(updated), actor_id)
-    return new_status
-
-
-def upsert_review(
-    doc_id: str,
-    page_num: str,
-    ann_id: str,
-    reviewer_id: int,
-    verdict: str,
-    note: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Record (or replace) one reviewer's verdict and re-apply the quorum rule.
-
-    Returns {"review": ..., "statusChanged": <new status or None>}.
-    """
-    if verdict not in VERDICTS:
-        raise ValueError(f"invalid verdict: {verdict}")
-    conn = get_connection()
-    now = _now_iso()
-    with _lock:
-        conn.execute(
-            """
-            INSERT INTO annotation_reviews
-              (doc_id, page_num, ann_id, reviewer_id, verdict, note, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(doc_id, page_num, ann_id, reviewer_id) DO UPDATE SET
-              verdict = excluded.verdict,
-              note = excluded.note,
-              updated_at = excluded.updated_at
-            """,
-            (doc_id, page_num, ann_id, reviewer_id, verdict, note, now, now),
-        )
-        new_status = _apply_quorum(conn, doc_id, page_num, ann_id, reviewer_id)
-        row = conn.execute(
-            """
-            SELECT r.*, u.name AS reviewer_name, u.email AS reviewer_email
-            FROM annotation_reviews r
-            LEFT JOIN users u ON u.id = r.reviewer_id
-            WHERE r.doc_id = ? AND r.page_num = ? AND r.ann_id = ? AND r.reviewer_id = ?
-            """,
-            (doc_id, page_num, ann_id, reviewer_id),
-        ).fetchone()
-        conn.commit()
-    return {"review": _review_row_to_dict(row), "statusChanged": new_status}
-
-
-def delete_review(doc_id: str, page_num: str, ann_id: str, reviewer_id: int) -> Dict[str, Any]:
-    """Withdraw one reviewer's verdict and re-apply the quorum rule."""
-    conn = get_connection()
-    with _lock:
-        cur = conn.execute(
-            "DELETE FROM annotation_reviews WHERE doc_id = ? AND page_num = ? AND ann_id = ? AND reviewer_id = ?",
-            (doc_id, page_num, ann_id, reviewer_id),
-        )
-        removed = cur.rowcount > 0
-        new_status = _apply_quorum(conn, doc_id, page_num, ann_id, reviewer_id) if removed else None
-        conn.commit()
-    return {"removed": removed, "statusChanged": new_status}
-
-
-def review_coverage(doc_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Per-page counts for the overview: how many annotations sit in each status
-    and in each review state. The cabinet rolls these up into paragraphs on the
-    client, using chapters[].sections[].startPage from metadata.json."""
-    conn = get_connection()
-    params: List[Any] = []
-    where = ""
-    if doc_id is not None:
-        where = "WHERE a.doc_id = ?"
-        params.append(doc_id)
-    with _lock:
-        rows = conn.execute(
-            f"""
-            SELECT a.doc_id, a.page_num, a.status,
-                   SUM(CASE WHEN r.verdict = 'excellent' THEN 1 ELSE 0 END) AS n_excellent,
-                   SUM(CASE WHEN r.verdict = 'ok' THEN 1 ELSE 0 END) AS n_ok,
-                   SUM(CASE WHEN r.verdict = 'bad' THEN 1 ELSE 0 END) AS n_bad
-            FROM annotations a
-            LEFT JOIN annotation_reviews r
-              ON r.doc_id = a.doc_id AND r.page_num = a.page_num AND r.ann_id = a.ann_id
-            {where}
-            GROUP BY a.rowid_pk
-            """,
-            params,
-        ).fetchall()
-
-    pages: Dict[Tuple[str, str], Dict[str, Any]] = {}
-    for row in rows:
-        key = (row["doc_id"], row["page_num"])
-        page = pages.setdefault(
-            key,
-            {
-                "docId": row["doc_id"],
-                "pageNum": row["page_num"],
-                "total": 0,
-                "published": 0, "draft": 0, "deleted": 0,
-                "excellent": 0, "ok": 0, "bad": 0,
-                "rejected": 0, "approved": 0, "partial": 0, "unreviewed": 0,
-            },
-        )
-        page["total"] += 1
-        if row["status"] in ("published", "draft", "deleted"):
-            page[row["status"]] += 1
-        page["excellent"] += row["n_excellent"]
-        page["ok"] += row["n_ok"]
-        page["bad"] += row["n_bad"]
-        positive = row["n_excellent"] + row["n_ok"]
-        if row["n_bad"] > 0:
-            page["rejected"] += 1
-        elif positive >= POSITIVE_QUORUM:
-            page["approved"] += 1
-        elif positive > 0:
-            page["partial"] += 1
-        else:
-            page["unreviewed"] += 1
-
-    return sorted(pages.values(), key=lambda p: (p["docId"], p["pageNum"]))
-
-
-def list_users() -> List[Dict[str, Any]]:
-    conn = get_connection()
-    with _lock:
-        rows = conn.execute(
-            "SELECT id, email, name, picture_url, role, created_at, last_login_at FROM users ORDER BY created_at DESC"
-        ).fetchall()
-    return [
-        {
-            "id": row["id"],
-            "email": row["email"],
-            "name": row["name"],
-            "pictureUrl": row["picture_url"],
-            "role": row["role"],
-            "createdAt": row["created_at"],
-            "lastLoginAt": row["last_login_at"],
-        }
-        for row in rows
-    ]
-
+# Ревью-подсистема (кворум рецензентов) была отсюда удалена 2026-08-21:
+# код существовал с этапа 3, но не был подключён ни к API, ни к кабинету,
+# ни к тестам. Таблица annotation_reviews в init_db оставлена намеренно
+# (см. TODO там). Восстановить можно из git: scripts/api/db.py до этой даты.
 
 def get_stats() -> Dict[str, Any]:
     conn = get_connection()
@@ -1100,7 +1566,7 @@ def get_stats() -> Dict[str, Any]:
         ).fetchall()
         recent_rows = conn.execute(
             """
-            SELECT h.doc_id, h.page_num, h.ann_id, h.action, h.created_at, u.name AS author_name
+            SELECT h.doc_id, h.page_num, h.ann_id, h.action, h.created_at, u.display_name AS author_name
             FROM annotation_history h
             LEFT JOIN users u ON u.id = h.author_id
             ORDER BY h.id DESC
