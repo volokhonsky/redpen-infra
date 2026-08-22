@@ -132,7 +132,15 @@ def main() -> int:
             stats["пропущено (уже размечено)"] += 1
             continue
         if new == current:
-            stats["без изменений"] += 1
+            # Решение совпало со значением. Если его уже кто-то принимал —
+            # писать нечего. Если источник всё ещё «никто не смотрел», записать
+            # надо: осознанно выбранное «Прочее» ровно тем и отличается от
+            # неразобранного, что кто-то его выбрал.
+            if row["category_source"] != db.DEFAULT_CATEGORY_SOURCE:
+                stats["без изменений"] += 1
+                continue
+            changes.append((row, new))
+            stats[f"{current}: подтверждено"] += 1
             continue
         changes.append((row, new))
         stats[f"{current} → {new}"] += 1
