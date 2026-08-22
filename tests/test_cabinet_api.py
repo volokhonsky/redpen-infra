@@ -359,3 +359,50 @@ def test_bad_category_and_source_are_rejected(monkeypatch):
     c = _editor(monkeypatch, "cat-bad@example.com")
     assert c.get("/api/annotations?category=nonsense").status_code == 400
     assert c.get("/api/annotations?categorySource=oracle").status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# GET /api/annotations/{docId}/{pageKey}/{annId} — вход карточки комментария
+# ---------------------------------------------------------------------------
+
+
+def test_single_annotation_returns_everything_the_card_needs(monkeypatch):
+    doc = "carddoc"
+    db.upsert_annotation_db(doc, "006", "ann-1", "main", "текст комментария",
+                            coord_x=10, coord_y=20, action="create",
+                            category="omission", author_id=1, tags=["framing"])
+    db.replace_sections(doc, [{"sectionId": "1", "title": "§ 1. Раздел",
+                               "pageStart": 6, "pageEnd": 20}])
+    c = _editor(monkeypatch, "card-one@example.com")
+
+    r = c.get(f"/api/annotations/{doc}/006/ann-1")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["annotation"]["text"] == "текст комментария"
+    assert body["annotation"]["category"] == "omission"
+    assert body["annotation"]["categorySource"] == "human"
+    assert body["annotation"]["tags"] == ["framing"]
+    assert body["annotation"]["coordX"] == 10
+    # Параграф нужен карточке для навигации и заголовка.
+    assert body["section"]["sectionId"] == "1"
+
+
+def test_single_annotation_404_when_missing(monkeypatch):
+    c = _editor(monkeypatch, "card-missing@example.com")
+    assert c.get("/api/annotations/carddoc/006/нет-такого").status_code == 404
+
+
+def test_single_annotation_requires_editor(monkeypatch):
+    db.upsert_annotation_db("carddoc2", "006", "ann-1", "main", "t", action="create")
+    assert anon().get("/api/annotations/carddoc2/006/ann-1").status_code == 401
+    viewer = _login_google(monkeypatch, "card-viewer-sub")
+    assert viewer.get("/api/annotations/carddoc2/006/ann-1").status_code == 403
+
+
+def test_page_outside_any_section_is_not_an_error(monkeypatch):
+    db.upsert_annotation_db("carddoc3", "000", "ann-cover", "main", "обложка",
+                            action="create")
+    c = _editor(monkeypatch, "card-front@example.com")
+    r = c.get("/api/annotations/carddoc3/000/ann-cover")
+    assert r.status_code == 200
+    assert r.json()["section"] is None

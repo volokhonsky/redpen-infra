@@ -1,0 +1,174 @@
+/* Редактор комментария. Две колонки: слева работа, справа то, что увидит
+   читатель. Просмотр справа — iframe на страницу просмотрщика, поэтому его
+   стили сюда не протекают и протекать не должны. */
+
+:root {
+  --app-line: #d8dce2;
+  --app-muted: #6b7280;
+  --app-accent: #c0392b;
+  --app-bg: #f7f8fa;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #1f2328;
+  background: var(--app-bg);
+}
+
+/* --- шапка ------------------------------------------------------------- */
+
+.app-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--app-accent);
+  color: #fff;
+}
+
+.app-brand { color: #fff; font-weight: 700; text-decoration: none; }
+.app-title { opacity: 0.85; font-size: 0.9rem; }
+.app-profile { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 0.9rem; }
+.app-who { font-weight: 600; }
+.app-role { opacity: 0.85; }
+.app-profile button {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 4px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.app-status {
+  padding: 8px 16px;
+  background: #eef2f7;
+  border-bottom: 1px solid var(--app-line);
+  font-size: 0.9rem;
+}
+.app-status.is-error { background: #fdecea; color: #8a1c12; }
+.app-error { color: #8a1c12; min-height: 1.2em; font-size: 0.9rem; }
+
+/* --- вход -------------------------------------------------------------- */
+
+.app-card {
+  max-width: 420px;
+  margin: 40px auto;
+  padding: 20px;
+  background: #fff;
+  border: 1px solid var(--app-line);
+  border-radius: 6px;
+}
+.app-invite { display: block; margin-top: 12px; font-size: 0.85rem; color: var(--app-muted); }
+.app-invite input {
+  display: block; width: 100%; margin-top: 4px; padding: 6px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* --- раскладка --------------------------------------------------------- */
+
+#app-main {
+  display: grid;
+  grid-template-columns: minmax(420px, 1fr) minmax(480px, 1.1fr);
+  gap: 16px;
+  padding: 16px;
+  align-items: start;
+}
+
+.app-pane {
+  background: #fff;
+  border: 1px solid var(--app-line);
+  border-radius: 6px;
+  padding: 16px;
+}
+
+.app-breadcrumbs {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  font-size: 0.85rem; color: var(--app-muted);
+  padding-bottom: 10px; margin-bottom: 12px;
+  border-bottom: 1px solid var(--app-line);
+}
+.app-breadcrumbs span:not(:last-child)::after { content: " ›"; }
+.app-breadcrumbs code { font-size: 0.8rem; background: #eef1f5; padding: 1px 5px; border-radius: 3px; }
+
+/* --- форма ------------------------------------------------------------- */
+
+.app-field { display: block; margin-bottom: 12px; }
+.app-field > span { display: block; font-size: 0.82rem; color: var(--app-muted); margin-bottom: 4px; }
+.app-field > span b { color: var(--app-accent); }
+.app-field textarea, .app-field input, .app-field select {
+  width: 100%; padding: 7px 9px; font-size: 0.95rem;
+  border: 1px solid var(--app-line); border-radius: 4px;
+  font-family: inherit;
+}
+.app-field textarea { resize: vertical; line-height: 1.45; }
+.app-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+
+.app-actions { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+.app-actions button {
+  padding: 7px 16px; border-radius: 4px; border: 1px solid var(--app-accent);
+  background: var(--app-accent); color: #fff; cursor: pointer; font-size: 0.92rem;
+}
+.app-actions button[disabled] { opacity: 0.45; cursor: default; }
+.app-btn-secondary { background: #fff !important; color: #1f2328 !important; border-color: var(--app-line) !important; }
+
+.app-hint { font-size: 0.82rem; color: var(--app-muted); }
+.app-hint.is-todo { color: #8a5b00; }
+.app-hint.is-ok { color: #1d6f42; }
+
+/* --- история ----------------------------------------------------------- */
+
+.app-history { margin-top: 20px; border-top: 1px solid var(--app-line); padding-top: 14px; }
+.app-history h3 { margin: 0 0 10px; font-size: 0.95rem; }
+.app-revisions { list-style: none; margin: 0; padding: 0; }
+.app-empty { color: var(--app-muted); font-size: 0.9rem; }
+
+.app-rev { border-left: 2px solid var(--app-line); padding: 6px 0 10px 10px; margin-bottom: 4px; }
+.app-rev-head {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+  font-size: 0.82rem; color: var(--app-muted);
+}
+.app-rev-no { font-weight: 700; color: #1f2328; }
+.app-rev-action { background: #eef1f5; border-radius: 3px; padding: 0 6px; }
+.app-rev-day { margin-left: auto; }
+.app-agent { background: #ede7f6; border-radius: 3px; padding: 0 5px; }
+.app-rev-summary { font-size: 0.88rem; margin-top: 3px; }
+.app-rev-cat { font-size: 0.8rem; color: var(--app-muted); margin-top: 2px; }
+.app-rev-text { font-size: 0.85rem; color: #444; margin-top: 3px; white-space: pre-wrap; }
+
+/* --- просмотр ---------------------------------------------------------- */
+
+.app-pane--preview { position: sticky; top: 16px; display: flex; flex-direction: column; }
+.app-preview-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.app-preview-head h3 { margin: 0; font-size: 0.95rem; }
+.app-preview-head a { margin-left: auto; font-size: 0.82rem; }
+/* Просмотр рисуется в настоящую десктопную ширину и ужимается под панель.
+   Иначе внутри узкого iframe включаются мобильные правила просмотрщика, и
+   редактор показывал бы не то, что увидит большинство читателей. */
+.app-preview-fit {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--app-line);
+  border-radius: 4px;
+  background: #fff;
+  height: calc(100vh - 170px);
+  min-height: 480px;
+}
+
+#app-preview {
+  width: var(--preview-width, 1200px);
+  height: var(--preview-height, 1000px);
+  border: 0;
+  transform-origin: 0 0;
+  background: #fff;
+}
+
+@media (max-width: 1100px) {
+  #app-main { grid-template-columns: 1fr; }
+  .app-pane--preview { position: static; }
+  #app-preview { height: 70vh; }
+  .app-row { grid-template-columns: 1fr; }
+}

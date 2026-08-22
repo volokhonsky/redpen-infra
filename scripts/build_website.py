@@ -635,11 +635,14 @@ def publish_website_data(target_dir=None, document=None, specific_folders=None):
             publish_data.copy_files(templates_dir, output_dir, "*.svg")
 
         # Copy the cabinet page (stage 3): index.html, cabinet.js, cabinet.css
-        cabinet_src = os.path.join(templates_dir, 'cabinet')
-        cabinet_dest = os.path.join(output_dir, 'cabinet')
-        if os.path.exists(cabinet_src):
-            for pattern in ("*.html", "*.js", "*.css"):
-                publish_data.copy_files(cabinet_src, cabinet_dest, pattern)
+        # Кабинет и редактор устроены одинаково: своя точка входа, свой
+        # html/js/css, все данные из API. Просмотрщик о них не знает.
+        for app_name in ('cabinet', 'app'):
+            app_src = os.path.join(templates_dir, app_name)
+            app_dest = os.path.join(output_dir, app_name)
+            if os.path.exists(app_src):
+                for pattern in ("*.html", "*.js", "*.css"):
+                    publish_data.copy_files(app_src, app_dest, pattern)
 
         return True
     except Exception as e:

@@ -468,6 +468,13 @@
   function drawMarkers() {
     if (!image || !image.complete || !image.naturalWidth) return;
     if (!ensureOverlay()) return;
+    drawMarkersInner();
+    // Поп-апы только что пересозданы — раскрыть заново. Живёт здесь, а не в
+    // refresh(), потому что перерисовка случается ещё и по resize и по load.
+    openOnlyAnnotation();
+  }
+
+  function drawMarkersInner() {
 
     var scaleX = image.width / image.naturalWidth;
     var scaleY = image.height / image.naturalHeight;
@@ -623,6 +630,33 @@
 
   // --- запуск -------------------------------------------------------------
 
+  // По ссылке на один комментарий он должен быть сразу раскрыт: кружок без
+  // текста — не ответ на «покажи мне вот этот комментарий». Работает и как
+  // постоянная ссылка для читателя, и как окно предпросмотра в редакторе.
+  function openOnlyAnnotation() {
+    var only = onlyId();
+    if (!only) return;
+    var ann = null;
+    for (var i = 0; i < visible.length; i++) {
+      if (String(visible[i].id) === only) { ann = visible[i]; break; }
+    }
+    if (!ann) return;
+    // Здесь условие — ширина, а не canHover(): поп-апы скрыты правилом CSS
+    // `@media (max-width: 767px)`, и на узком экране (в том числе в окне
+    // предпросмотра редактора) раскрытый поп-ап был бы невидим. Клики
+    // по-прежнему различают режимы по canHover() — это осознанное решение
+    // просмотрщика, его не трогаем.
+    if (window.matchMedia('(max-width: 767px)').matches) {
+      showMobileComment(0, ann);
+    } else {
+      var popup = document.getElementById('popup-' + ann.id);
+      if (popup) pinPopup(popup);
+    }
+    // Прокручиваем к маркеру: по ссылке на один комментарий он может быть в
+    // самом низу длинной страницы, и без этого читатель увидит пустой скан.
+    selectAnnotation(ann.id, 'image');
+  }
+
   function refresh() {
     visible = applyFilter(data);
     if (!isDefaultView(visible)) renderPanel(visible);
@@ -647,7 +681,8 @@
         syncListWrap(visible.length);
       });
       // Пересчёт после того, как раскладка устоялась: до этого img.width
-      // может быть нулевой и маркеры схлопнутся в точку.
+      // может быть нулевой и маркеры схлопнутся в точку. Поп-апы при этом
+      // пересоздаются, поэтому раскрытие по ?only= надо повторить.
       setTimeout(drawMarkers, 100);
     }
 

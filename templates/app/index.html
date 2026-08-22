@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Мединский.нет — редактор</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <meta name="robots" content="noindex,nofollow" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <header class="app-top">
+    <a class="app-brand" href="../">Мединский.нет</a>
+    <span class="app-title">редактор</span>
+    <div id="app-profile" class="app-profile"></div>
+  </header>
+
+  <div id="app-status" class="app-status" hidden></div>
+
+  <div id="app-login" class="app-card" hidden>
+    <h2>Вход</h2>
+    <div id="app-google-btn"></div>
+    <label class="app-invite">
+      <span>Код приглашения — только при первом входе</span>
+      <input id="app-invite-input" type="text" placeholder="0000-0000-0000-0000"
+             autocomplete="off" spellcheck="false" />
+    </label>
+    <div id="app-login-error" class="app-error"></div>
+  </div>
+
+  <main id="app-main" hidden>
+    <!-- Слева правка и история, справа — то, что увидит читатель. -->
+    <section class="app-pane app-pane--work">
+      <nav id="app-breadcrumbs" class="app-breadcrumbs"></nav>
+
+      <form id="app-form" class="app-form">
+        <label class="app-field">
+          <span>Текст комментария</span>
+          <textarea id="f-text" rows="10" required></textarea>
+        </label>
+
+        <div class="app-row">
+          <label class="app-field">
+            <span>Категория <b title="Обязательна к применению">*</b></span>
+            <select id="f-category" required></select>
+          </label>
+          <label class="app-field">
+            <span>Тип</span>
+            <select id="f-anntype">
+              <option value="main">main — основной разбор</option>
+              <option value="comment">comment — замечание</option>
+            </select>
+          </label>
+          <label class="app-field">
+            <span>Статус</span>
+            <select id="f-status">
+              <option value="draft">черновик</option>
+              <option value="published">опубликован</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="app-field">
+          <span>Теги через запятую</span>
+          <input id="f-tags" type="text" autocomplete="off" spellcheck="false" />
+        </label>
+
+        <label class="app-field">
+          <span>Резюме правки — что и зачем изменено</span>
+          <input id="f-summary" type="text" maxlength="200" autocomplete="off" />
+        </label>
+
+        <div class="app-actions">
+          <button type="submit" id="f-save">Сохранить</button>
+          <button type="button" id="f-reload" class="app-btn-secondary">Перечитать</button>
+          <span id="f-hint" class="app-hint"></span>
+        </div>
+      </form>
+
+      <section class="app-history">
+        <h3>История правок</h3>
+        <ol id="app-revisions" class="app-revisions"></ol>
+      </section>
+    </section>
+
+    <section class="app-pane app-pane--preview">
+      <div class="app-preview-head">
+        <h3>Как увидит читатель</h3>
+        <a id="app-preview-link" href="#" target="_blank" rel="noopener">открыть отдельно</a>
+      </div>
+      <div id="app-preview-fit" class="app-preview-fit">
+        <iframe id="app-preview" title="Просмотр страницы с этим комментарием"></iframe>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // На localhost редактор говорит с локальным API, а не с продом: иначе
+    // локальный стенд молча правит боевые данные.
+    (function () {
+      if (window.REDPEN_API_BASE) return;
+      var host = window.location.hostname;
+      if (host === 'localhost' || host === '127.0.0.1') {
+        var port = new URLSearchParams(window.location.search).get('api') || '8080';
+        window.REDPEN_API_BASE = 'http://' + host + ':' + port;
+        return;
+      }
+      window.REDPEN_API_BASE = 'https://api.medinsky.net';
+    })();
+    window.REDPEN_GOOGLE_CLIENT_ID = window.REDPEN_GOOGLE_CLIENT_ID || '679121872329-tl9fk0aq6i1rjf6jgdb1460p0pvn50md.apps.googleusercontent.com';
+  </script>
+  <script src="../js/redpen-categories.js"></script>
+  <script src="../js/redpen-auth.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

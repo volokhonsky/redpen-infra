@@ -1065,6 +1065,23 @@ async def list_annotations(
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
+@app.get("/api/annotations/{docId}/{pageKey}/{annId}")
+async def get_one_annotation(docId: str, pageKey: str, annId: str,
+                             user: Dict[str, Any] = Depends(require_editor_read)):
+    """Один комментарий целиком — вход карточки в редакторе.
+
+    Список `/api/annotations` для этого не годится: карточке нужен конкретный
+    комментарий по адресу, а не страница выдачи, из которой его надо выуживать."""
+    if not _validate_doc_id(docId):
+        raise HTTPException(status_code=400, detail="invalid docId")
+    page_num_str = _validate_page_key(pageKey)
+    ann = db.get_annotation(docId, page_num_str, annId)
+    if ann is None:
+        raise HTTPException(status_code=404, detail="annotation not found")
+    section = db.find_section_for_page(docId, page_num_str)
+    return {"annotation": ann, "section": section}
+
+
 @app.get("/api/sections")
 async def get_sections(docId: str, user: Dict[str, Any] = Depends(require_editor_read)):
     """Параграфы документа со сводкой — доска работ редактора.

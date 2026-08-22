@@ -26,7 +26,7 @@ NOINDEX_RE = re.compile(
 # Never advertise these: the editor surface, the duplicate kept for tests, and
 # anything under the cabinet (authenticated) or the offline bundle staging.
 SKIP_NAMES = {"document_index.html"}
-SKIP_DIRS = {"cabinet", ".git"}
+SKIP_DIRS = {"cabinet", "app", ".git"}
 
 
 def is_indexable(path: str) -> bool:
@@ -82,6 +82,7 @@ def render_robots(base_url: str) -> str:
         "Allow: /\n"
         # The editor and the cabinet are behind auth and have nothing to index.
         "Disallow: /cabinet/\n"
+        "Disallow: /app/\n"
         "Disallow: /*?editor=\n"
         f"\nSitemap: {base_url}/sitemap.xml\n"
     )
