@@ -1059,6 +1059,7 @@ async def list_annotations(
     tag: Optional[str] = None,
     category: Optional[str] = None,
     categorySource: Optional[str] = None,
+    section: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     user: Dict[str, Any] = Depends(require_editor_read),
@@ -1084,12 +1085,12 @@ async def list_annotations(
     items = db.list_annotations(
         doc_id=docId, page_num=validated["pageKey"], ann_type=annType, status=status,
         author_id=authorId, q=q, limit=limit, offset=offset, tag=tag,
-        category=category, category_source=categorySource,
+        category=category, category_source=categorySource, section_id=section,
     )
     total = db.count_annotations(
         doc_id=docId, page_num=validated["pageKey"], ann_type=annType, status=status,
         author_id=authorId, q=q, tag=tag,
-        category=category, category_source=categorySource,
+        category=category, category_source=categorySource, section_id=section,
     )
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 

@@ -172,3 +172,55 @@ body {
   #app-preview { height: 70vh; }
   .app-row { grid-template-columns: 1fr; }
 }
+
+/* --- списки: доска работ и параграф ------------------------------------ */
+
+.app-list {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.app-listhead { display: flex; align-items: baseline; gap: 16px; margin-bottom: 12px; }
+.app-listhead h2 { margin: 0; font-size: 1.15rem; }
+.app-back { margin-left: auto; font-size: 0.88rem; }
+
+.app-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--app-muted); }
+.app-inline select {
+  padding: 4px 8px; border: 1px solid var(--app-line); border-radius: 4px;
+  font-family: inherit; font-size: 0.88rem;
+}
+
+.app-filters {
+  display: flex; flex-wrap: wrap; gap: 16px; align-items: center;
+  padding: 10px 12px; margin-bottom: 12px;
+  background: #fff; border: 1px solid var(--app-line); border-radius: 6px;
+}
+.app-filters .app-hint { margin-left: auto; }
+
+.app-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+  border: 1px solid var(--app-line);
+  border-radius: 6px;
+  overflow: hidden;
+  font-size: 0.9rem;
+}
+.app-table th, .app-table td {
+  text-align: left;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--app-line);
+  vertical-align: top;
+}
+.app-table th { background: #f2f4f7; font-weight: 600; font-size: 0.82rem; color: var(--app-muted); }
+.app-table tr:last-child td { border-bottom: 0; }
+.app-table td.num, .app-table th.num { text-align: right; }
+/* «Не разобрано» выделяем: этот столбец показывает, где работа. */
+.app-table .is-todo { color: #8a5b00; font-weight: 600; }
+.app-nowrap { white-space: nowrap; }
+
+.app-dot {
+  display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+  margin-right: 6px; vertical-align: baseline;
+}

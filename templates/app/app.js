@@ -21,6 +21,7 @@
     ref: null,        // {docId, pageKey, annId}
     annotation: null,
     manifest: {},     // docId -> {page_006: "6"}
+    section: null,    // текущий параграф, чтобы перечитывать его по фильтрам
     dirty: false
   };
 
@@ -84,16 +85,36 @@
     return res.json();
   }
 
+  //: Все экраны приложения. Показываем ровно один — так не приходится
+  //: помнить, что спрятать при каждом переходе.
+  var VIEWS = ['view-sections', 'view-section', 'app-main'];
+
+  function showView(id) {
+    VIEWS.forEach(function (name) { el(name).hidden = name !== id; });
+  }
+
   // --- адрес --------------------------------------------------------------
 
   function parseHash() {
-    var m = (window.location.hash || '').match(/^#\/ann\/([^/]+)\/([^/]+)\/(.+)$/);
-    if (!m) return null;
-    return {
-      docId: decodeURIComponent(m[1]),
-      pageKey: decodeURIComponent(m[2]),
-      annId: decodeURIComponent(m[3])
-    };
+    var hash = window.location.hash || '';
+    var ann = hash.match(/^#\/ann\/([^/]+)\/([^/]+)\/(.+)$/);
+    if (ann) {
+      return {
+        view: 'ann',
+        docId: decodeURIComponent(ann[1]),
+        pageKey: decodeURIComponent(ann[2]),
+        annId: decodeURIComponent(ann[3])
+      };
+    }
+    var section = hash.match(/^#\/section\/([^/]+)\/(.+)$/);
+    if (section) {
+      return {
+        view: 'section',
+        docId: decodeURIComponent(section[1]),
+        sectionId: decodeURIComponent(section[2])
+      };
+    }
+    return { view: 'sections' };
   }
 
   async function pageLabel(docId, pageKey) {
@@ -269,11 +290,115 @@
   }
 
   async function renderBreadcrumbs(ref, section, label) {
+    var sectionLink = section
+      ? '<a href="#/section/' + encodeURIComponent(ref.docId) + '/' +
+        encodeURIComponent(section.sectionId) + '">' + escapeHtml(section.title) + '</a>'
+      : 'вне параграфа';
     el('app-breadcrumbs').innerHTML =
+      '<span><a href="#/">параграфы</a></span>' +
       '<span>' + escapeHtml(ref.docId) + '</span>' +
-      (section ? '<span>' + escapeHtml(section.title) + '</span>' : '<span>вне параграфа</span>') +
+      '<span>' + sectionLink + '</span>' +
       '<span>стр. ' + escapeHtml(label) + '</span>' +
       '<code>' + escapeHtml(ref.annId) + '</code>';
+  }
+
+  // --- список параграфов --------------------------------------------------
+
+  function catTitle(slug) {
+    return (cats && cats.TITLES && cats.TITLES[slug]) || slug || '';
+  }
+
+  function catDot(slug) {
+    var color = (cats && cats.COLORS && cats.COLORS[slug]) || '#546E7A';
+    return '<span class="app-dot" style="background:' + color + '"></span>';
+  }
+
+  async function loadDocs() {
+    var select = el('s-doc');
+    if (select.options.length) return select.value;
+    var stats = await apiGet('/api/stats');
+    var docs = (stats.docs || []).map(function (d) { return d.docId; });
+    if (!docs.length) docs = ['medinsky11klass'];
+    select.innerHTML = docs.map(function (d) {
+      return '<option value="' + escapeHtml(d) + '">' + escapeHtml(d) + '</option>';
+    }).join('');
+    select.addEventListener('change', function () { loadSections().catch(function () {}); });
+    return select.value;
+  }
+
+  async function loadSections() {
+    var docId = await loadDocs();
+    var data = await apiGet('/api/sections?docId=' + encodeURIComponent(docId));
+    var rows = (data.sections || []).map(function (s) {
+      var c = s.counts || {};
+      // «Не разобрано» — главный столбец этого экрана: он показывает, где
+      // работа, а не сколько её сделано.
+      var todo = c.unclassified || 0;
+      return '<tr>' +
+        '<td><a href="#/section/' + encodeURIComponent(docId) + '/' +
+          encodeURIComponent(s.sectionId) + '">§' + escapeHtml(s.sectionId) + '</a></td>' +
+        '<td>' + escapeHtml(s.title) + '</td>' +
+        '<td class="app-nowrap">' + escapeHtml(s.pageStart + '–' + s.pageEnd) + '</td>' +
+        '<td class="num">' + (c.total || 0) + '</td>' +
+        '<td class="num">' + (c.published || 0) + '</td>' +
+        '<td class="num">' + (c.draft || 0) + '</td>' +
+        '<td class="num' + (todo ? ' is-todo' : '') + '">' + todo + '</td>' +
+      '</tr>';
+    }).join('');
+    el('s-rows').innerHTML = rows || '<tr><td colspan="7">Параграфов нет. ' +
+      'Залейте их из манифеста: scripts/api/import_sections.py</td></tr>';
+  }
+
+  // --- один параграф ------------------------------------------------------
+
+  function fillCategoryFilter() {
+    var select = el('sec-category');
+    if (select.options.length > 1) return;
+    var order = (cats && cats.PRECEDENCE ? cats.PRECEDENCE.slice() : []).concat(['other']);
+    select.innerHTML = '<option value="">любая</option>' + order.map(function (slug) {
+      return '<option value="' + escapeHtml(slug) + '">' + escapeHtml(catTitle(slug)) + '</option>';
+    }).join('');
+  }
+
+  async function loadSection(ref) {
+    fillCategoryFilter();
+    var params = ['docId=' + encodeURIComponent(ref.docId),
+                  'section=' + encodeURIComponent(ref.sectionId),
+                  'limit=200'];
+    var status = el('sec-status').value;
+    var category = el('sec-category').value;
+    var source = el('sec-source').value;
+    if (status) params.push('status=' + encodeURIComponent(status));
+    if (category) params.push('category=' + encodeURIComponent(category));
+    if (source) params.push('categorySource=' + encodeURIComponent(source));
+
+    var data = await apiGet('/api/annotations?' + params.join('&'));
+    var items = data.items || [];
+    el('sec-count').textContent = 'показано ' + items.length + ' из ' + (data.total || 0);
+
+    // Сортируем по странице: параграф читают подряд, а не по времени правки.
+    items.sort(function (a, b) {
+      if (a.pageNum === b.pageNum) return String(a.annId).localeCompare(String(b.annId));
+      return String(a.pageNum).localeCompare(String(b.pageNum));
+    });
+
+    el('sec-rows').innerHTML = items.map(function (a) {
+      var href = '#/ann/' + encodeURIComponent(a.docId) + '/' +
+                 encodeURIComponent(a.pageNum) + '/' + encodeURIComponent(a.annId);
+      var todo = a.categorySource === 'default' || a.categorySource === 'tags-backfill';
+      return '<tr>' +
+        '<td class="app-nowrap"><a href="' + href + '">' + escapeHtml(a.pageNum) + '</a></td>' +
+        '<td class="app-nowrap' + (todo ? ' is-todo' : '') + '">' +
+          catDot(a.category) + escapeHtml(catTitle(a.category)) + '</td>' +
+        '<td>' + (a.status === 'draft' ? 'черновик' : 'опубликован') + '</td>' +
+        '<td><a href="' + href + '">' + escapeHtml((a.text || '').slice(0, 120)) + '</a></td>' +
+        '<td class="app-nowrap">' + escapeHtml(formatDay(a.updatedAt)) + '</td>' +
+      '</tr>';
+    }).join('') || '<tr><td colspan="5">В этом параграфе комментариев нет.</td></tr>';
+
+    var section = (await apiGet('/api/sections?docId=' + encodeURIComponent(ref.docId))).sections
+      .filter(function (s) { return s.sectionId === ref.sectionId; })[0];
+    el('sec-title').textContent = section ? section.title : ('§' + ref.sectionId);
   }
 
   // --- загрузка карточки --------------------------------------------------
@@ -312,6 +437,14 @@
 
   // --- запуск -------------------------------------------------------------
 
+  function wireFilters() {
+    ['sec-status', 'sec-category', 'sec-source'].forEach(function (id) {
+      el(id).addEventListener('change', function () {
+        if (state.section) loadSection(state.section).catch(function () {});
+      });
+    });
+  }
+
   function wireForm() {
     ['f-text', 'f-category', 'f-anntype', 'f-status', 'f-tags', 'f-summary'].forEach(function (id) {
       el(id).addEventListener('input', function () { setDirty(true); });
@@ -333,15 +466,20 @@
 
   async function route() {
     var ref = parseHash();
-    if (!ref) {
-      setStatus('Адрес вида #/ann/<документ>/<страница>/<id> — например ' +
-                '#/ann/medinsky11klass/006/ann-p006-1', false);
-      el('app-main').hidden = true;
-      return;
-    }
     setStatus('');
-    el('app-main').hidden = false;
-    try { await loadCard(ref); } catch (e) { /* сообщение уже показано */ }
+    try {
+      if (ref.view === 'ann') {
+        showView('app-main');
+        await loadCard(ref);
+      } else if (ref.view === 'section') {
+        showView('view-section');
+        state.section = ref;
+        await loadSection(ref);
+      } else {
+        showView('view-sections');
+        await loadSections();
+      }
+    } catch (e) { /* сообщение уже показано */ }
   }
 
   async function start() {
@@ -360,6 +498,7 @@
     await route();
   }
 
+  wireFilters();
   window.addEventListener('resize', fitPreview);
   window.addEventListener('hashchange', function () { route().catch(function () {}); });
   wireForm();

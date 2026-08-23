@@ -142,3 +142,35 @@ def test_deleted_annotations_are_out_of_the_counts():
     db.soft_delete_annotation("doc1", "006", "a1")
     by_id = {s["sectionId"]: s for s in db.list_sections("doc1")}
     assert by_id["1"]["counts"]["total"] == 0
+
+
+# --- выборка комментариев параграфа -------------------------------------
+
+
+def test_annotations_can_be_filtered_by_section():
+    """Параграф — диапазон страниц, а не колонка: связь выводится, а не хранится."""
+    _seed_sections()
+    db.upsert_annotation_db("doc1", "006", "a1", "main", "в §1", action="create")
+    db.upsert_annotation_db("doc1", "020", "a2", "main", "тоже §1", action="create")
+    db.upsert_annotation_db("doc1", "021", "b1", "main", "уже §2", action="create")
+    db.upsert_annotation_db("doc1", "000", "c1", "main", "обложка", action="create")
+
+    ids = [a["annId"] for a in db.list_annotations(doc_id="doc1", section_id="1")]
+    assert sorted(ids) == ["a1", "a2"]
+    assert db.count_annotations(doc_id="doc1", section_id="1") == 2
+    assert [a["annId"] for a in db.list_annotations(doc_id="doc1", section_id="2")] == ["b1"]
+
+
+def test_section_filter_combines_with_other_filters():
+    _seed_sections()
+    db.upsert_annotation_db("doc1", "006", "a1", "main", "черновик", action="create",
+                            status="draft")
+    db.upsert_annotation_db("doc1", "007", "a2", "main", "опубликован", action="create")
+    items = db.list_annotations(doc_id="doc1", section_id="1", status="draft")
+    assert [a["annId"] for a in items] == ["a1"]
+
+
+def test_unknown_section_gives_nothing():
+    _seed_sections()
+    db.upsert_annotation_db("doc1", "006", "a1", "main", "текст", action="create")
+    assert db.list_annotations(doc_id="doc1", section_id="нет-такого") == []

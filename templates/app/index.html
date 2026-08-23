@@ -28,6 +28,58 @@
     <div id="app-login-error" class="app-error"></div>
   </div>
 
+  <!-- Список параграфов: доска работ. -->
+  <main id="view-sections" class="app-list" hidden>
+    <div class="app-listhead">
+      <h2>Параграфы</h2>
+      <label class="app-inline">
+        <span>Документ</span>
+        <select id="s-doc"></select>
+      </label>
+    </div>
+    <table class="app-table">
+      <thead><tr>
+        <th>§</th><th>Название</th><th>Страницы</th>
+        <th class="num">Всего</th><th class="num">Опубликовано</th>
+        <th class="num">Черновики</th><th class="num">Не разобрано</th>
+      </tr></thead>
+      <tbody id="s-rows"></tbody>
+    </table>
+  </main>
+
+  <!-- Комментарии одного параграфа. -->
+  <main id="view-section" class="app-list" hidden>
+    <div class="app-listhead">
+      <h2 id="sec-title">Параграф</h2>
+      <a href="#/" class="app-back">← ко всем параграфам</a>
+    </div>
+    <div class="app-filters">
+      <label class="app-inline"><span>Статус</span>
+        <select id="sec-status">
+          <option value="">любой</option>
+          <option value="draft">черновик</option>
+          <option value="published">опубликован</option>
+        </select></label>
+      <label class="app-inline"><span>Категория</span>
+        <select id="sec-category"><option value="">любая</option></select></label>
+      <label class="app-inline"><span>Разметка</span>
+        <select id="sec-source">
+          <option value="">любая</option>
+          <option value="default">не разобрано</option>
+          <option value="tags-backfill">угадана по тегам</option>
+          <option value="agent">предложил агент</option>
+          <option value="human">выбрал человек</option>
+        </select></label>
+      <span id="sec-count" class="app-hint"></span>
+    </div>
+    <table class="app-table">
+      <thead><tr>
+        <th>Стр.</th><th>Категория</th><th>Статус</th><th>Текст</th><th>Изменено</th>
+      </tr></thead>
+      <tbody id="sec-rows"></tbody>
+    </table>
+  </main>
+
   <main id="app-main" hidden>
     <!-- Слева правка и история, справа — то, что увидит читатель. -->
     <section class="app-pane app-pane--work">

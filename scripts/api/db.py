@@ -1355,6 +1355,7 @@ def _annotation_filters(
     tag: Optional[str] = None,
     category: Optional[str] = None,
     category_source: Optional[str] = None,
+    section_id: Optional[str] = None,
 ) -> Tuple[str, List[Any]]:
     clauses: List[str] = []
     params: List[Any] = []
@@ -1382,6 +1383,15 @@ def _annotation_filters(
     if category_source is not None:
         clauses.append("a.category_source = ?")
         params.append(normalize_category_source(category_source))
+    if section_id is not None:
+        # Параграф — это диапазон страниц, отдельной колонки у аннотации нет:
+        # связь выводится, а не хранится, иначе её пришлось бы чинить при
+        # каждой правке манифеста.
+        clauses.append(
+            "EXISTS (SELECT 1 FROM sections s WHERE s.doc_id = a.doc_id "
+            "AND s.section_id = ? AND " + _PAGE_IN_SECTION + ")"
+        )
+        params.append(section_id)
     if tag:
         # EXISTS rather than a JOIN, so count_annotations needs no DISTINCT.
         clauses.append(
@@ -1404,9 +1414,10 @@ def list_annotations(
     tag: Optional[str] = None,
     category: Optional[str] = None,
     category_source: Optional[str] = None,
+    section_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     where, params = _annotation_filters(doc_id, page_num, ann_type, status, author_id, q,
-                                        tag, category, category_source)
+                                        tag, category, category_source, section_id)
     conn = get_connection()
     with _lock:
         rows = conn.execute(
@@ -1440,9 +1451,10 @@ def count_annotations(
     tag: Optional[str] = None,
     category: Optional[str] = None,
     category_source: Optional[str] = None,
+    section_id: Optional[str] = None,
 ) -> int:
     where, params = _annotation_filters(doc_id, page_num, ann_type, status, author_id, q,
-                                        tag, category, category_source)
+                                        tag, category, category_source, section_id)
     conn = get_connection()
     with _lock:
         row = conn.execute(
