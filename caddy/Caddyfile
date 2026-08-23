@@ -25,6 +25,25 @@
 {$DOMAIN} {
   encode zstd gzip
 
+  # Access-лог сайта читателя — единственный источник аналитики: счётчика на
+  # странице нет и быть не может (просмотрщик не ходит в сеть). Лог включён
+  # только здесь: на хосте API следы участников закрытого круга, и в аналитику
+  # они не идут. Замысел — docs/analytics-plan-2026-08.md.
+  #
+  # Отсюда лог забирают двое: экспорт в Matomo (посещаемость) и счётчики
+  # контента. Срок хранения самого файла короткий — в нём адреса посетителей.
+  # `mode` обязателен: по умолчанию Caddy создаёт лог с правами 0600 от root,
+  # а читает его контейнер API под uid 10001.
+  log {
+    output file /logs/access.log {
+      roll_size 20mb
+      roll_keep 5
+      roll_keep_for 72h
+      mode 0644
+    }
+    format json
+  }
+
   header {
     Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
     X-Content-Type-Options "nosniff"

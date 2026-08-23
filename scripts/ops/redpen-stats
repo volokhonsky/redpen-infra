@@ -1,0 +1,58 @@
+#!/bin/sh
+# Почасовой сбор аналитики: лог Caddy → Matomo, плюс счётчики контента.
+# Ставится в /etc/cron.hourly/redpen-stats.
+#
+# Разделение труда: посещаемость, источники, устройства и визиты считает Matomo
+# (импорт серверных логов — его штатная функция), а счётчики контента отвечают
+# на вопросы про параграфы и покрытие, которых готовый инструмент про нас знать
+# не может. Подробности — docs/analytics-plan-2026-08.md.
+#
+# Работа идёт внутри контейнера API: там python 3, каталог логов и файл для
+# импорта. Образ Matomo — это PHP, своего python в нём нет.
+#
+# Логика та же, что у redpen-db-backup: любая ошибка роняет скрипт целиком, cron
+# присылает вывод root'у. Молча не работающий сбор — худшее из состояний: отчёты
+# продолжают строиться, просто по пустоте.
+set -eu
+
+COMPOSE=/root/apps/redpen/infra/docker-compose.yml
+EXPORT=/var/redpen-stats/matomo-import.log
+STATE=/var/redpen-stats/matomo_export.json
+AUTH=/var/redpen-stats/matomo-auth.cfg
+IMPORTER=/opt/matomo/misc/log-analytics/import_logs.py
+IDSITE=${MATOMO_IDSITE:-1}
+# Записи счётчиков старше этого срока удаляются.
+KEEP_DAYS=${REDPEN_STATS_KEEP_DAYS:-400}
+
+CID=$(docker compose -f "$COMPOSE" ps -q api)
+[ -n "$CID" ] || { echo "redpen-stats: контейнер api не найден" >&2; exit 1; }
+
+# Прогресс импортёра сам выключается вне терминала (в кроне stdout не tty),
+# поэтому гасить его флагом не надо — и нельзя: --show-progress значения не берёт.
+run() { docker exec "$CID" "$@"; }
+
+# 1. Счётчики контента: параграфы, спрос против покрытия, ?only=.
+run python3 /app/scripts/ops/redpen_stats.py ingest
+
+# 2. Лог для Matomo. Позиция при этом НЕ двигается — только откладывается.
+LINES=$(run python3 /app/scripts/matomo_export.py --out "$EXPORT" \
+    | sed -n 's/^matomo-export: строк \([0-9]*\).*/\1/p')
+
+# 3. Импорт и только потом сдвиг позиции. Обратный порядок означал бы, что
+#    упавший импорт уносит строки навсегда: import_logs.py не возобновляемый.
+if [ "${LINES:-0}" -gt 0 ]; then
+    run python3 "$IMPORTER" \
+        --url=http://matomo/ \
+        --idsite="$IDSITE" \
+        --auth-config="$AUTH" \
+        --log-format-name=ncsa_extended \
+        --enable-http-errors \
+        --recorders=2 \
+        "$EXPORT"
+    run python3 /app/scripts/matomo_export.py --commit --state "$STATE"
+fi
+
+# 4. Раз в сутки подчищаем старое: отдельного крона ради одной строки не надо.
+if [ "$(date +%H)" = "01" ]; then
+    run python3 /app/scripts/ops/redpen_stats.py prune --days "$KEEP_DAYS"
+fi

@@ -5,6 +5,12 @@ volumes:
   caddy_config:
   redpen_public:
   redpen_db:
+  # Счётчики контента и файл для импорта в Matomo. Отдельно от канона: другая
+  # природа данных, смешивать с redpen.db незачем (docs/analytics-plan-2026-08.md).
+  redpen_stats:
+  # Matomo: приложение и его база.
+  matomo_app:
+  matomo_db:
 
 networks:
   redpen:
@@ -44,11 +50,25 @@ services:
       # ADMIN_EMAILS упразднён: список администраторов по email хранил бы
       # личности открытым текстом в окружении прода. Роли выдаются приглашениями.
       - PUBLISH_DIR=/srv/public
+      # Аналитика по логам. Посещаемость считает Matomo (сюда лог готовит
+      # scripts/matomo_export.py), счётчики контента — scripts/ops/redpen_stats.py.
+      # Оба запускаются кроном через docker exec: здесь есть и python, и логи.
+      - STATS_DB_PATH=/var/redpen-stats/stats.db
+      - ANALYTICS_LOG_DIR=/var/log/caddy
+      - MATOMO_EXPORT_STATE=/var/redpen-stats/matomo_export.json
+      - DOMAIN=${DOMAIN}
     volumes:
       - ./redpen-publish:/var/redpen-data:rw
       - ./redpen-content:/app/redpen-content:rw
       - redpen_db:/var/redpen-db
       - redpen_public:/srv/public
+      - redpen_stats:/var/redpen-stats
+      # Только чтение: разбор лога не должен в него писать.
+      - /root/apps/redpen/data/caddy-logs:/var/log/caddy:ro
+      # Импортёр Matomo (misc/log-analytics/import_logs.py) — обычный
+      # python-скрипт из состава Matomo. Запускать его удобнее отсюда: тут уже
+      # есть python 3 и подготовленный файл лога, а образ Matomo — это PHP.
+      - matomo_app:/opt/matomo:ro
     networks:
       - redpen
     restart: unless-stopped
@@ -70,6 +90,52 @@ services:
       - /root/apps/redpen/config/caddy:/etc/caddy:ro
       - caddy_data:/data
       - caddy_config:/config
+      # Access-лог сайта читателя. Bind-mount, а не том: тот же каталог нужен
+      # контейнеру API на чтение, и сроком хранения здесь управляет сам Caddy.
+      - /root/apps/redpen/data/caddy-logs:/logs
+    networks:
+      - redpen
+    restart: unless-stopped
+
+  # Дашборды посещаемости. Импорт серверных логов — штатная функция Matomo,
+  # счётчика на сайте нет и не будет: просмотрщик в сеть не ходит.
+  #
+  # Наружу НЕ выставлен: порт слушает только localhost, домена и сертификата у
+  # него нет. Открывается пробросом ssh (`ssh -L 8081:localhost:8081 …`).
+  # Так PHP-приложение с админкой не смотрит в интернет, а отчёт о читателях
+  # остаётся непубличным — как и требует docs/anonymity-model.md.
+  matomo:
+    image: matomo:5-apache
+    depends_on:
+      - matomo-db
+    # MATOMO_DATABASE_PASSWORD лежит здесь же, где остальные секреты.
+    env_file:
+      - .env.secrets
+    environment:
+      - MATOMO_DATABASE_HOST=matomo-db
+      - MATOMO_DATABASE_ADAPTER=mysql
+      - MATOMO_DATABASE_TABLES_PREFIX=matomo_
+      - MATOMO_DATABASE_USERNAME=matomo
+      - MATOMO_DATABASE_DBNAME=matomo
+    volumes:
+      - matomo_app:/var/www/html
+    ports:
+      - "127.0.0.1:8081:80"
+    networks:
+      - redpen
+    restart: unless-stopped
+
+  matomo-db:
+    image: mariadb:11
+    # Импорт логов шлёт крупные пачки запросов трекеру.
+    command: --max-allowed-packet=64MB
+    env_file:
+      - .env.secrets
+    environment:
+      - MARIADB_DATABASE=matomo
+      - MARIADB_USER=matomo
+    volumes:
+      - matomo_db:/var/lib/mysql
     networks:
       - redpen
     restart: unless-stopped

@@ -19,7 +19,10 @@ COPY . /app/
 # Create logs/db directories with proper permissions BEFORE user switch.
 # /var/redpen-db is where the DB_PATH SQLite file lives (see db.py); a fresh
 # named volume inherits the mountpoint's owner, so this must happen here.
-RUN mkdir -p /app/logs /var/redpen-db && chown app:app /app/logs /var/redpen-db
+# /var/redpen-stats — база аналитики (scripts/ops/redpen_stats.py): том другой,
+# грабли те же, и SQLite нужен доступ на запись к каталогу ради WAL.
+RUN mkdir -p /app/logs /var/redpen-db /var/redpen-stats \
+    && chown app:app /app/logs /var/redpen-db /var/redpen-stats
 
 USER app
 EXPOSE 8080
