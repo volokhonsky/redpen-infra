@@ -80,6 +80,65 @@
     </table>
   </main>
 
+  <!-- Очередь приёмки: по одному, с решением в два клика. -->
+  <main id="view-queue" hidden>
+    <div class="app-queuebar">
+      <label class="app-inline"><span>Разбираем</span>
+        <select id="q-mode">
+          <option value="drafts">черновики</option>
+          <option value="categories">предложенные категории</option>
+        </select></label>
+      <label class="app-inline"><span>Параграф</span>
+        <select id="q-section"><option value="">все</option></select></label>
+      <span id="q-progress" class="app-hint"></span>
+      <a href="#/" class="app-back">← к параграфам</a>
+    </div>
+
+    <div id="q-empty" class="app-card app-queue-empty" hidden>
+      <p>Разбирать нечего — очередь пуста.</p>
+    </div>
+
+    <div id="q-body" class="app-queue">
+      <section class="app-pane">
+        <div id="q-where" class="app-breadcrumbs"></div>
+        <div id="q-text" class="app-queue-text"></div>
+
+        <div class="app-row">
+          <label class="app-field">
+            <span>Категория <b>*</b></span>
+            <select id="q-category"></select>
+          </label>
+          <label class="app-field">
+            <span>Статус</span>
+            <select id="q-status">
+              <option value="draft">черновик</option>
+              <option value="published">опубликован</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="q-source" class="app-hint"></div>
+
+        <div class="app-actions app-queue-actions">
+          <button type="button" id="q-accept">Принять</button>
+          <button type="button" id="q-skip" class="app-btn-secondary">Отложить</button>
+          <button type="button" id="q-edit" class="app-btn-secondary">Открыть карточку</button>
+          <button type="button" id="q-reject" class="app-btn-danger">Отклонить</button>
+        </div>
+      </section>
+
+      <section class="app-pane app-pane--preview">
+        <div class="app-preview-head">
+          <h3>Как увидит читатель</h3>
+          <a id="q-preview-link" href="#" target="_blank" rel="noopener">открыть отдельно</a>
+        </div>
+        <div id="q-preview-fit" class="app-preview-fit">
+          <iframe id="q-preview" class="app-preview-frame" title="Просмотр страницы с этим комментарием"></iframe>
+        </div>
+      </section>
+    </div>
+  </main>
+
   <main id="app-main" hidden>
     <!-- Слева правка и история, справа — то, что увидит читатель. -->
     <section class="app-pane app-pane--work">
@@ -141,7 +200,7 @@
         <a id="app-preview-link" href="#" target="_blank" rel="noopener">открыть отдельно</a>
       </div>
       <div id="app-preview-fit" class="app-preview-fit">
-        <iframe id="app-preview" title="Просмотр страницы с этим комментарием"></iframe>
+        <iframe id="app-preview" class="app-preview-frame" title="Просмотр страницы с этим комментарием"></iframe>
       </div>
     </section>
   </main>

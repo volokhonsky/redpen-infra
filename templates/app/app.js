@@ -22,6 +22,7 @@
     annotation: null,
     manifest: {},     // docId -> {page_006: "6"}
     section: null,    // текущий параграф, чтобы перечитывать его по фильтрам
+    queue: { items: [], index: 0, skipped: {} },
     dirty: false
   };
 
@@ -87,7 +88,7 @@
 
   //: Все экраны приложения. Показываем ровно один — так не приходится
   //: помнить, что спрятать при каждом переходе.
-  var VIEWS = ['view-sections', 'view-section', 'app-main'];
+  var VIEWS = ['view-sections', 'view-section', 'view-queue', 'app-main'];
 
   function showView(id) {
     VIEWS.forEach(function (name) { el(name).hidden = name !== id; });
@@ -106,6 +107,7 @@
         annId: decodeURIComponent(ann[3])
       };
     }
+    if (/^#\/queue\b/.test(hash)) return { view: 'queue' };
     var section = hash.match(/^#\/section\/([^/]+)\/(.+)$/);
     if (section) {
       return {
@@ -169,14 +171,25 @@
 
   // --- форма --------------------------------------------------------------
 
-  function fillCategories(selected) {
-    var select = el('f-category');
+  //: Подпись «откуда взялась категория» — одна на все экраны.
+  var SOURCE_LABELS = {
+    'default': 'категорию никто не назначал',
+    'tags-backfill': 'категория угадана по тегам, требует проверки',
+    'agent': 'категорию предложил агент, ждёт приёмки',
+    'human': 'категорию выбрал человек'
+  };
+
+  function fillCategorySelect(select, selected) {
     var order = (cats && cats.PRECEDENCE ? cats.PRECEDENCE.slice() : []).concat(['other']);
     select.innerHTML = order.map(function (slug) {
       var title = (cats && cats.TITLES && cats.TITLES[slug]) || slug;
       return '<option value="' + escapeHtml(slug) + '">' + escapeHtml(title) + '</option>';
     }).join('');
     select.value = selected || 'other';
+  }
+
+  function fillCategories(selected) {
+    fillCategorySelect(el('f-category'), selected);
   }
 
   function fillForm(ann) {
@@ -197,13 +210,7 @@
   function updateHint(ann) {
     var hint = el('f-hint');
     if (!ann) { hint.textContent = ''; return; }
-    var source = {
-      'default': 'категорию никто не назначал',
-      'tags-backfill': 'категория угадана по тегам, требует проверки',
-      'agent': 'категорию предложил агент, ждёт приёмки',
-      'human': 'категорию выбрал человек'
-    }[ann.categorySource] || '';
-    hint.textContent = source;
+    hint.textContent = SOURCE_LABELS[ann.categorySource] || '';
     hint.className = 'app-hint' + (ann.categorySource === 'human' ? ' is-ok' : ' is-todo');
   }
 
@@ -265,9 +272,9 @@
   //: (767px), иначе в редакторе показывался бы мобильный вид.
   var PREVIEW_WIDTH = 1200;
 
-  function fitPreview() {
-    var fit = el('app-preview-fit');
-    var frame = el('app-preview');
+  function fitFrame(fitId, frameId) {
+    var fit = el(fitId);
+    var frame = el(frameId);
     if (!fit || !frame) return;
     var available = fit.clientWidth;
     if (!available) return;
@@ -277,6 +284,11 @@
     // всю панель. Без этого низ страницы обрезался бы.
     frame.style.setProperty('--preview-height', Math.round(fit.clientHeight / scale) + 'px');
     frame.style.transform = 'scale(' + scale + ')';
+  }
+
+  function fitPreview() {
+    fitFrame('app-preview-fit', 'app-preview');
+    fitFrame('q-preview-fit', 'q-preview');
   }
 
   async function renderPreview(ref) {
@@ -401,6 +413,171 @@
     el('sec-title').textContent = section ? section.title : ('§' + ref.sectionId);
   }
 
+  // --- очередь приёмки ----------------------------------------------------
+  //
+  // Разбирать приходится две разные вещи, и смешивать их нельзя:
+  //   черновики  — решение «годится ли это читателю» (принять / отклонить);
+  //   категории  — решение «каким приёмом это сделано» (подтвердить / сменить).
+  // Поэтому режим выбирается явно, а не угадывается.
+
+  function queueParams(mode, sectionId) {
+    var params = ['docId=' + encodeURIComponent(el('s-doc').value || 'medinsky11klass'),
+                  'limit=100'];
+    if (sectionId) params.push('section=' + encodeURIComponent(sectionId));
+    if (mode === 'drafts') {
+      params.push('status=draft');
+    } else {
+      // Всё, чего человек ещё не подтверждал: дефолт, догадка по тегам и
+      // предложение агента. Три запроса вместо одного — фильтр по источнику
+      // принимает ровно одно значение, и усложнять его ради этого экрана
+      // не стоит.
+      params.push('status=published');
+    }
+    return params;
+  }
+
+  async function fetchQueueItems(mode, sectionId) {
+    if (mode === 'drafts') {
+      var data = await apiGet('/api/annotations?' + queueParams(mode, sectionId).join('&'));
+      return data.items || [];
+    }
+    var sources = ['default', 'tags-backfill', 'agent'];
+    var batches = await Promise.all(sources.map(function (source) {
+      var params = queueParams(mode, sectionId).concat(['categorySource=' + source]);
+      return apiGet('/api/annotations?' + params.join('&'));
+    }));
+    var seen = {};
+    var items = [];
+    batches.forEach(function (batch) {
+      (batch.items || []).forEach(function (item) {
+        var key = item.docId + '/' + item.pageNum + '/' + item.annId;
+        if (seen[key]) return;
+        seen[key] = true;
+        items.push(item);
+      });
+    });
+    return items;
+  }
+
+  async function fillSectionFilter(docId) {
+    var select = el('q-section');
+    if (select.options.length > 1) return;
+    var data = await apiGet('/api/sections?docId=' + encodeURIComponent(docId));
+    select.innerHTML = '<option value="">все</option>' + (data.sections || []).map(function (s) {
+      return '<option value="' + escapeHtml(s.sectionId) + '">§' + escapeHtml(s.sectionId) +
+             ' — ' + escapeHtml(s.title.slice(0, 40)) + '</option>';
+    }).join('');
+  }
+
+  async function loadQueue() {
+    var docId = await loadDocs();
+    await fillSectionFilter(docId);
+    var mode = el('q-mode').value;
+    var sectionId = el('q-section').value;
+    var items = await fetchQueueItems(mode, sectionId);
+    // Отложенные уходят в конец, а не исчезают: «отложить» — это «не сейчас».
+    var skipped = state.queue.skipped;
+    items.sort(function (a, b) {
+      var sa = skipped[a.annId] ? 1 : 0, sb = skipped[b.annId] ? 1 : 0;
+      if (sa !== sb) return sa - sb;
+      return String(a.pageNum).localeCompare(String(b.pageNum));
+    });
+    state.queue.items = items;
+    state.queue.index = 0;
+    renderQueueItem();
+  }
+
+  function renderQueueItem() {
+    var queue = state.queue;
+    var item = queue.items[queue.index];
+    el('q-empty').hidden = !!item;
+    el('q-body').hidden = !item;
+    el('q-progress').textContent = queue.items.length
+      ? (queue.index + 1) + ' из ' + queue.items.length
+      : '';
+    if (!item) return;
+
+    el('q-text').textContent = item.text || '';
+    fillCategorySelect(el('q-category'), item.category);
+    el('q-status').value = item.status === 'published' ? 'published' : 'draft';
+    el('q-source').textContent = SOURCE_LABELS[item.categorySource] || '';
+    el('q-source').className = 'app-hint ' +
+      (item.categorySource === 'human' ? 'is-ok' : 'is-todo');
+
+    pageLabel(item.docId, item.pageNum).then(function (label) {
+      var url = '../' + encodeURIComponent(item.docId) + '/pages/' +
+                encodeURIComponent(label) + '/?only=' + encodeURIComponent(item.annId);
+      el('q-preview').src = url;
+      el('q-preview-link').href = url;
+      fitFrame('q-preview-fit', 'q-preview');
+      el('q-where').innerHTML = '<span>' + escapeHtml(item.docId) + '</span>' +
+        '<span>стр. ' + escapeHtml(label) + '</span>' +
+        '<code>' + escapeHtml(item.annId) + '</code>';
+    });
+  }
+
+  function advance() {
+    state.queue.index += 1;
+    if (state.queue.index >= state.queue.items.length) {
+      // Дошли до конца — перечитываем: за время разбора часть могла уйти.
+      loadQueue().catch(function () {});
+      return;
+    }
+    renderQueueItem();
+  }
+
+  async function queueAccept() {
+    var item = state.queue.items[state.queue.index];
+    if (!item) return;
+    var body = {
+      annType: item.annType,
+      text: item.text,
+      status: el('q-status').value,
+      category: el('q-category').value
+    };
+    if (item.coordX != null && item.coordY != null) body.coords = [item.coordX, item.coordY];
+    // Резюме проставляется само: приёмка — действие однотипное, и заставлять
+    // писать его руками на каждый комментарий значит не разобрать очередь.
+    body.summary = el('q-mode').value === 'drafts' ? 'приёмка черновика' : 'категория подтверждена';
+    await apiMutate('PUT', '/api/editor/' + encodeURIComponent(item.docId) + '/' +
+                    encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.annId), body);
+    setStatus('Принято: ' + item.annId, false);
+    advance();
+  }
+
+  async function queueReject() {
+    var item = state.queue.items[state.queue.index];
+    if (!item) return;
+    if (!window.confirm('Отклонить комментарий ' + item.annId + '? Он будет удалён (мягко).')) return;
+    await apiMutate('DELETE', '/api/editor/' + encodeURIComponent(item.docId) + '/' +
+                    encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.annId));
+    setStatus('Отклонён: ' + item.annId, false);
+    advance();
+  }
+
+  function wireQueue() {
+    // Масштаб считается по размеру панели, а она к моменту первой отрисовки
+    // может быть ещё не разложена. Пересчитываем, когда кадр загрузился.
+    el('q-preview').addEventListener('load', function () {
+      fitFrame('q-preview-fit', 'q-preview');
+    });
+    el('q-mode').addEventListener('change', function () { loadQueue().catch(function () {}); });
+    el('q-section').addEventListener('change', function () { loadQueue().catch(function () {}); });
+    el('q-accept').addEventListener('click', function () { queueAccept().catch(function () {}); });
+    el('q-reject').addEventListener('click', function () { queueReject().catch(function () {}); });
+    el('q-skip').addEventListener('click', function () {
+      var item = state.queue.items[state.queue.index];
+      if (item) state.queue.skipped[item.annId] = true;
+      advance();
+    });
+    el('q-edit').addEventListener('click', function () {
+      var item = state.queue.items[state.queue.index];
+      if (!item) return;
+      window.location.hash = '#/ann/' + encodeURIComponent(item.docId) + '/' +
+        encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.annId);
+    });
+  }
+
   // --- загрузка карточки --------------------------------------------------
 
   async function loadCard(ref) {
@@ -446,6 +623,9 @@
   }
 
   function wireForm() {
+    el('app-preview').addEventListener('load', function () {
+      fitFrame('app-preview-fit', 'app-preview');
+    });
     ['f-text', 'f-category', 'f-anntype', 'f-status', 'f-tags', 'f-summary'].forEach(function (id) {
       el(id).addEventListener('input', function () { setDirty(true); });
       el(id).addEventListener('change', function () { setDirty(true); });
@@ -471,6 +651,9 @@
       if (ref.view === 'ann') {
         showView('app-main');
         await loadCard(ref);
+      } else if (ref.view === 'queue') {
+        showView('view-queue');
+        await loadQueue();
       } else if (ref.view === 'section') {
         showView('view-section');
         state.section = ref;
@@ -499,6 +682,7 @@
   }
 
   wireFilters();
+  wireQueue();
   window.addEventListener('resize', fitPreview);
   window.addEventListener('hashchange', function () { route().catch(function () {}); });
   wireForm();

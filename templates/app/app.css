@@ -158,7 +158,7 @@ body {
   min-height: 480px;
 }
 
-#app-preview {
+.app-preview-frame {
   width: var(--preview-width, 1200px);
   height: var(--preview-height, 1000px);
   border: 0;
@@ -169,7 +169,7 @@ body {
 @media (max-width: 1100px) {
   #app-main { grid-template-columns: 1fr; }
   .app-pane--preview { position: static; }
-  #app-preview { height: 70vh; }
+  .app-preview-fit { height: 70vh; }
   .app-row { grid-template-columns: 1fr; }
 }
 
@@ -223,4 +223,49 @@ body {
 .app-dot {
   display: inline-block; width: 9px; height: 9px; border-radius: 50%;
   margin-right: 6px; vertical-align: baseline;
+}
+
+/* --- очередь приёмки ---------------------------------------------------- */
+
+.app-queuebar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 16px;
+  padding: 10px 16px; background: #fff; border-bottom: 1px solid var(--app-line);
+}
+.app-queuebar .app-hint { margin-left: auto; }
+.app-queuebar .app-back { margin-left: 0; }
+
+.app-queue {
+  display: grid;
+  grid-template-columns: minmax(420px, 1fr) minmax(480px, 1.1fr);
+  gap: 16px;
+  padding: 16px;
+  align-items: start;
+}
+
+/* Текст комментария здесь только читают — решение принимают по нему,
+   а правят в карточке. */
+.app-queue-text {
+  white-space: pre-wrap;
+  line-height: 1.5;
+  font-size: 0.95rem;
+  max-height: 40vh;
+  overflow: auto;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  background: #fafbfc;
+  border: 1px solid var(--app-line);
+  border-radius: 4px;
+}
+
+.app-queue-actions { margin-top: 14px; flex-wrap: wrap; }
+.app-btn-danger {
+  background: #fff !important;
+  color: #8a1c12 !important;
+  border-color: #d9a8a2 !important;
+  margin-left: auto;
+}
+.app-queue-empty { margin: 40px auto; text-align: center; }
+
+@media (max-width: 1100px) {
+  .app-queue { grid-template-columns: 1fr; }
 }
