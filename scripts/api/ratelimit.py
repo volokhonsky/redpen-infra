@@ -1,0 +1,77 @@
+"""Ограничение частоты запросов к API — защита от простого залива.
+
+Зачем это здесь, а не в прокси: Caddy у нас один на оба хоста, и заливать он
+будет одинаково; а плагина ограничения частоты в сборке нет. Ограничитель
+внутри приложения дешевле любого варианта с новой зависимостью и защищает то
+единственное, что действительно можно перегрузить, — API.
+
+Почему сайт при этом не страдает: просмотрщик не делает ни одного запроса к API
+(инвариант офлайна), поэтому даже полностью выведенный из строя API читателя не
+касается. Ограничивать нужно ровно API.
+
+Алгоритм — «дырявое ведро»: у каждого ключа есть запас токенов, он тратится по
+одному на запрос и пополняется со временем. Всплеск переживается, ровный залив —
+нет. Без внешних зависимостей и без фонового потока.
+"""
+
+import threading
+import time
+from typing import Dict, Optional, Tuple
+
+
+class TokenBucket:
+    """Разделяемое хранилище вёдер. Потокобезопасно, чистится само."""
+
+    #: Больше этого числа ключей не храним: иначе залив с меняющихся адресов
+    #: превратил бы защиту в утечку памяти.
+    MAX_KEYS = 20000
+
+    def __init__(self, rate_per_minute: int, burst: int):
+        self.rate = rate_per_minute / 60.0
+        self.burst = float(burst)
+        self._buckets: Dict[str, Tuple[float, float]] = {}
+        self._lock = threading.Lock()
+
+    def allow(self, key: str, now: Optional[float] = None) -> bool:
+        """True — запрос пропускаем, False — отвечаем 429."""
+        if self.rate <= 0:
+            return True
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            tokens, last = self._buckets.get(key, (self.burst, now))
+            tokens = min(self.burst, tokens + (now - last) * self.rate)
+            if tokens < 1.0:
+                self._buckets[key] = (tokens, now)
+                return False
+            self._buckets[key] = (tokens - 1.0, now)
+            if len(self._buckets) > self.MAX_KEYS:
+                self._evict(now)
+            return True
+
+    def _evict(self, now: float) -> None:
+        """Выбросить ключи, чьи вёдра давно полны — они ничего не помнят.
+
+        Вызывается под замком, из allow().
+        """
+        full_after = self.burst / self.rate if self.rate else 0
+        stale = [k for k, (_tokens, last) in self._buckets.items()
+                 if now - last > full_after]
+        for key in stale:
+            self._buckets.pop(key, None)
+        if len(self._buckets) > self.MAX_KEYS:
+            # Всё ещё много — значит залив идёт прямо сейчас. Сбрасываем всё:
+            # хуже, чем неточность, только съеденная память.
+            self._buckets.clear()
+
+
+def client_key(request) -> str:
+    """Адрес клиента. За прокси берём первый адрес из X-Forwarded-For.
+
+    Заголовок подставляет Caddy; напрямую API не выставлен наружу, поэтому
+    подделать его извне нельзя.
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    client = getattr(request, "client", None)
+    return getattr(client, "host", None) or "unknown"

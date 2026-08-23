@@ -31,6 +31,7 @@ import annotation_categories  # noqa: E402
 import config
 import db
 import publisher
+import ratelimit
 import storage
 
 
@@ -378,6 +379,34 @@ async def get_logs_json(lines: int = 100, user: Dict[str, str] = Depends(require
     except Exception as e:
         logger.exception("failed to read log file")
         return {"error": str(e), "logs": []}
+
+
+#: Дорогие ручки, открытые всем: проверка Google-токена ходит в сеть и считает
+#: подпись, вход по токену сравнивает секреты. Им отдельный, жёсткий предел.
+AUTH_PATHS = ("/api/auth/google", "/api/auth/login")
+
+_rate_general = ratelimit.TokenBucket(config.RATE_LIMIT_PER_MINUTE, config.RATE_LIMIT_BURST)
+_rate_auth = ratelimit.TokenBucket(config.RATE_LIMIT_AUTH_PER_MINUTE, config.RATE_LIMIT_AUTH_BURST)
+
+
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    """Ограничить частоту запросов к API по адресу клиента.
+
+    `/api/health` не ограничивается: это проверка живости, и глушить её значит
+    ослепнуть ровно тогда, когда что-то происходит."""
+    path = request.url.path
+    if path.startswith("/api/") and path != "/api/health":
+        key = ratelimit.client_key(request)
+        bucket = _rate_auth if path in AUTH_PATHS else _rate_general
+        if not bucket.allow(key):
+            logger.warning("rate limit hit path=%s", path)
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "too many requests"},
+                headers={"Retry-After": "60"},
+            )
+    return await call_next(request)
 
 
 @app.get("/api/health")

@@ -100,6 +100,17 @@ IDENTITY_PEPPER: str = os.getenv("IDENTITY_PEPPER", "")
 # открытом виде в окружении прода, рядом с бэкапами БД.
 BOOTSTRAP_INVITE_CODE: str = os.getenv("BOOTSTRAP_INVITE_CODE", "")
 
+# Ограничение частоты запросов к API (защита от простого залива).
+# Пределы на один адрес в минуту; 0 отключает проверку.
+#
+# Обычный предел щедрый: живой редактор шлёт десятки запросов на страницу.
+# Предел для входа — жёсткий: проверка Google-токена ходит в сеть и считает
+# подпись, то есть это самая дорогая ручка, и она открыта всем.
+RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "240"))
+RATE_LIMIT_BURST: int = int(os.getenv("RATE_LIMIT_BURST", "60"))
+RATE_LIMIT_AUTH_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_AUTH_PER_MINUTE", "12"))
+RATE_LIMIT_AUTH_BURST: int = int(os.getenv("RATE_LIMIT_AUTH_BURST", "6"))
+
 # Google Identity Services OAuth client id (audience for ID-token verification).
 # Empty -> POST /api/auth/google responds 503 (not configured).
 GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")

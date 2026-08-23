@@ -34,6 +34,11 @@ os.environ.setdefault("COOKIE_SECURE", "false")
 # Опознание участников требует перца (см. docs/anonymity-model.md); без него
 # вход через Google отвечает 503, что для тестов равносильно «выключено».
 os.environ.setdefault("IDENTITY_PEPPER", "pytest-pepper")
+# Ограничение частоты выключено: тесты шлют сотни запросов «с одного адреса», и
+# защита от залива честно приняла бы их за залив. Сам ограничитель проверяется
+# в tests/test_ratelimit.py на собственных вёдрах.
+os.environ.setdefault("RATE_LIMIT_PER_MINUTE", "0")
+os.environ.setdefault("RATE_LIMIT_AUTH_PER_MINUTE", "0")
 
 
 @pytest.fixture(autouse=True)

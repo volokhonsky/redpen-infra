@@ -2,12 +2,15 @@
 	# Используем production Let's Encrypt
 	acme_ca https://acme-v02.api.letsencrypt.org/directory
 	
-	# Логирование для отладки сертификатов
+	# Уровень info, а не debug: отладка сертификатов давно закончилась, а логи
+	# содержат адреса посетителей. Хранение ограничено и по объёму, и по сроку —
+	# см. docs/anonymity-model.md, раздел «Операционные требования».
 	log {
-		level debug
+		level info
 		output file /data/caddy.log {
-			roll_size 10mb
-			roll_keep 5
+			roll_size 5mb
+			roll_keep 2
+			roll_keep_for 168h
 		}
 	}
 }
@@ -26,7 +29,11 @@
     Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
     X-Content-Type-Options "nosniff"
     Referrer-Policy "no-referrer-when-downgrade"
-    X-Frame-Options "DENY"
+    # SAMEORIGIN, а не DENY: DENY запрещает кадрирование вообще, включая
+    # собственные страницы, а редактору (/app/) нужен предпросмотр страницы
+    # читателя в iframe. Чужим сайтам кадрирование по-прежнему запрещено.
+    X-Frame-Options "SAMEORIGIN"
+    Content-Security-Policy "frame-ancestors 'self'"
     Permissions-Policy "geolocation=(), camera=(), microphone=()"
   }
 
@@ -86,6 +93,14 @@
 		header Access-Control-Allow-Headers "Content-Type, Authorization, X-CSRF-Token"
 		header Access-Control-Max-Age "86400"
 		respond 204
+	}
+
+	# Предел на размер тела запроса. Без него один гигабайтный POST на открытую
+	# ручку входа дороже тысячи мелких: FastAPI читает тело в память целиком, а
+	# ограничение частоты считает такой запрос за один. Аннотации — это текст,
+	# двух мегабайт с запасом хватает.
+	request_body {
+		max_size 2MB
 	}
 
 	# Проксирование всех остальных /api/* в бекенд
