@@ -60,7 +60,7 @@ def render_annotation_html(text: str) -> str:
 def annotation_plain_text(text: str) -> str:
     """Strip markup down to bare prose, for <meta name="description">."""
     plain = _RAW_LINK_RE.sub(lambda m: m.group(2), text or "")
-    plain = re.sub(r'\[([^\]]+)\]\([^)\s]+\)', r'\1', plain)   # markdown links -> label
+    plain = blog.MD_LINK_RE.sub(r'\1', plain)          # markdown links -> label
     plain = re.sub(r'[*`#>]+', '', plain)
     plain = re.sub(r'\s+', ' ', plain)
     return plain.strip()

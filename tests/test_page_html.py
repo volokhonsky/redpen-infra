@@ -155,6 +155,16 @@ def test_markdown_link_becomes_a_real_link():
     assert '<a href="https://example.org/istochnik">ссылкой</a>' in render([PUBLISHED])
 
 
+def test_url_with_parentheses_survives_in_body_and_description():
+    url = "https://ru.wikipedia.org/wiki/Голод_в_СССР_(1946—1947)"
+    body = f"Голод назван, но не измерен. [Голод в СССР (1946—1947)]({url})"
+    html = page_html.render_annotation_html(body)
+    assert f'<a href="{url}">' in html
+    # Описание страницы не должно нести огрызок адреса или осиротевшую скобку.
+    plain = page_html.annotation_plain_text(body)
+    assert plain == "Голод назван, но не измерен. Голод в СССР (1946—1947)"
+
+
 def test_raw_html_link_in_a_body_is_normalised_not_escaped():
     # Two annotations in the corpus predate the markdown-only rule.
     html = page_html.render_annotation_html('Читайте <a href="https://e.org/x" target="_blank">речь</a> целиком.')

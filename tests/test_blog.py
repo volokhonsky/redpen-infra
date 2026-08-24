@@ -98,6 +98,25 @@ def test_render_markdown_links_and_escaping():
     assert "<script>" not in html and "&lt;script&gt;" in html
 
 
+def test_render_markdown_keeps_parentheses_inside_a_url():
+    """Наивное [^)\\s]+ обрывало адрес на первой закрывающей скобке.
+
+    У Википедии скобка в адресе — норма, и обрезанный URL давал читателю 404,
+    а лишняя «)» оставалась в тексте рядом со ссылкой. На проде так были
+    сломаны 32 аннотации.
+    """
+    url = "https://ru.wikipedia.org/wiki/Объединение_Германии_(1990)"
+    html = blog.render_markdown(f"[объединение]({url})")
+    assert f'<a href="{url}">объединение</a>' in html
+    assert ")</p>" not in html.replace(f'{url}">объединение</a>', "")
+
+
+def test_render_markdown_does_not_swallow_parentheses_after_a_link():
+    html = blog.render_markdown("[ссылка](https://e.org/a) и текст (в скобках) дальше")
+    assert '<a href="https://e.org/a">ссылка</a>' in html
+    assert "текст (в скобках) дальше" in html
+
+
 def test_render_markdown_rejects_javascript_urls():
     html = blog.render_markdown("[клик](javascript:alert(1))")
     assert "<a" not in html
