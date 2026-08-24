@@ -86,6 +86,12 @@ services:
       - DOMAIN=${DOMAIN}
       - API_HOST=${API_HOST}
       - FRONTEND_ORIGIN=${FRONTEND_ORIGIN}
+    # Отдельный файл, а не общий .env.secrets: там перец и токены, которым в
+    # контейнере Caddy делать нечего. Здесь только хост дашборда и пароль к нему
+    # (bcrypt-хеш). Без этого файла Caddy не поднимется — см.
+    # docs/server-setup-guide.md, раздел 11.9.
+    env_file:
+      - .env.stats
     volumes:
       - /root/apps/redpen/config/caddy:/etc/caddy:ro
       - caddy_data:/data

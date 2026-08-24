@@ -402,6 +402,8 @@ ssh -L 8081:localhost:8081 root@70.34.202.231
   адресов и срок хранения сырых визитов. По умолчанию Matomo хранит больше,
   чем нужно.
 
+Если дашборд нужен снаружи, а не через проброс, — раздел 11.9.
+
 #### 11.6 Токен для импортёра
 
 Создать в Matomo: Администрирование → Личное → Токены безопасности. Записать в
@@ -455,6 +457,75 @@ docker exec redpen-api-1 python3 /app/scripts/ops/redpen_stats.py report --days 
 
 В Matomo отчёт по адресам страниц должен разворачиваться в иерархию
 `книга → §N → страница`: параграф подставляется в адрес при подготовке лога.
+
+#### 11.9 Доступ к дашборду снаружи
+
+По умолчанию Matomo слушает только `127.0.0.1:8081` и открывается пробросом ssh.
+Если нужен доступ из браузера без ssh — отдельный хост под двумя замками.
+
+**Почему два.** Снаружи Matomo — это не только форма входа, но и **ручка
+трекера**, открытая всем желающим налить выдуманных визитов, плюс PHP-админка
+над базой, где лежат адреса читателей. `basic_auth` в Caddy отсекает запрос до
+того, как он дойдёт до PHP. Наш импорт идёт по внутренней сети docker
+(`http://matomo/`) и пароля не видит.
+
+1. **DNS**: запись `A` — `stats` → адрес сервера, **прокси выключен** (у
+   Cloudflare серое облако): оранжевое поставило бы посредника в середину.
+2. **Пароль**. Хеш генерируется интерактивно, пароль не попадает ни в историю,
+   ни в аргументы:
+
+   ```bash
+   docker run --rm -it caddy:alpine caddy hash-password
+   ```
+
+3. **`/root/apps/redpen/infra/.env.stats`** (права 600) — отдельно от
+   `.env.secrets`: контейнеру Caddy незачем видеть перец и токены.
+
+   ```
+   STATS_HOST=stats.medinsky.net
+   STATS_USER=redpen
+   STATS_PASSWORD_HASH=$$2a$$14$$...
+   ```
+
+   > **Каждый `$` в хеше удваивается.** Docker Compose интерполирует значения из
+   > `env_file`, и `$2a$14$LhBjQ...` он принимает за подстановку переменной: до
+   > Caddy доезжает огрызок, пароль молча не работает. Признак беды — в выводе
+   > `docker compose config` строка «The "LhBjQ…" variable is not set».
+   > Проверка после запуска: `docker exec redpen-caddy-1 printenv
+   > STATS_PASSWORD_HASH | cut -c1-7` должно дать `$2a$14$`.
+
+4. **Блок хоста в Caddyfile** — `basic_auth` перед `reverse_proxy matomo:80`,
+   заголовки безопасности и `X-Robots-Tag: noindex` (см. `caddy/Caddyfile`).
+   Конфигурацию проверить до перезапуска; в проверку надо передать и env-файл:
+
+   ```bash
+   docker run --rm -v /root/apps/redpen/config/caddy:/etc/caddy:ro \
+     --env-file /root/apps/redpen/infra/.env.stats \
+     -e DOMAIN=medinsky.net -e API_HOST=api.medinsky.net \
+     caddy:alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+   ```
+
+5. **Matomo за прокси** — в `config/config.ini.php`, секция `[General]`:
+
+   ```
+   trusted_hosts[] = "stats.medinsky.net"
+   assume_secure_protocol = 1
+   ```
+
+   Без первого Matomo не отвечает на незнакомом хосте; без второго строит
+   абсолютные ссылки по `http://` и ломает https-страницу смешанным контентом.
+   Побочный эффект: проброс `http://localhost:8081` после этого работает плохо
+   (ссылки ведут на https) — это осознанный размен в пользу внешнего доступа.
+
+6. **Проверка снаружи**:
+
+   ```bash
+   curl -sI https://stats.medinsky.net/ | head -3
+   curl -s -o /dev/null -w "%{http_code}\n" "https://stats.medinsky.net/matomo.php?idsite=1&rec=1"
+   ```
+
+   Ожидаемо `401` в обоих случаях, в заголовках — `WWW-Authenticate: Basic` и
+   `X-Robots-Tag: noindex`. С паролем — форма входа Matomo.
 
 #### Что в аналитику не попадает
 
@@ -535,3 +606,6 @@ ufw enable
       выставлены, суперпользователь на неличном адресе
 - [ ] Токен импортёра лежит в `/var/redpen-stats/matomo-auth.cfg` (600, uid 10001)
 - [ ] `/etc/cron.hourly/redpen-stats` установлен и прогнан вручную
+- [ ] Если дашборд выставлен наружу (11.9): DNS-запись без прокси, `.env.stats`
+      с **удвоенными** `$` в хеше, `caddy validate` пройден, снаружи без пароля
+      отдаётся 401, `trusted_hosts` и `assume_secure_protocol` прописаны

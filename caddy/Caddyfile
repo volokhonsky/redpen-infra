@@ -88,6 +88,39 @@
     }
   }
 }
+# Дашборд аналитики. Отдельный хост, потому что это единственная часть системы,
+# у которой есть админка: держать её на хосте сайта значит подмешивать PHP к
+# статике, которая обязана оставаться самодостаточной.
+#
+# Два замка, и внешний важнее внутреннего. `basic_auth` отсекает запрос до того,
+# как он дойдёт до PHP: снаружи Matomo — это не только форма входа, но и ручка
+# трекера, открытая всем желающим налить выдуманных визитов. Наш собственный
+# импорт идёт по внутренней сети (`http://matomo/`) и пароля не видит.
+#
+# В базе за этой дверью лежат адреса читателей — см. docs/anonymity-model.md,
+# раздел «Читатели сайта».
+{$STATS_HOST} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		# Никакого реферера наружу: адреса отчётов рассказывают, что мы смотрим.
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		Content-Security-Policy "frame-ancestors 'none'"
+		Permissions-Policy "geolocation=(), camera=(), microphone=()"
+		# Поисковикам тут делать нечего.
+		X-Robots-Tag "noindex, nofollow, noarchive"
+	}
+
+	basic_auth {
+		{$STATS_USER} {$STATS_PASSWORD_HASH}
+	}
+
+	reverse_proxy matomo:80
+}
+
 # API host: Caddy handles CORS
 {$API_HOST} {
 	encode zstd gzip
