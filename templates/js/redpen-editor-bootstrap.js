@@ -37,7 +37,7 @@
 
   // annotations.js рендерит опубликованные маркеры с DOM-only префиксом
   // "circle-" (annotations.js:124); серверный id — то, что после него.
-  // Всё, что читает id аннотации из DOM, обязано идти через это: иначе префикс
+  // Всё, что читает id замечания из DOM, обязано идти через это: иначе префикс
   // уезжает в PUT /api/editor/.../<annId> и создаёт дубликат вместо правки.
   function annIdFromDom(raw){
     var s = (raw == null ? '' : String(raw)).trim();
@@ -616,14 +616,14 @@
       payload.coords = draft.coords;
 
       var url, method;
-      // Только для обновления существующих аннотаций (не client-*)
+      // Только для обновления существующих замечаний (не client-*)
       var isExistingServerAnnotation = draft.id && String(draft.id).trim() && !String(draft.id).startsWith('client-');
 
       if (isExistingServerAnnotation) {
         url = apiBase('/api/editor/'+encodeURIComponent(docId)+'/'+encodeURIComponent(pageKey)+'/'+encodeURIComponent(String(draft.id).trim()));
         method = 'PUT';
       } else {
-        // Новая аннотация — отправляем POST без id в URL
+        // Новое замечание — отправляем POST без id в URL
         url = apiBase('/api/editor/'+encodeURIComponent(docId)+'/'+encodeURIComponent(pageKey));
         method = 'POST';
       }
@@ -799,7 +799,7 @@
       var typeEl = document.getElementById('redpen-type');
       if (typeEl) typeEl.value = 'comment';
       var coordEl = document.getElementById('redpen-coord');
-      // Координаты обязательны для любой аннотации: тип без якоря упразднён.
+      // Координаты обязательны для любого замечания: вид без якоря упразднён.
       if (coordEl) { coordEl.value=''; coordEl.disabled = false; }
     } catch(e){ /* noop */ }
 

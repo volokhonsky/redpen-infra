@@ -274,7 +274,7 @@ def _parse_remark_body(body: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(remark_kind, str) or remark_kind.strip() == "":
         raise HTTPException(status_code=400, detail="kind must be a string")
     remark_kind = db.LEGACY_KINDS.get(remark_kind, remark_kind)
-    # "general" (общий комментарий к странице) is retired: it had no anchor on
+    # "general" (общее замечание к странице) is retired: it had no anchor on
     # the scan, and with per-page addresses every comment needs one. Rejected
     # rather than silently accepted so old clients fail loudly.
     if remark_kind not in REMARK_KINDS:
@@ -311,7 +311,7 @@ def _parse_remark_body(body: Dict[str, Any]) -> Dict[str, Any]:
         except db.TagError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
-    # Категория — ровно одна на аннотацию, отдельным полем. Отсутствие ключа =
+    # Категория — ровно одна на замечание, отдельным полем. Отсутствие ключа =
     # «не трогать» (см. _resolve_category), null = сбросить в 'other'.
     if "category" in body:
         try:
@@ -320,7 +320,7 @@ def _parse_remark_body(body: Dict[str, Any]) -> Dict[str, Any]:
             raise HTTPException(status_code=400, detail=str(exc))
 
     # Резюме правки — как в Википедии: одна строка «что и зачем изменено»,
-    # видимая в истории комментария и в ленте изменений. Необязательное:
+    # видимая в истории замечания и в ленте изменений. Необязательное:
     # заставлять писать его на каждое движение маркера не за что.
     if "summary" in body and body["summary"] is not None:
         summary = str(body["summary"]).strip()
@@ -1023,7 +1023,7 @@ async def delete_editor_remark(docId: str, pageNum: str, remarkId: str, user: Di
 
 # ===== CABINET (stage 3) =====
 
-#: Резюме правки: одна строка, а не второй текст аннотации.
+#: Резюме правки: одна строка, а не второй текст замечания.
 MAX_SUMMARY_LENGTH = 200
 REMARK_STATUSES = ("published", "draft", "deleted")
 # "general" ушёл: см. docs/general-migration-map.json. Строки со status='deleted'
@@ -1137,10 +1137,10 @@ async def list_remarks(
 @app.get("/api/annotations/{docId}/{pageKey}/{remarkId}")
 async def get_one_remark(docId: str, pageKey: str, remarkId: str,
                              user: Dict[str, Any] = Depends(require_editor_read)):
-    """Один комментарий целиком — вход карточки в редакторе.
+    """Одно замечание целиком — вход карточки в редакторе.
 
     Список `/api/remarks` для этого не годится: карточке нужен конкретный
-    комментарий по адресу, а не страница выдачи, из которой его надо выуживать."""
+    замечание по адресу, а не страница выдачи, из которой его надо выуживать."""
     if not _validate_doc_id(docId):
         raise HTTPException(status_code=400, detail="invalid docId")
     page_num_str = _validate_page_key(pageKey)

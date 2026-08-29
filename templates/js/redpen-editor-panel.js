@@ -153,7 +153,7 @@
     };
   }
 
-  // Координаты нужны каждой аннотации: тип без якоря ("general") упразднён.
+  // Координаты нужны каждому замечанию: вид без якоря ("general") упразднён.
   function toggleCoordVisibilityByType(){
     var coordEl = document.getElementById('redpen-coord');
     var coordRow = document.getElementById('redpen-coord-row');

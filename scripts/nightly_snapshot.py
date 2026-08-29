@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Ночной снапшот: выгрузить аннотации из БД в git-клон redpen-publish.
+"""Ночной снапшот: выгрузить замечания из БД в git-клон redpen-publish.
 
-Канон аннотаций — SQLite. Гит держит переносимую копию сайта: офлайн-артефакт,
+Канон замечаний — SQLite. Гит держит переносимую копию сайта: офлайн-артефакт,
 резервную копию и вход для сборки. Между выкладками снапшот отстаёт от базы, и
 это создаёт ловушку: если собрать сайт из устаревшего клона и запушить,
 content-sync раскатает старые страницы поверх правильных. Ночной прогон
@@ -265,7 +265,7 @@ def main() -> int:
     print(f"[+] файлов к коммиту: {len(dirty)}")
 
     stamp = datetime.date.today().isoformat()
-    message = f"chore(snapshot): аннотации из БД на {stamp} ({len(dirty)} файлов)"
+    message = f"chore(snapshot): замечания из БД на {stamp} ({len(dirty)} файлов)"
     return 0 if commit_and_push(args.repo, message, args.push) else 1
 
 

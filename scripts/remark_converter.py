@@ -111,7 +111,7 @@ def parse_markdown_remark(md_content):
     """
     # Split the content by the meta block delimiter (supporting both old and new formats)
     # Хвостовые пробелы на строке-разделителе встречаются в черновиках; без
-    # допуска на них аннотация склеивается со следующей (стр. 006, 2026-08-16).
+    # допуска на них замечание склеивается со следующим (стр. 006, 2026-08-16).
     sections = re.split(r'^[ \t]*(?:~~~meta|~~~|---)[ \t]*$', md_content,
                         flags=re.MULTILINE)
 

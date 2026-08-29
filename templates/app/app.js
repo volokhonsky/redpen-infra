@@ -10,7 +10,7 @@
   'use strict';
 
   /**
-   * Карточка комментария: история правок, форма и живой просмотр рядом.
+   * Карточка замечания: история правок, форма и живой просмотр рядом.
    *
    * Адрес: /app/#/ann/<docId>/<pageKey>/<annId>
    *
@@ -545,7 +545,7 @@
     };
     if (item.coordX != null && item.coordY != null) body.coords = [item.coordX, item.coordY];
     // Резюме проставляется само: приёмка — действие однотипное, и заставлять
-    // писать его руками на каждый комментарий значит не разобрать очередь.
+    // писать его руками на каждое замечание значит не разобрать очередь.
     body.summary = el('q-mode').value === 'drafts' ? 'приёмка черновика' : 'категория подтверждена';
     await apiMutate('PUT', '/api/editor/' + encodeURIComponent(item.docId) + '/' +
                     encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.annId), body);

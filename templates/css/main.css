@@ -1,6 +1,6 @@
 /* Main CSS for RedPen application */
 
-/* Палитра категорий аннотаций — шесть приёмов пропаганды + «Прочее».
+/* Палитра категорий замечаний — шесть приёмов пропаганды + «Прочее».
    Обоснование и проверка контраста: docs/annotation-classification-2026-08.md.
    Значения продублированы в scripts/remark_categories.py и
    templates/js/redpen-categories.js — маркеры на скане красятся из JS. */

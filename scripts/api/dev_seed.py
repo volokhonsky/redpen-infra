@@ -12,7 +12,7 @@
 
 Что делает:
   1. заливает параграфы из metadata.json (scripts/api/import_sections.py);
-  2. импортирует аннотации указанных страниц из redpen-publish в БД;
+  2. импортирует замечания указанных страниц из redpen-publish в БД;
   3. заводит участника с нужной ролью и печатает cookie сессии.
 
 Пример:
@@ -79,7 +79,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--publish-dir", default="redpen-publish",
-                        help="каталог собранного сайта, откуда брать аннотации")
+                        help="каталог собранного сайта, откуда брать замечания")
     parser.add_argument("--doc", default="medinsky11klass")
     parser.add_argument("--pages", default="6-40",
                         help="диапазоны страниц, например '6-20,100'. Пусто = все")
@@ -112,7 +112,7 @@ def main() -> int:
             pages += 1
             total += imported
             publisher.publish_page(args.doc, page_num)
-    print(f"[+] аннотаций: {total} на {pages} страницах")
+    print(f"[+] замечаний: {total} на {pages} страницах")
 
     # Участник-человек заводится напрямую: приглашение здесь только мешало бы.
     conn = db.get_connection()
