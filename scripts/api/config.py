@@ -120,6 +120,6 @@ GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
 COOKIE_SECURE: bool = os.getenv("COOKIE_SECURE", "true").strip().lower() not in ("0", "false", "no")
 
 # Directory the publisher (scripts/api/publisher.py) writes rendered
-# annotations/page_NNN.json snapshots into (stage 2). Empty -> publication is
+# remarks/page_NNN.json snapshots into (stage 2). Empty -> publication is
 # disabled (tests, local dev without the redpen_public volume mounted).
 PUBLISH_DIR: str = os.getenv("PUBLISH_DIR", "")

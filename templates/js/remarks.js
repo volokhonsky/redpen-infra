@@ -1,15 +1,18 @@
 /**
- * Annotation handling for RedPen application
+ * Remark handling for RedPen application (legacy SPA).
+ *
+ * `remarkKind()` живёт в main.js: оба файла — обычные скрипты на одной
+ * странице, вызовы происходят уже после загрузки всех.
  */
 
 /**
- * Function to reposition annotations based on current image size
+ * Function to reposition remarks based on current image size
  */
-function repositionAnnotations() {
+function repositionRemarks() {
   if (!overlayContainer || !currentPageId || allAnns.length === 0) return;
 
-  // Counter for sequential annotation IDs within the page
-  let annotationCounter = 0;
+  // Counter for sequential remark IDs within the page
+  let remarkCounter = 0;
 
   const img = document.getElementById('page-image');
   if (!img.complete) return;
@@ -27,7 +30,7 @@ function repositionAnnotations() {
   overlayContainer.style.left = img.offsetLeft + 'px';
 
   // Log overlay container position for debugging
-  console.log('Overlay container updated in repositionAnnotations:', {
+  console.log('Overlay container updated in repositionRemarks:', {
     top: overlayContainer.style.top,
     left: overlayContainer.style.left,
     width: overlayContainer.style.width,
@@ -55,14 +58,14 @@ function repositionAnnotations() {
 
   // Remove existing circles and popups
   document.querySelectorAll('.circle').forEach(circle => circle.remove());
-  document.querySelectorAll('.comment-popup').forEach(popup => popup.remove());
+  document.querySelectorAll('.remark-popup').forEach(popup => popup.remove());
 
   // Recreate circles and popups with updated positions
   // Диаметр маркера в координатах ИСХОДНОЙ страницы; на экране умножается на scaleX,
   // иначе на телефоне диск остаётся во весь экран (см. markerDiameter).
-  const sizeMap = { main: 90, comment: 50, small: 25 };
+  const sizeMap = { major: 90, minor: 50, small: 25 };
   // scaleX === 0 бывает, пока раскладка не устоялась; тогда не схлопываем маркер в точку.
-  const markerDiameter = (annType) => (sizeMap[annType] || 50) * (scaleX || 1);
+  const markerDiameter = (kind) => (sizeMap[kind] || 50) * (scaleX || 1);
 
   // Load text blocks
   let textBlocks = {};
@@ -81,19 +84,19 @@ function repositionAnnotations() {
         textBlocks[b.id] = [x0, y0, x1, y1];
       });
       console.log('Processed text blocks:', textBlocks);
-      console.log('Annotations to process:', allAnns);
+      console.log('Remarks to process:', allAnns);
 
       // Filter out general comments for separate processing
-      const generalComments = allAnns.filter(a => a.annType === 'general');
-      const nonGeneralComments = allAnns.filter(a => a.annType !== 'general');
+      const generalRemarks = allAnns.filter(a => remarkKind(a) === 'general');
+      const nonGeneralRemarks = allAnns.filter(a => remarkKind(a) !== 'general');
 
       // Create circles and popups for non-general comments
-      nonGeneralComments.forEach((a, i) => {
-        // Increment counter for each annotation
-        annotationCounter++;
+      nonGeneralRemarks.forEach((a, i) => {
+        // Increment counter for each remark
+        remarkCounter++;
         let cx, cy;
         const bb = textBlocks[a.targetBlock];
-        console.log(`Processing annotation ${i+1} (ID: ${a.id || 'no-id'}):`);
+        console.log(`Processing remark ${i+1} (ID: ${a.id || 'no-id'}):`);
         console.log(`  Target block: ${a.targetBlock}, Found: ${bb ? 'Yes' : 'No'}`);
         console.log(`  Fallback coords: ${a.coords ? a.coords.join(',') : 'None'}`);
 
@@ -113,20 +116,20 @@ function repositionAnnotations() {
           [cx, cy] = [a.coords[0] * scaleX, a.coords[1] * scaleY];
           console.log(`  Using fallback coords. Scaled: (${cx}, ${cy})`);
         } else {
-          console.log(`  No position found, skipping annotation`);
+          console.log(`  No position found, skipping remark`);
           return;
         }
 
-        const d = markerDiameter(a.annType);
+        const d = markerDiameter(remarkKind(a));
         const circle = document.createElement('div');
         circle.className = 'circle';
-        // Add unique ID to circle based on annotation ID or generate one using sequential counter
-        circle.id = 'circle-' + (a.id || `${currentPageId}-${annotationCounter}`);
+        // Add unique ID to circle based on remark ID or generate one using sequential counter
+        circle.id = 'circle-' + (a.id || `${currentPageId}-${remarkCounter}`);
         circle.style.width = d + 'px';
         circle.style.height = d + 'px';
         circle.style.left = cx + 'px';  // Now using translateX in CSS for centering
         circle.style.top = cy - d / 2 + 'px';
-        const color = a.annType === 'main' ? '#DC143C' : '#0000FF';
+        const color = remarkKind(a) === 'major' ? '#DC143C' : '#0000FF';
         circle.style.background = `radial-gradient(circle, ${color}80 0%, ${color}40 50%, ${color}00 100%)`;
         circle.style.fontSize = (d * 0.6) + 'px';
         // Ensure transform property is not overridden
@@ -136,9 +139,9 @@ function repositionAnnotations() {
         if (a.draft) { circle.classList.add('is-draft'); circle.style.outline = '2px dashed #888'; }
         circle.textContent = i + 1;
 
-        // Attach annotation data for editor mode to pick up
+        // Attach remark data for editor mode to pick up
         try {
-          circle.dataset.annType = a.annType || 'comment';
+          circle.dataset.annType = a.annType || (remarkKind(a) === 'major' ? 'main' : 'comment');
           if (typeof a.text === 'string') circle.dataset.text = a.text;
           if (Array.isArray(a.coords) && a.coords.length === 2) {
             circle.dataset.coords = `[${a.coords[0]}, ${a.coords[1]}]`;
@@ -148,8 +151,8 @@ function repositionAnnotations() {
         // Use only this comment's text
         let commentText = a.text;
 
-        // Create popup for desktop hover using the comment-content.js function
-        const popup = createCommentPopup(a, i, cx, cy, d);
+        // Create popup for desktop hover using the remark-content.js function
+        const popup = createRemarkPopup(a, i, cx, cy, d);
         overlayContainer.appendChild(popup);
         try { circle.dataset.popupId = popup.id; } catch(e) { /* noop */ }
         console.log(`  Popup created with ID: ${popup.id}`);
@@ -199,11 +202,11 @@ function repositionAnnotations() {
             // Use the combined text that includes general comments
             showMobileComment(i, commentText);
           } else {
-            // Desktop: Update sidebar list and show popup using the comment-content.js function
-            updateCommentSidebar(i, commentText);
+            // Desktop: Update sidebar list and show popup using the remark-content.js function
+            updateRemarkSidebar(i, commentText);
 
             // Reset all popups' click-shown state
-            document.querySelectorAll('.comment-popup').forEach(p => {
+            document.querySelectorAll('.remark-popup').forEach(p => {
               p.dataset.clickShown = 'false';
               if (p !== popup) p.style.display = 'none';
             });
@@ -231,41 +234,41 @@ function repositionAnnotations() {
       }
     })
     .catch(e => {
-      console.error('Error repositioning annotations:', e);
+      console.error('Error repositioning remarks:', e);
       console.error('Stack trace:', e.stack);
-      // Try to create annotations using fallback coordinates even if text blocks failed to load
+      // Try to create remarks using fallback coordinates even if text blocks failed to load
       if (allAnns && allAnns.length > 0) {
-        console.log('Attempting to create annotations using only fallback coordinates...');
+        console.log('Attempting to create remarks using only fallback coordinates...');
 
         // Filter out general comments for separate processing
-        const generalComments = allAnns.filter(a => a.annType === 'general');
-        const nonGeneralComments = allAnns.filter(a => a.annType !== 'general');
+        const generalRemarks = allAnns.filter(a => remarkKind(a) === 'general');
+        const nonGeneralRemarks = allAnns.filter(a => remarkKind(a) !== 'general');
 
-        nonGeneralComments.forEach((a, i) => {
+        nonGeneralRemarks.forEach((a, i) => {
           if (a.coords) {
-            // Increment counter for each annotation in fallback section
-            annotationCounter++;
+            // Increment counter for each remark in fallback section
+            remarkCounter++;
             const cx = a.coords[0] * scaleX;
             const cy = a.coords[1] * scaleY;
-            console.log(`Creating annotation ${i+1} at fallback position (${cx}, ${cy})`);
+            console.log(`Creating remark ${i+1} at fallback position (${cx}, ${cy})`);
 
-            const d = markerDiameter(a.annType);
+            const d = markerDiameter(remarkKind(a));
             const circle = document.createElement('div');
             circle.className = 'circle';
-            circle.id = 'circle-' + (a.id || `${currentPageId}-${annotationCounter}`);
+            circle.id = 'circle-' + (a.id || `${currentPageId}-${remarkCounter}`);
             circle.style.width = d + 'px';
             circle.style.height = d + 'px';
             circle.style.left = cx + 'px';
             circle.style.top = cy - d / 2 + 'px';
-            const color = a.annType === 'main' ? '#DC143C' : '#0000FF';
+            const color = remarkKind(a) === 'major' ? '#DC143C' : '#0000FF';
             circle.style.background = `radial-gradient(circle, ${color}80 0%, ${color}40 50%, ${color}00 100%)`;
             circle.style.fontSize = (d * 0.6) + 'px';
             if (a.draft) { circle.classList.add('is-draft'); circle.style.outline = '2px dashed #888'; }
             circle.textContent = i + 1;
 
-            // Attach annotation data for editor mode to pick up
+            // Attach remark data for editor mode to pick up
             try {
-              circle.dataset.annType = a.annType || 'comment';
+              circle.dataset.annType = a.annType || (remarkKind(a) === 'major' ? 'main' : 'comment');
               if (typeof a.text === 'string') circle.dataset.text = a.text;
               if (Array.isArray(a.coords) && a.coords.length === 2) {
                 circle.dataset.coords = `[${a.coords[0]}, ${a.coords[1]}]`;
@@ -276,10 +279,10 @@ function repositionAnnotations() {
             let commentText = a.text;
 
             const popup = document.createElement('div');
-            popup.className = 'comment-popup';
-            popup.id = (a.id || `ann-${currentPageId}-${annotationCounter}`);
+            popup.className = 'remark-popup';
+            popup.id = (a.id || `ann-${currentPageId}-${remarkCounter}`);
             popup.innerHTML = `
-              <div class="comment-popup-title">Комментарий ${i + 1}</div>
+              <div class="remark-popup__title">Замечание ${i + 1}</div>
               <div>${commentText}</div>
             `;
             popup.style.left = cx + 'px';
@@ -316,7 +319,7 @@ function repositionAnnotations() {
               const actualHeight = finalHeight || popupRect.height;
               const viewportHeight = window.innerHeight;
 
-              // Calculate space available below and above the annotation
+              // Calculate space available below and above the remark
               const spaceBelow = viewportHeight - (cy + d / 2 + 10);
               const spaceAbove = cy - d / 2 - 10;
 
@@ -331,25 +334,25 @@ function repositionAnnotations() {
               // Position below if:
               // 1. It would extend beyond the top of the viewport when positioned above, or
               // 2. It's not an image and fits below, or
-              // 3. It's not an image, annotation is in upper half, and there's more space below
+              // 3. It's not an image, remark is in upper half, and there's more space below
               if (wouldExtendBeyondTop || 
                   (!hasImage && actualHeight <= spaceBelow) || 
                   (!hasImage && cy < viewportHeight / 2 && spaceBelow >= spaceAbove)) {
-                // Position below the annotation
+                // Position below the remark
                 if (hasWidthAdjustment) {
                   popup.style.top = (cy + d / 2 + 10) + 'px';
                 }
                 // Remove the above class if it exists
                 popup.classList.remove('above');
-                console.log(`Positioned popup ${popup.id} below annotation`);
+                console.log(`Positioned popup ${popup.id} below remark`);
               } else {
-                // Position above the annotation circle
-                // Calculate position to place the popup above the annotation with proper spacing
+                // Position above the remark circle
+                // Calculate position to place the popup above the remark with proper spacing
                 popup.style.top = (cy - d / 2 - actualHeight - 20) + 'px';
                 popup.style.bottom = 'auto'; // Clear any bottom property
                 // Add class to flip the arrow direction
                 popup.classList.add('above');
-                console.log(`Positioned popup ${popup.id} above annotation`);
+                console.log(`Positioned popup ${popup.id} above remark`);
               }
             };
 
@@ -497,14 +500,14 @@ function repositionAnnotations() {
                 showMobileComment(i, commentText);
               } else {
                 // Desktop: Update sidebar list and show popup
-                const listUl = document.getElementById('comment-list');
+                const listUl = document.getElementById('remark-list');
                 listUl.innerHTML = '';
                 const li = document.createElement('li');
                 li.innerHTML = '<strong>' + (i + 1) + '.</strong> ' + commentText;
                 listUl.appendChild(li);
 
                 // Reset all popups' click-shown state
-                document.querySelectorAll('.comment-popup').forEach(p => {
+                document.querySelectorAll('.remark-popup').forEach(p => {
                   p.dataset.clickShown = 'false';
                   if (p !== popup) p.style.display = 'none';
                 });
@@ -535,7 +538,7 @@ function repositionAnnotations() {
  * Function to hide all comment popups
  */
 function hideAllPopups() {
-  document.querySelectorAll('.comment-popup').forEach(popup => {
+  document.querySelectorAll('.remark-popup').forEach(popup => {
     // Remove any spacers that might have been added
     if (typeof removePopupSpacer === 'function' && popup.dataset.spacerAdded === 'true') {
       removePopupSpacer(popup);

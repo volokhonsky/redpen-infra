@@ -1,23 +1,23 @@
 """
-Render one static HTML file per textbook page, with the published annotations
+Render one static HTML file per textbook page, with the published remarks
 inlined as real text.
 
 Why: the whole book used to be a single HTML document that fetched everything
 over JSON, so a crawler saw ~159 characters of text for the entire corpus. Each
 page now gets its own address -- <docId>/pages/<label>/index.html -- carrying
 its own <title>, description, canonical, Open Graph tags, breadcrumbs and the
-annotation texts themselves.
+remark texts themselves.
 
 Two representations live in the same file:
 
-* published annotations are rendered as HTML in the panel -- this is what gets
+* published remarks are rendered as HTML in the panel -- this is what gets
   indexed;
-* *every* annotation, drafts included, also goes into an inline
+* *every* remark, drafts included, also goes into an inline
   <script type="application/json"> blob, so `?showDrafts=1` works with no
   network request at all. Script contents are not indexed as page text, which
   is exactly what we want for unreviewed drafts.
 
-Annotation bodies are converted to HTML here rather than in the browser, so the
+Remark bodies are converted to HTML here rather than in the browser, so the
 blob carries ready markup and the viewer needs no markdown library.
 
 Links are relative (`prefix`/`up`, as in scripts/blog.py) so the site keeps
@@ -43,21 +43,21 @@ SITE_URL = os.getenv("REDPEN_SITE_URL", "https://medinsky.net").rstrip("/")
 
 PAGES_DIRNAME = "pages"
 
-# Annotation bodies are markdown, but the corpus predates that rule and a
+# Remark bodies are markdown, but the corpus predates that rule and a
 # couple of entries carry a raw <a href="...">...</a>. blog._render_inline
 # escapes everything, so those would surface as literal tags; normalise them to
 # markdown links first. Attributes such as target="_blank" are dropped on
-# purpose -- link behaviour is the site's decision, not the annotation's.
+# purpose -- link behaviour is the site's decision, not the remark's.
 _RAW_LINK_RE = re.compile(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
 
 
-def render_annotation_html(text: str) -> str:
-    """Annotation markdown -> HTML, reusing the blog's renderer."""
+def render_remark_html(text: str) -> str:
+    """Remark markdown -> HTML, reusing the blog's renderer."""
     normalized = _RAW_LINK_RE.sub(lambda m: f"[{m.group(2).strip()}]({m.group(1)})", text or "")
     return blog.render_markdown(normalized)
 
 
-def annotation_plain_text(text: str) -> str:
+def remark_plain_text(text: str) -> str:
     """Strip markup down to bare prose, for <meta name="description">."""
     plain = _RAW_LINK_RE.sub(lambda m: m.group(2), text or "")
     plain = blog.MD_LINK_RE.sub(r'\1', plain)          # markdown links -> label
@@ -66,9 +66,9 @@ def annotation_plain_text(text: str) -> str:
     return plain.strip()
 
 
-def make_description(annotations: List[Dict[str, Any]], fallback: str, limit: int = 160) -> str:
-    """First published annotation, trimmed at a word boundary."""
-    source = annotation_plain_text(annotations[0]["text"]) if annotations else ""
+def make_description(remarks: List[Dict[str, Any]], fallback: str, limit: int = 160) -> str:
+    """First published remark, trimmed at a word boundary."""
+    source = remark_plain_text(remarks[0]["text"]) if remarks else ""
     if not source:
         source = fallback
     if len(source) <= limit:
@@ -79,8 +79,23 @@ def make_description(annotations: List[Dict[str, Any]], fallback: str, limit: in
     return cut.rstrip(" ,.;:—-") + "…"
 
 
+#: Вид замечания из элемента массива. Читает и текущий ключ `kind`, и прежний
+#: `annType` со значениями main/comment: файлы в томе переезжают не одномоментно,
+#: а уже розданные офлайн-копии не переедут никогда.
+def remark_kind_of(ann: Dict[str, Any]) -> str:
+    kind = ann.get("kind") or ann.get("annType") or "minor"
+    return _LEGACY_KINDS.get(kind, "minor" if kind == "general" else kind)
+
+
+_LEGACY_KINDS = {"main": "major", "comment": "minor"}
+_LEGACY_KIND_NAMES = {v: k for k, v in _LEGACY_KINDS.items()}
+
+#: Каталог, куда замечания писались до переименования сущности.
+LEGACY_PAGE_DIRNAME = "annotations"
+
+
 def is_anchored(ann: Dict[str, Any]) -> bool:
-    """Does this annotation get a marker on the scan?"""
+    """Does this remark get a marker on the scan?"""
     coords = ann.get("coords")
     return isinstance(coords, (list, tuple)) and len(coords) == 2
 
@@ -151,7 +166,7 @@ def _breadcrumbs(root: str, doc_rel: str, doc_title: str, located: Dict[str, Any
 
 
 def _panel_list(published: List[Dict[str, Any]]) -> str:
-    """The indexable part: published annotations as real HTML."""
+    """The indexable part: published remarks as real HTML."""
     if not published:
         return (
             '      <p class="panel-empty">На этой странице пока нет опубликованного разбора.</p>'
@@ -160,8 +175,8 @@ def _panel_list(published: List[Dict[str, Any]]) -> str:
     number = 0
     for ann in published:
         number += 1
-        ann_type = ann.get("annType") or "comment"
-        # Категория — готовое поле аннотации (ровно одно, по умолчанию «Прочее»).
+        remark_kind = remark_kind_of(ann)
+        # Категория — готовое поле замечания (ровно одно, по умолчанию «Прочее»).
         # Не выводим её из тегов: этим занимался переходный код, теперь значение
         # приезжает из БД через publisher._render_item.
         category = annotation_categories.normalize_category(ann.get("category"))
@@ -171,11 +186,11 @@ def _panel_list(published: List[Dict[str, Any]]) -> str:
             chips = "".join(f'<li class="panel-item__tag">{_esc(t)}</li>' for t in tags)
             tags_html = f'\n          <ul class="panel-item__tags">{chips}</ul>'
         items.append(
-            f'        <li class="panel-item panel-item--{_esc(ann_type)} '
+            f'        <li class="panel-item panel-item--{_esc(remark_kind)} '
             f'panel-item--cat-{_esc(category)}" '
             f'id="panel-item-{_esc(str(ann["id"]))}" data-ann-id="{_esc(str(ann["id"]))}">\n'
             f'          <span class="panel-item__num" aria-hidden="true">{number}</span>\n'
-            f'          <div class="panel-item__body comment-content">{render_annotation_html(ann["text"])}</div>'
+            f'          <div class="panel-item__body remark-content">{render_remark_html(ann["text"])}</div>'
             f'{tags_html}\n'
             f'        </li>'
         )
@@ -184,7 +199,7 @@ def _panel_list(published: List[Dict[str, Any]]) -> str:
     # под сканом остаётся одна строка.
     return (
         '      <details class="panel-list-wrap" id="panel-list-wrap" open>\n'
-        f'        <summary>Все комментарии ({len(published)})</summary>\n'
+        f'        <summary>Все замечания ({len(published)})</summary>\n'
         '        <ol class="panel-list" id="panel-list">\n'
         + "\n".join(items) +
         '\n        </ol>\n'
@@ -214,21 +229,24 @@ def _panel_tags(published: List[Dict[str, Any]]) -> str:
     )
 
 
-def _page_data_blob(annotations: List[Dict[str, Any]]) -> str:
-    """Every annotation, drafts included, with markup already rendered.
+def _page_data_blob(remarks: List[Dict[str, Any]]) -> str:
+    """Every remark, drafts included, with markup already rendered.
 
     Lives in a <script type="application/json"> so drafts ship with the page
     (no fetch for ?showDrafts=1) without becoming indexable page text.
     """
     payload = []
-    for ann in annotations:
+    for ann in remarks:
         item = {
             "id": ann["id"],
-            "annType": ann.get("annType") or "comment",
+            "kind": remark_kind_of(ann),
+            # Прежнее имя ключа: страницы перерисовываются по одной, и в момент
+            # выкладки часть их читает ещё не обновлённый JS. Снимается в фазе 6.
+            "annType": _LEGACY_KIND_NAMES.get(remark_kind_of(ann), remark_kind_of(ann)),
             # Категория — то, чем просмотрщик красит маркер. Без неё всё
             # схлопывается в «Прочее», поэтому она в блобе всегда.
             "category": annotation_categories.normalize_category(ann.get("category")),
-            "html": render_annotation_html(ann["text"]),
+            "html": render_remark_html(ann["text"]),
         }
         if is_anchored(ann):
             item["coords"] = list(ann["coords"])
@@ -249,17 +267,17 @@ def render_page(
     label: str,
     page_file: str,
     page_name: Optional[str],
-    annotations: List[Dict[str, Any]],
+    remarks: List[Dict[str, Any]],
     located: Dict[str, Any],
     prev_label: Optional[str],
     next_label: Optional[str],
     timestamp: str,
 ) -> str:
-    """Full HTML for one page. `annotations` is the page's bare array."""
+    """Full HTML for one page. `remarks` is the page's bare array."""
     root = "../../../"      # <doc>/pages/<label>/ -> site root
     doc_rel = "../../"      # <doc>/pages/<label>/ -> <doc>/
 
-    published = [a for a in annotations if is_published(a)]
+    published = [a for a in remarks if is_published(a)]
 
     title = _page_title(label, {**located, "pageName": page_name}, doc_title)
     description = make_description(
@@ -304,7 +322,7 @@ def render_page(
   <meta property="og:image" content="{_esc(og_image, quote=True)}"/>
   <meta name="twitter:card" content="summary_large_image"/>
   <link rel="stylesheet" href="{root}css/main.css">
-  <link rel="stylesheet" href="{root}css/annotations.css">
+  <link rel="stylesheet" href="{root}css/remarks.css">
   <link rel="stylesheet" href="{root}css/page-panel.css">
   <link rel="icon" href="{root}favicon.svg">
 </head>
@@ -326,7 +344,7 @@ def render_page(
       <div id="panel-context">
         <h1 class="panel-context__title">{_esc(heading)}</h1>
         {f'<p class="panel-context__section">{_esc(context_line)}</p>' if context_line else ''}
-        <p class="panel-context__count">{_annotations_summary(len(published))}</p>
+        <p class="panel-context__count">{_remarks_summary(len(published))}</p>
       </div>{panel_tags_block}
 {_panel_list(published)}
     </aside>
@@ -338,10 +356,10 @@ def render_page(
 
   <div id="mobile-overlay" class="mobile-overlay">
     <div class="mobile-overlay-close" id="mobile-overlay-close" role="button" tabindex="0" aria-label="Закрыть">×</div>
-    <div class="mobile-comment-content comment-content" id="mobile-comment-content"></div>
+    <div class="mobile-remark-body remark-content" id="mobile-remark-body"></div>
   </div>
 
-{_page_data_blob(annotations)}
+{_page_data_blob(remarks)}
   <script src="{root}js/redpen-categories.js"></script>
   <script src="{root}js/page-view.js"></script>
 </body>
@@ -349,10 +367,10 @@ def render_page(
 """
 
 
-def _annotations_summary(total: int) -> str:
+def _remarks_summary(total: int) -> str:
     if not total:
         return "Разбор этой страницы ещё не опубликован."
-    return f"{total} {_plural_ru(total, 'комментарий', 'комментария', 'комментариев')} к странице"
+    return f"{total} {_plural_ru(total, 'замечание', 'замечания', 'замечаний')} к странице"
 
 
 def _plural_ru(n: int, one: str, few: str, many: str) -> str:
@@ -457,7 +475,7 @@ def render_toc(
   <main class="toc">
     <h1>{_esc(doc_title)}</h1>
     <p class="toc-intro">{_esc(description)}</p>
-    <p class="toc-stats">Разбор опубликован на {indexed} {_plural_ru(indexed, 'странице', 'страницах', 'страницах')} — {total} {_plural_ru(total, 'комментарий', 'комментария', 'комментариев')}.</p>
+    <p class="toc-stats">Разбор опубликован на {indexed} {_plural_ru(indexed, 'странице', 'страницах', 'страницах')} — {total} {_plural_ru(total, 'замечание', 'замечания', 'замечаний')}.</p>
 {body}
   </main>
 
@@ -475,8 +493,12 @@ def locate_label(chapter_list: List[Dict[str, Any]], label: str) -> Dict[str, An
     return chapters_mod.locate_page(chapter_list, int(label))
 
 
-def load_annotations(doc_dir: str, page_file: str) -> List[Dict[str, Any]]:
-    path = os.path.join(doc_dir, "annotations", f"{page_file}.json")
+def load_remarks(doc_dir: str, page_file: str) -> List[Dict[str, Any]]:
+    path = os.path.join(doc_dir, "remarks", f"{page_file}.json")
+    if not os.path.exists(path):
+        # Прежнее имя каталога: сборка может идти по тому, где publisher ещё
+        # не отработал после переименования.
+        path = os.path.join(doc_dir, LEGACY_PAGE_DIRNAME, f"{page_file}.json")
     if not os.path.exists(path):
         return []
     with open(path, "r", encoding="utf-8") as f:
@@ -512,7 +534,7 @@ def _write_page_preserving_stamp(out_path: str, html_text: str) -> bool:
     True, если файл действительно изменился.
 
     Две причины. Во-первых, честность: метка называется «последнее обновление»,
-    и у страницы, чьи аннотации никто не трогал полгода, она должна показывать
+    и у страницы, чьи замечания никто не трогал полгода, она должна показывать
     ту давнюю дату, а не день последней сборки. Во-вторых, диффы: без этого
     любая пересборка меняет все 448 файлов разом, и в ночном коммите не видно,
     что на самом деле поменялось."""
@@ -536,8 +558,8 @@ def build_single_page(doc_dir: str, page_file: str,
                       auto_header: Optional[str] = None) -> Optional[str]:
     """Перерисовать HTML одной страницы. Возвращает путь или None.
 
-    Нужна публикатору API: просмотрщик читает аннотации не из
-    `annotations/page_NNN.json`, а из инлайнового блока `redpen-page-data`,
+    Нужна публикатору API: просмотрщик читает замечания не из
+    `remarks/page_NNN.json`, а из инлайнового блока `redpen-page-data`,
     вшитого сюда. Пока перерисовки не было, правка через редактор обновляла
     JSON, но до читателя не доезжала вовсе.
 
@@ -571,7 +593,7 @@ def build_single_page(doc_dir: str, page_file: str,
         label=label,
         page_file=page_file,
         page_name=page.get("name"),
-        annotations=load_annotations(doc_dir, page_file),
+        remarks=load_remarks(doc_dir, page_file),
         located=locate_label(metadata.get("chapters") or [], label),
         prev_label=str(pages[index - 1].get("label")) if index > 0 else None,
         next_label=str(pages[index + 1].get("label")) if index + 1 < len(pages) else None,
@@ -607,15 +629,16 @@ def build_pages(doc_dir: str, timestamp: str, auto_header: str = "") -> List[str
     doc_title = metadata.get("title") or doc_id
     chapter_list = metadata.get("chapters") or []
 
-    # annotations/ is owned by the API's publisher, not by this build (see
-    # content_sync's --exclude /*/annotations/). A build into a fresh
+    # remarks/ is owned by the API's publisher, not by this build (see
+    # content_sync's --exclude /*/remarks/). A build into a fresh
     # --target-dir therefore has none, and every page would silently render
     # empty and noindex. Loud, because the failure mode is an invisible
     # de-indexing of the whole site.
-    if not os.path.isdir(os.path.join(doc_dir, "annotations")):
+    if not os.path.isdir(os.path.join(doc_dir, "remarks")) \
+            and not os.path.isdir(os.path.join(doc_dir, LEGACY_PAGE_DIRNAME)):
         print(
-            f"[page_html] WARNING: {doc_dir}/annotations is missing -- every page will render "
-            f"empty and noindex. Annotations come from the DB export (scripts/api/export_annotations.py) "
+            f"[page_html] WARNING: {doc_dir}/remarks is missing -- every page will render "
+            f"empty and noindex. Remarks come from the DB export (scripts/api/export_remarks.py) "
             f"and live in the redpen-publish checkout; copy them into the target dir before building."
         )
 
@@ -631,8 +654,8 @@ def build_pages(doc_dir: str, timestamp: str, auto_header: str = "") -> List[str
 
         located = locate_label(chapter_list, label)
 
-        annotations = load_annotations(doc_dir, page_file)
-        published = [a for a in annotations if is_published(a)]
+        remarks = load_remarks(doc_dir, page_file)
+        published = [a for a in remarks if is_published(a)]
         published_total += len(published)
         counts[label] = len(published)
         if published:
@@ -648,7 +671,7 @@ def build_pages(doc_dir: str, timestamp: str, auto_header: str = "") -> List[str
             label=label,
             page_file=page_file,
             page_name=page.get("name"),
-            annotations=annotations,
+            remarks=remarks,
             located=located,
             prev_label=str(pages[i - 1].get("label")) if i > 0 else None,
             next_label=str(pages[i + 1].get("label")) if i + 1 < len(pages) else None,
@@ -673,7 +696,7 @@ def build_pages(doc_dir: str, timestamp: str, auto_header: str = "") -> List[str
 
     print(
         f"[page_html] wrote {len(written)} per-page HTML files to {os.path.join(doc_dir, PAGES_DIRNAME)}; "
-        f"{indexable} indexable ({published_total} published annotations), "
+        f"{indexable} indexable ({published_total} published remarks), "
         f"{len(written) - indexable} noindex; contents page at {os.path.join(doc_dir, 'index.html')}"
     )
     return written

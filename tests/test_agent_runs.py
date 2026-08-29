@@ -62,12 +62,12 @@ def test_run_records_what_produced_the_edit():
 def test_revisions_point_back_at_the_run():
     actor = _agent()
     run = _run(actor)
-    db.upsert_annotation_db("doc1", "006", "a1", "main", "t", action="create",
+    db.upsert_remark_db("doc1", "006", "a1", "major", "t", action="create",
                             author_id=actor, agent_run_id=run["id"],
                             summary="создано агентом")
     revisions = db.list_run_revisions(run["id"])
     assert len(revisions) == 1
-    assert revisions[0]["annId"] == "a1"
+    assert revisions[0]["remarkId"] == "a1"
     assert revisions[0]["summary"] == "создано агентом"
 
     assert db.list_agent_runs(actor_id=actor)[0]["revisionCount"] == 1
@@ -75,10 +75,10 @@ def test_revisions_point_back_at_the_run():
 
 def test_revert_plan_restores_what_existed_before_the_run():
     actor = _agent()
-    db.upsert_annotation_db("doc1", "006", "a1", "main", "исходный текст",
+    db.upsert_remark_db("doc1", "006", "a1", "major", "исходный текст",
                             action="create", category="omission", author_id=1)
     run = _run(actor)
-    db.upsert_annotation_db("doc1", "006", "a1", "main", "переписано агентом",
+    db.upsert_remark_db("doc1", "006", "a1", "major", "переписано агентом",
                             action="update", category="today",
                             category_source="agent", author_id=actor,
                             agent_run_id=run["id"])
@@ -93,31 +93,31 @@ def test_revert_plan_restores_what_existed_before_the_run():
 def test_revert_plan_deletes_what_the_run_created():
     actor = _agent()
     run = _run(actor)
-    db.upsert_annotation_db("doc1", "006", "new-1", "main", "новая от агента",
+    db.upsert_remark_db("doc1", "006", "new-1", "major", "новая от агента",
                             action="create", author_id=actor, agent_run_id=run["id"])
     plan = db.plan_agent_run_revert(run["id"])
     assert plan[0]["action"] == "delete"
     assert plan[0]["targetRevId"] is None
 
 
-def test_revert_plan_covers_every_touched_annotation_once():
+def test_revert_plan_covers_every_touched_remark_once():
     actor = _agent()
     run = _run(actor)
-    for ann_id in ("a1", "a2"):
-        db.upsert_annotation_db("doc1", "006", ann_id, "main", "v1", action="create",
+    for remark_id in ("a1", "a2"):
+        db.upsert_remark_db("doc1", "006", remark_id, "major", "v1", action="create",
                                 author_id=actor, agent_run_id=run["id"])
         # Прогон трогал одну и ту же аннотацию дважды — в плане она одна.
-        db.upsert_annotation_db("doc1", "006", ann_id, "main", "v2", author_id=actor,
+        db.upsert_remark_db("doc1", "006", remark_id, "major", "v2", author_id=actor,
                                 agent_run_id=run["id"])
     plan = db.plan_agent_run_revert(run["id"])
-    assert [item["annId"] for item in plan] == ["a1", "a2"]
+    assert [item["remarkId"] for item in plan] == ["a1", "a2"]
 
 
 def test_edits_outside_the_run_are_untouched_by_the_plan():
     actor = _agent()
     run = _run(actor)
-    db.upsert_annotation_db("doc1", "006", "a1", "main", "агент", action="create",
+    db.upsert_remark_db("doc1", "006", "a1", "major", "агент", action="create",
                             author_id=actor, agent_run_id=run["id"])
-    db.upsert_annotation_db("doc1", "006", "human-1", "main", "человек", action="create",
+    db.upsert_remark_db("doc1", "006", "human-1", "major", "человек", action="create",
                             author_id=1)
-    assert [item["annId"] for item in db.plan_agent_run_revert(run["id"])] == ["a1"]
+    assert [item["remarkId"] for item in db.plan_agent_run_revert(run["id"])] == ["a1"]

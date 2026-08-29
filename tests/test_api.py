@@ -3,7 +3,7 @@ Tests for the FastAPI service in ``scripts/api`` driven through Starlette's
 ``TestClient`` (no running server or Docker required).
 
 Storage, log, and publish directories are redirected to a temp dir by
-``conftest.py``, so these tests never touch real data. Stage 2: annotations
+``conftest.py``, so these tests never touch real data. Stage 2: remarks
 live in SQLite (``db.py``); PUBLISH_DIR is a throwaway directory, so tests can
 assert that the rendered ``page_NNN.json`` files agree with the DB after each
 mutation.
@@ -26,16 +26,24 @@ import db  # noqa: E402  (imported after conftest sets env vars)
 import main  # noqa: E402  (imported after conftest sets env vars)
 
 
-def _static_annotations(doc_id: str, page_num_str: str):
+def _static_remarks(doc_id: str, page_num_str: str):
     """Everything in the published file -- drafts included, since they share it."""
-    path = os.path.join(config.PUBLISH_DIR, doc_id, "annotations", f"page_{page_num_str}.json")
+    path = os.path.join(config.PUBLISH_DIR, doc_id, "remarks", f"page_{page_num_str}.json")
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
-def _published_annotations(doc_id: str, page_num_str: str):
+def _published_remarks(doc_id: str, page_num_str: str):
     """Only what a plain reader sees: the file minus the draft-tagged items."""
-    return [a for a in _static_annotations(doc_id, page_num_str) if not a.get("draft")]
+    return [a for a in _static_remarks(doc_id, page_num_str) if not a.get("draft")]
+
+
+def _without_legacy_keys(items):
+    """Ответ API дублирует поля прежними именами (`annType`) — это временный
+    мостик для клиентов редактора, которые переезжают отдельной выкладкой.
+    Сверять содержимое с опубликованным файлом надо без него."""
+    return [{k: v for k, v in item.items() if k not in ("annType", "annId")}
+            for item in items]
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -161,7 +169,7 @@ def test_editor_get_returns_default_page(client):
     assert r.status_code == 200
     page = r.json()
     assert page["pageId"] == "medinsky11klass_page_012"
-    assert page["annotations"] == []
+    assert page["remarks"] == []
     assert page["serverPageSha"]  # computed & persisted on GET
 
 
@@ -197,45 +205,45 @@ def test_validate_page_key_rejects_invalid(raw):
 
 def test_page_key_short_and_zfilled_form_are_the_same_page(client):
     doc = "medinsky11klass"
-    created = client.post(f"/api/editor/{doc}/60", json={"annType": "comment", "text": "via short key", "coords": [1, 1]}).json()
+    created = client.post(f"/api/editor/{doc}/60", json={"kind": "minor", "text": "via short key", "coords": [1, 1]}).json()
 
     short_form = client.get(f"/api/editor/{doc}/60").json()
     zfilled_form = client.get(f"/api/editor/{doc}/060").json()
     assert short_form["pageId"] == zfilled_form["pageId"] == f"{doc}_page_060"
-    assert [a["id"] for a in short_form["annotations"]] == [a["id"] for a in zfilled_form["annotations"]]
-    assert created["id"] in [a["id"] for a in zfilled_form["annotations"]]
+    assert [a["id"] for a in short_form["remarks"]] == [a["id"] for a in zfilled_form["remarks"]]
+    assert created["id"] in [a["id"] for a in zfilled_form["remarks"]]
 
 
 @pytest.mark.parametrize("page_key", ["000", "-01"])
 def test_nonstandard_page_keys_support_full_crud_and_publish(client, page_key):
     doc = "medinsky11klass"
 
-    created = client.post(f"/api/editor/{doc}/{page_key}", json={"annType": "comment", "text": "front matter", "coords": [1, 1]})
+    created = client.post(f"/api/editor/{doc}/{page_key}", json={"kind": "minor", "text": "front matter", "coords": [1, 1]})
     assert created.status_code == 200
-    ann_id = created.json()["id"]
+    remark_id = created.json()["id"]
 
-    updated = client.put(f"/api/editor/{doc}/{page_key}/{ann_id}", json={"annType": "main", "text": "updated", "coords": [2, 2]})
+    updated = client.put(f"/api/editor/{doc}/{page_key}/{remark_id}", json={"kind": "major", "text": "updated", "coords": [2, 2]})
     assert updated.status_code == 200
 
-    published = _published_annotations(doc, page_key)
+    published = _published_remarks(doc, page_key)
     assert published == [{
-        "id": ann_id, "text": "updated", "annType": "main", "coords": [2, 2],
+        "id": remark_id, "text": "updated", "kind": "major", "coords": [2, 2],
         # Категория есть у каждой аннотации; по умолчанию — «Прочее».
         "category": "other",
     }]
 
-    deleted = client.delete(f"/api/editor/{doc}/{page_key}/{ann_id}")
+    deleted = client.delete(f"/api/editor/{doc}/{page_key}/{remark_id}")
     assert deleted.status_code == 200
-    assert _published_annotations(doc, page_key) == []
+    assert _published_remarks(doc, page_key) == []
 
 
 # ---------------------------------------------------------------------------
 # /api/editor POST/PUT round-trip
 # ---------------------------------------------------------------------------
 
-def test_editor_post_creates_annotation_and_persists(client):
+def test_editor_post_creates_remark_and_persists(client):
     doc, page = "medinsky11klass", "21"
-    payload = {"annType": "comment", "text": "hello", "coords": [100, 200]}
+    payload = {"kind": "minor", "text": "hello", "coords": [100, 200]}
     r = client.post(f"/api/editor/{doc}/{page}", json=payload)
     assert r.status_code == 200
     created = r.json()
@@ -243,27 +251,27 @@ def test_editor_post_creates_annotation_and_persists(client):
     assert created["serverPageSha"]
     assert created["published"] is True
 
-    # GET should now return the persisted annotation.
+    # GET should now return the persisted remark.
     page_data = client.get(f"/api/editor/{doc}/{page}").json()
-    ids = [a["id"] for a in page_data["annotations"]]
+    ids = [a["id"] for a in page_data["remarks"]]
     assert created["id"] in ids
-    ann = next(a for a in page_data["annotations"] if a["id"] == created["id"])
-    assert ann["annType"] == "comment"
+    ann = next(a for a in page_data["remarks"] if a["id"] == created["id"])
+    assert ann["kind"] == "minor"
     assert ann["text"] == "hello"
     assert ann["coords"] == [100, 200]
 
     # The published static snapshot matches the DB-backed GET response.
-    published = _published_annotations(doc, "021")
-    assert published == page_data["annotations"]
+    published = _published_remarks(doc, "021")
+    assert published == _without_legacy_keys(page_data["remarks"])
 
 
 def test_editor_post_rejects_retired_general_type(client):
     """`general` (общий комментарий к странице) is retired: it had no anchor on
-    the scan. Old clients must fail loudly rather than create an annotation the
+    the scan. Old clients must fail loudly rather than create an remark the
     viewer cannot place."""
     r = client.post(
         "/api/editor/medinsky11klass/22",
-        json={"annType": "general", "text": "overview"},
+        json={"kind": "general", "text": "overview"},
     )
     assert r.status_code == 400
 
@@ -271,7 +279,7 @@ def test_editor_post_rejects_retired_general_type(client):
 def test_editor_post_rejects_unknown_type(client):
     r = client.post(
         "/api/editor/medinsky11klass/22",
-        json={"annType": "footnote", "text": "что-то"},
+        json={"kind": "footnote", "text": "что-то"},
     )
     assert r.status_code == 400
 
@@ -279,11 +287,11 @@ def test_editor_post_rejects_unknown_type(client):
 @pytest.mark.parametrize(
     "payload",
     [
-        {"text": "no type"},                                  # missing annType
-        {"annType": "comment"},                               # missing text
-        {"annType": "", "text": "x"},                         # empty annType
-        {"annType": "comment", "text": "x", "coords": [1]},   # bad coords
-        {"annType": "comment", "text": "x", "coords": ["a", "b"]},
+        {"text": "no type"},                                  # missing kind
+        {"kind": "minor"},                               # missing text
+        {"kind": "", "text": "x"},                         # empty kind
+        {"kind": "minor", "text": "x", "coords": [1]},   # bad coords
+        {"kind": "minor", "text": "x", "coords": ["a", "b"]},
     ],
 )
 def test_editor_post_invalid_body(client, payload):
@@ -291,71 +299,71 @@ def test_editor_post_invalid_body(client, payload):
     assert r.status_code == 400
 
 
-def test_editor_put_updates_existing_annotation(client):
+def test_editor_put_updates_existing_remark(client):
     doc, page = "medinsky11klass", "24"
     created = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "first", "coords": [1, 2]},
+        json={"kind": "minor", "text": "first", "coords": [1, 2]},
     ).json()
-    ann_id = created["id"]
+    remark_id = created["id"]
 
     r = client.put(
-        f"/api/editor/{doc}/{page}/{ann_id}",
-        json={"annType": "main", "text": "updated", "coords": [3, 4]},
+        f"/api/editor/{doc}/{page}/{remark_id}",
+        json={"kind": "major", "text": "updated", "coords": [3, 4]},
     )
     assert r.status_code == 200
     body = r.json()
-    assert body["id"] == ann_id
+    assert body["id"] == remark_id
     assert body["published"] is True
 
     page_data = client.get(f"/api/editor/{doc}/{page}").json()
-    anns = [a for a in page_data["annotations"] if a["id"] == ann_id]
+    anns = [a for a in page_data["remarks"] if a["id"] == remark_id]
     assert len(anns) == 1  # updated in place, not duplicated
     assert anns[0]["text"] == "updated"
-    assert anns[0]["annType"] == "main"
+    assert anns[0]["kind"] == "major"
 
-    published = _published_annotations(doc, "024")
-    assert published == page_data["annotations"]
+    published = _published_remarks(doc, "024")
+    assert published == _without_legacy_keys(page_data["remarks"])
 
 
 def test_editor_put_upserts_when_id_missing(client):
     doc, page = "medinsky11klass", "25"
     r = client.put(
         f"/api/editor/{doc}/{page}/does-not-exist",
-        json={"annType": "comment", "text": "new via put", "coords": [5, 6]},
+        json={"kind": "minor", "text": "new via put", "coords": [5, 6]},
     )
     assert r.status_code == 200
     page_data = client.get(f"/api/editor/{doc}/{page}").json()
-    ids = [a["id"] for a in page_data["annotations"]]
+    ids = [a["id"] for a in page_data["remarks"]]
     assert "does-not-exist" in ids
 
 
 # ---------------------------------------------------------------------------
-# DELETE /api/editor/{docId}/{pageNum}/{annId} (stage 2, soft-delete)
+# DELETE /api/editor/{docId}/{pageNum}/{remarkId} (stage 2, soft-delete)
 # ---------------------------------------------------------------------------
 
-def test_editor_delete_removes_annotation_from_get_and_published_file(client):
+def test_editor_delete_removes_remark_from_get_and_published_file(client):
     doc, page = "medinsky11klass", "50"
     created = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "to be deleted", "coords": [1, 1]},
+        json={"kind": "minor", "text": "to be deleted", "coords": [1, 1]},
     ).json()
-    ann_id = created["id"]
+    remark_id = created["id"]
 
-    r = client.delete(f"/api/editor/{doc}/{page}/{ann_id}")
+    r = client.delete(f"/api/editor/{doc}/{page}/{remark_id}")
     assert r.status_code == 200
     body = r.json()
-    assert body["id"] == ann_id
+    assert body["id"] == remark_id
     assert body["published"] is True
 
     page_data = client.get(f"/api/editor/{doc}/{page}").json()
-    assert ann_id not in [a["id"] for a in page_data["annotations"]]
+    assert remark_id not in [a["id"] for a in page_data["remarks"]]
 
-    published = _published_annotations(doc, "050")
-    assert ann_id not in [a["id"] for a in published]
+    published = _published_remarks(doc, "050")
+    assert remark_id not in [a["id"] for a in published]
 
 
-def test_editor_delete_missing_annotation_is_404(client):
+def test_editor_delete_missing_remark_is_404(client):
     r = client.delete("/api/editor/medinsky11klass/51/does-not-exist")
     assert r.status_code == 404
 
@@ -364,26 +372,26 @@ def test_editor_delete_already_deleted_is_404(client):
     doc, page = "medinsky11klass", "52"
     created = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "one shot", "coords": [1, 1]},
+        json={"kind": "minor", "text": "one shot", "coords": [1, 1]},
     ).json()
-    ann_id = created["id"]
+    remark_id = created["id"]
 
-    assert client.delete(f"/api/editor/{doc}/{page}/{ann_id}").status_code == 200
-    assert client.delete(f"/api/editor/{doc}/{page}/{ann_id}").status_code == 404
+    assert client.delete(f"/api/editor/{doc}/{page}/{remark_id}").status_code == 200
+    assert client.delete(f"/api/editor/{doc}/{page}/{remark_id}").status_code == 404
 
 
-def test_anonymous_delete_editor_annotation_is_rejected():
+def test_anonymous_delete_editor_remark_is_rejected():
     anon = TestClient(main.app)
     r = anon.delete("/api/editor/medinsky11klass/53/some-id")
     assert r.status_code == 401
 
 
 def test_startup_self_heals_publish_dir():
-    # An annotation exists in the DB but PUBLISH_DIR was wiped (simulating a
+    # An remark exists in the DB but PUBLISH_DIR was wiped (simulating a
     # fresh/recreated container) -- the startup hook's publish_all() should
     # restore it without any explicit publish-all call.
-    db.upsert_annotation_db("startupdoc", "006", "ann-1", "comment", "restored on boot")
-    path = os.path.join(config.PUBLISH_DIR, "startupdoc", "annotations", "page_006.json")
+    db.upsert_remark_db("startupdoc", "006", "ann-1", "minor", "restored on boot")
+    path = os.path.join(config.PUBLISH_DIR, "startupdoc", "remarks", "page_006.json")
     if os.path.exists(path):
         os.remove(path)
 
@@ -393,7 +401,7 @@ def test_startup_self_heals_publish_dir():
     assert os.path.exists(path)
 
 
-def test_viewer_delete_editor_annotation_is_forbidden(client):
+def test_viewer_delete_editor_remark_is_forbidden(client):
     # Роль приезжает с приглашением; система знает про участника только хеш
     # его Google `sub` (docs/anonymity-model.md).
     c = TestClient(main.app)
@@ -410,31 +418,31 @@ def test_viewer_delete_editor_annotation_is_forbidden(client):
 # Write endpoints require an authenticated session (stage 0.3) + CSRF (0.4)
 # ---------------------------------------------------------------------------
 
-def test_anonymous_post_editor_annotation_is_rejected():
+def test_anonymous_post_editor_remark_is_rejected():
     anon = TestClient(main.app)
     r = anon.post(
         "/api/editor/medinsky11klass/30",
-        json={"annType": "comment", "text": "x", "coords": [1, 2]},
+        json={"kind": "minor", "text": "x", "coords": [1, 2]},
     )
     assert r.status_code == 401
 
 
-def test_anonymous_put_editor_annotation_is_rejected():
+def test_anonymous_put_editor_remark_is_rejected():
     anon = TestClient(main.app)
     r = anon.put(
         "/api/editor/medinsky11klass/30/some-id",
-        json={"annType": "comment", "text": "x", "coords": [1, 2]},
+        json={"kind": "minor", "text": "x", "coords": [1, 2]},
     )
     assert r.status_code == 401
 
 
-def test_authenticated_post_editor_annotation_succeeds():
+def test_authenticated_post_editor_remark_succeeds():
     # Full cycle: login -> csrf -> POST -> 200.
     c = TestClient(main.app)
     _login_with_csrf(c)
     r = c.post(
         "/api/editor/medinsky11klass/31",
-        json={"annType": "comment", "text": "x", "coords": [1, 2]},
+        json={"kind": "minor", "text": "x", "coords": [1, 2]},
     )
     assert r.status_code == 200
 
@@ -444,7 +452,7 @@ def test_session_without_csrf_header_is_rejected():
     c.post("/api/auth/login", json={"token": "dev-token-123"})
     r = c.post(
         "/api/editor/medinsky11klass/33",
-        json={"annType": "comment", "text": "x", "coords": [1, 2]},
+        json={"kind": "minor", "text": "x", "coords": [1, 2]},
     )
     assert r.status_code == 403
 
@@ -455,7 +463,7 @@ def test_session_with_wrong_csrf_header_is_rejected():
     c.headers.update({"X-CSRF-Token": "csrf-wrong-value"})
     r = c.post(
         "/api/editor/medinsky11klass/34",
-        json={"annType": "comment", "text": "x", "coords": [1, 2]},
+        json={"kind": "minor", "text": "x", "coords": [1, 2]},
     )
     assert r.status_code == 403
 
@@ -611,7 +619,7 @@ def test_cors_preflight_reflects_explicit_origin():
 
 def test_missing_client_page_sha_is_accepted_transitionally(client):
     doc, page = "medinsky11klass", "40"
-    r = client.post(f"/api/editor/{doc}/{page}", json={"annType": "comment", "text": "no sha", "coords": [1, 1]})
+    r = client.post(f"/api/editor/{doc}/{page}", json={"kind": "minor", "text": "no sha", "coords": [1, 1]})
     assert r.status_code == 200
 
 
@@ -624,7 +632,7 @@ def test_stale_client_page_sha_returns_409(client):
     # First writer succeeds and advances serverPageSha.
     first = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "first", "coords": [1, 2], "clientPageSha": stale_sha},
+        json={"kind": "minor", "text": "first", "coords": [1, 2], "clientPageSha": stale_sha},
     )
     assert first.status_code == 200
     assert first.json()["serverPageSha"] != stale_sha
@@ -632,7 +640,7 @@ def test_stale_client_page_sha_returns_409(client):
     # Second writer still holds the old sha -> conflict.
     second = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "second", "coords": [3, 4], "clientPageSha": stale_sha},
+        json={"kind": "minor", "text": "second", "coords": [3, 4], "clientPageSha": stale_sha},
     )
     assert second.status_code == 409
     body = second.json()
@@ -643,7 +651,7 @@ def test_stale_client_page_sha_returns_409(client):
     refreshed = client.get(f"/api/editor/{doc}/{page}").json()
     third = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "second retry", "coords": [3, 4], "clientPageSha": refreshed["serverPageSha"]},
+        json={"kind": "minor", "text": "second retry", "coords": [3, 4], "clientPageSha": refreshed["serverPageSha"]},
     )
     assert third.status_code == 200
 
@@ -653,29 +661,29 @@ def test_stale_client_page_sha_returns_409(client):
 # ---------------------------------------------------------------------------
 
 
-def test_draft_annotation_tagged_in_static_file_and_hidden_from_anonymous_get(client):
+def test_draft_remark_tagged_in_static_file_and_hidden_from_anonymous_get(client):
     doc, page = "medinsky11klass", "70"
     created = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "wip", "coords": [1, 1], "status": "draft"},
+        json={"kind": "minor", "text": "wip", "coords": [1, 1], "status": "draft"},
     )
     assert created.status_code == 200
     assert created.json()["published"] is False
-    ann_id = created.json()["id"]
+    remark_id = created.json()["id"]
 
     # The draft ships in the page file, carrying the marker the viewer filters on.
-    static = _static_annotations(doc, "070")
-    assert [a["id"] for a in static] == [ann_id]
+    static = _static_remarks(doc, "070")
+    assert [a["id"] for a in static] == [remark_id]
     assert static[0]["draft"] is True
     assert static[0]["tags"] == ["draft"]
-    assert _published_annotations(doc, "070") == []
+    assert _published_remarks(doc, "070") == []
 
     anon = TestClient(main.app)
     anon_page = anon.get(f"/api/editor/{doc}/{page}").json()
-    assert ann_id not in [a["id"] for a in anon_page["annotations"]]
+    assert remark_id not in [a["id"] for a in anon_page["remarks"]]
 
     editor_page = client.get(f"/api/editor/{doc}/{page}").json()
-    draft_anns = [a for a in editor_page["annotations"] if a["id"] == ann_id]
+    draft_anns = [a for a in editor_page["remarks"] if a["id"] == remark_id]
     assert len(draft_anns) == 1
     assert draft_anns[0]["draft"] is True
 
@@ -684,42 +692,42 @@ def test_put_without_status_preserves_existing_draft_status(client):
     doc, page = "medinsky11klass", "71"
     created = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "wip", "coords": [1, 1], "status": "draft"},
+        json={"kind": "minor", "text": "wip", "coords": [1, 1], "status": "draft"},
     ).json()
-    ann_id = created["id"]
+    remark_id = created["id"]
 
     updated = client.put(
-        f"/api/editor/{doc}/{page}/{ann_id}",
-        json={"annType": "comment", "text": "still wip", "coords": [2, 2]},
+        f"/api/editor/{doc}/{page}/{remark_id}",
+        json={"kind": "minor", "text": "still wip", "coords": [2, 2]},
     )
     assert updated.status_code == 200
     assert updated.json()["published"] is False
-    assert _published_annotations(doc, "071") == []
+    assert _published_remarks(doc, "071") == []
 
 
 def test_put_with_status_published_publishes_draft(client):
     doc, page = "medinsky11klass", "72"
     created = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "wip", "coords": [1, 1], "status": "draft"},
+        json={"kind": "minor", "text": "wip", "coords": [1, 1], "status": "draft"},
     ).json()
-    ann_id = created["id"]
+    remark_id = created["id"]
 
     published = client.put(
-        f"/api/editor/{doc}/{page}/{ann_id}",
-        json={"annType": "comment", "text": "ready", "coords": [2, 2], "status": "published"},
+        f"/api/editor/{doc}/{page}/{remark_id}",
+        json={"kind": "minor", "text": "ready", "coords": [2, 2], "status": "published"},
     )
     assert published.status_code == 200
     assert published.json()["published"] is True
-    files = _published_annotations(doc, "072")
-    assert [a["id"] for a in files] == [ann_id]
+    files = _published_remarks(doc, "072")
+    assert [a["id"] for a in files] == [remark_id]
     assert files[0]["text"] == "ready"
 
 
 def test_invalid_status_value_is_400(client):
     r = client.post(
         "/api/editor/medinsky11klass/73",
-        json={"annType": "comment", "text": "x", "coords": [1, 1], "status": "bogus"},
+        json={"kind": "minor", "text": "x", "coords": [1, 1], "status": "bogus"},
     )
     assert r.status_code == 400
 
@@ -731,9 +739,9 @@ def test_editor_get_draft_visibility_matrix(role):
     _login_with_csrf(editor_client)
     created = editor_client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "wip", "coords": [1, 1], "status": "draft"},
+        json={"kind": "minor", "text": "wip", "coords": [1, 1], "status": "draft"},
     ).json()
-    ann_id = created["id"]
+    remark_id = created["id"]
 
     if role == "anon":
         c = TestClient(main.app)
@@ -747,11 +755,11 @@ def test_editor_get_draft_visibility_matrix(role):
         c = editor_client
 
     page_data = c.get(f"/api/editor/{doc}/{page}").json()
-    ids = [a["id"] for a in page_data["annotations"]]
+    ids = [a["id"] for a in page_data["remarks"]]
     if role == "editor":
-        assert ann_id in ids
+        assert remark_id in ids
     else:
-        assert ann_id not in ids
+        assert remark_id not in ids
 
 
 # ---------------------------------------------------------------------------
@@ -763,52 +771,52 @@ def test_post_stores_tags_and_renders_them(client):
     doc, page = "medinsky11klass", "80"
     created = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "x", "coords": [1, 1], "tags": ["Omission", "framing"]},
+        json={"kind": "minor", "text": "x", "coords": [1, 1], "tags": ["Omission", "framing"]},
     )
     assert created.status_code == 200
-    ann_id = created.json()["id"]
+    remark_id = created.json()["id"]
 
-    published = _published_annotations(doc, "080")
+    published = _published_remarks(doc, "080")
     assert published[0]["tags"] == ["framing", "omission"]
 
     editor_page = client.get(f"/api/editor/{doc}/{page}").json()
-    assert [a for a in editor_page["annotations"] if a["id"] == ann_id][0]["tags"] == ["framing", "omission"]
+    assert [a for a in editor_page["remarks"] if a["id"] == remark_id][0]["tags"] == ["framing", "omission"]
 
 
 def test_put_without_tags_preserves_them(client):
     """The editor UI doesn't send tags yet; saving from it must not wipe them."""
     doc, page = "medinsky11klass", "81"
-    ann_id = client.post(
+    remark_id = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "x", "coords": [1, 1], "tags": ["omission"]},
+        json={"kind": "minor", "text": "x", "coords": [1, 1], "tags": ["omission"]},
     ).json()["id"]
 
     client.put(
-        f"/api/editor/{doc}/{page}/{ann_id}",
-        json={"annType": "comment", "text": "edited", "coords": [2, 2]},
+        f"/api/editor/{doc}/{page}/{remark_id}",
+        json={"kind": "minor", "text": "edited", "coords": [2, 2]},
     )
-    assert _published_annotations(doc, "081")[0]["tags"] == ["omission"]
+    assert _published_remarks(doc, "081")[0]["tags"] == ["omission"]
 
 
 def test_put_with_empty_tags_clears_them(client):
     doc, page = "medinsky11klass", "82"
-    ann_id = client.post(
+    remark_id = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "x", "coords": [1, 1], "tags": ["omission"]},
+        json={"kind": "minor", "text": "x", "coords": [1, 1], "tags": ["omission"]},
     ).json()["id"]
 
     client.put(
-        f"/api/editor/{doc}/{page}/{ann_id}",
-        json={"annType": "comment", "text": "x", "coords": [1, 1], "tags": []},
+        f"/api/editor/{doc}/{page}/{remark_id}",
+        json={"kind": "minor", "text": "x", "coords": [1, 1], "tags": []},
     )
-    assert "tags" not in _published_annotations(doc, "082")[0]
+    assert "tags" not in _published_remarks(doc, "082")[0]
 
 
 @pytest.mark.parametrize("tags", [["draft"], ["published"], ["deleted"], ["has space"], ["кириллица"], "omission"])
 def test_reserved_or_malformed_tags_are_400(client, tags):
     r = client.post(
         "/api/editor/medinsky11klass/83",
-        json={"annType": "comment", "text": "x", "coords": [1, 1], "tags": tags},
+        json={"kind": "minor", "text": "x", "coords": [1, 1], "tags": tags},
     )
     assert r.status_code == 400
 
@@ -817,19 +825,19 @@ def test_editor_page_does_not_expose_draft_as_a_tag(client):
     """A draft's flag must stay a boolean: the editor echoes fields back on
     save, and a "draft" entry in tags would come back as a 400."""
     doc, page = "medinsky11klass", "84"
-    ann_id = client.post(
+    remark_id = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "wip", "coords": [1, 1], "status": "draft", "tags": ["omission"]},
+        json={"kind": "minor", "text": "wip", "coords": [1, 1], "status": "draft", "tags": ["omission"]},
     ).json()["id"]
 
-    item = [a for a in client.get(f"/api/editor/{doc}/{page}").json()["annotations"] if a["id"] == ann_id][0]
+    item = [a for a in client.get(f"/api/editor/{doc}/{page}").json()["remarks"] if a["id"] == remark_id][0]
     assert item["draft"] is True
     assert item["tags"] == ["omission"]
 
     # Round-tripping exactly what the editor got back must still save.
     resave = client.put(
-        f"/api/editor/{doc}/{page}/{ann_id}",
-        json={"annType": item["annType"], "text": item["text"], "coords": item["coords"], "tags": item["tags"]},
+        f"/api/editor/{doc}/{page}/{remark_id}",
+        json={"kind": item["kind"], "text": item["text"], "coords": item["coords"], "tags": item["tags"]},
     )
     assert resave.status_code == 200
 
@@ -837,62 +845,62 @@ def test_editor_page_does_not_expose_draft_as_a_tag(client):
 def test_tags_endpoint_lists_vocabulary_with_counts(client):
     doc = "medinsky11klass"
     # Tag names unique to this test: the DB is shared across the module.
-    client.post(f"/api/editor/{doc}/85", json={"annType": "comment", "text": "a", "coords": [1, 1], "tags": ["vocab-a", "vocab-b"]})
-    client.post(f"/api/editor/{doc}/86", json={"annType": "comment", "text": "b", "coords": [1, 1], "tags": ["vocab-a"]})
+    client.post(f"/api/editor/{doc}/85", json={"kind": "minor", "text": "a", "coords": [1, 1], "tags": ["vocab-a", "vocab-b"]})
+    client.post(f"/api/editor/{doc}/86", json={"kind": "minor", "text": "b", "coords": [1, 1], "tags": ["vocab-a"]})
 
     tags = {t["tag"]: t["count"] for t in client.get(f"/api/tags?docId={doc}").json()["tags"]}
     assert tags["vocab-a"] == 2
     assert tags["vocab-b"] == 1
 
 
-def test_annotations_list_filters_by_tag(client):
+def test_remarks_list_filters_by_tag(client):
     doc = "medinsky11klass"
-    tagged = client.post(f"/api/editor/{doc}/87", json={"annType": "comment", "text": "a", "coords": [1, 1], "tags": ["euphemism"]}).json()["id"]
-    client.post(f"/api/editor/{doc}/88", json={"annType": "comment", "text": "b", "coords": [1, 1]})
+    tagged = client.post(f"/api/editor/{doc}/87", json={"kind": "minor", "text": "a", "coords": [1, 1], "tags": ["euphemism"]}).json()["id"]
+    client.post(f"/api/editor/{doc}/88", json={"kind": "minor", "text": "b", "coords": [1, 1]})
 
-    r = client.get(f"/api/annotations?docId={doc}&tag=euphemism").json()
-    assert [i["annId"] for i in r["items"]] == [tagged]
+    r = client.get(f"/api/remarks?docId={doc}&tag=euphemism").json()
+    assert [i["remarkId"] for i in r["items"]] == [tagged]
     assert r["total"] == 1
 
 
 def test_revert_of_pre_tags_snapshot_leaves_tags_alone(client):
     """History snapshots written before tags existed have no "tags" key;
-    reverting to one must not clear the annotation's current tags."""
+    reverting to one must not clear the remark's current tags."""
     doc, page = "medinsky11klass", "89"
-    ann_id = client.post(
-        f"/api/editor/{doc}/{page}", json={"annType": "comment", "text": "v1", "coords": [1, 1]}
+    remark_id = client.post(
+        f"/api/editor/{doc}/{page}", json={"kind": "minor", "text": "v1", "coords": [1, 1]}
     ).json()["id"]
 
     # Simulate a legacy record: a snapshot lacking the tags key.
-    legacy = db.get_annotation(doc, "089", ann_id)
+    legacy = db.get_remark(doc, "089", remark_id)
     legacy.pop("tags")
-    db.add_history(doc, "089", ann_id, "update", legacy, None)
-    hist_id = db.list_history(doc_id=doc, page_num="089", ann_id=ann_id, limit=1)[0]["id"]
+    db.add_history(doc, "089", remark_id, "update", legacy, None)
+    hist_id = db.list_history(doc_id=doc, page_num="089", remark_id=remark_id, limit=1)[0]["id"]
 
     client.put(
-        f"/api/editor/{doc}/{page}/{ann_id}",
-        json={"annType": "comment", "text": "v2", "coords": [1, 1], "tags": ["omission"]},
+        f"/api/editor/{doc}/{page}/{remark_id}",
+        json={"kind": "minor", "text": "v2", "coords": [1, 1], "tags": ["omission"]},
     )
     r = client.post(f"/api/history/{hist_id}/revert")
     assert r.status_code == 200
-    assert _published_annotations(doc, "089")[0]["tags"] == ["omission"]
+    assert _published_remarks(doc, "089")[0]["tags"] == ["omission"]
 
 
 def test_stale_client_page_sha_returns_409_on_put(client):
     doc, page = "medinsky11klass", "42"
     created = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "first", "coords": [1, 2]},
+        json={"kind": "minor", "text": "first", "coords": [1, 2]},
     ).json()
-    ann_id = created["id"]
+    remark_id = created["id"]
     stale_sha = created["serverPageSha"]
 
     # Someone else updates the page, advancing serverPageSha.
-    client.post(f"/api/editor/{doc}/{page}", json={"annType": "comment", "text": "other", "coords": [9, 9]})
+    client.post(f"/api/editor/{doc}/{page}", json={"kind": "minor", "text": "other", "coords": [9, 9]})
 
     r = client.put(
-        f"/api/editor/{doc}/{page}/{ann_id}",
-        json={"annType": "main", "text": "updated", "coords": [3, 4], "clientPageSha": stale_sha},
+        f"/api/editor/{doc}/{page}/{remark_id}",
+        json={"kind": "major", "text": "updated", "coords": [3, 4], "clientPageSha": stale_sha},
     )
     assert r.status_code == 409
     assert r.json()["detail"] == "conflict"
@@ -903,13 +911,13 @@ def test_stale_client_page_sha_returns_409_on_put(client):
 # Теги описывают, что не так с фрагментом; категория — каким одним приёмом.
 
 
-def test_new_annotation_defaults_to_other(client):
+def test_new_remark_defaults_to_other(client):
     doc, page = "medinsky11klass", "401"
     created = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "x", "coords": [1, 1]},
+        json={"kind": "minor", "text": "x", "coords": [1, 1]},
     ).json()
-    published = _published_annotations(doc, "401")[0]
+    published = _published_remarks(doc, "401")[0]
     assert published["category"] == "other"
     # Дефолтную категорию тегом не зеркалим — она стояла бы на всех сразу.
     assert "tags" not in published
@@ -920,10 +928,10 @@ def test_post_accepts_category_and_mirrors_it_as_tag(client):
     doc, page = "medinsky11klass", "402"
     client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "x", "coords": [1, 1],
+        json={"kind": "minor", "text": "x", "coords": [1, 1],
               "category": "today", "tags": ["anachronism"]},
     )
-    published = _published_annotations(doc, "402")[0]
+    published = _published_remarks(doc, "402")[0]
     assert published["category"] == "today"
     assert published["tags"] == ["anachronism", "cat:today"]
 
@@ -932,30 +940,30 @@ def test_put_without_category_preserves_it(client):
     """У редактора нет UI категорий; обычное сохранение текста не должно
     сбрасывать категорию в «Прочее»."""
     doc, page = "medinsky11klass", "403"
-    ann_id = client.post(
+    remark_id = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "x", "coords": [1, 1], "category": "sides"},
+        json={"kind": "minor", "text": "x", "coords": [1, 1], "category": "sides"},
     ).json()["id"]
 
     client.put(
-        f"/api/editor/{doc}/{page}/{ann_id}",
-        json={"annType": "comment", "text": "edited", "coords": [2, 2]},
+        f"/api/editor/{doc}/{page}/{remark_id}",
+        json={"kind": "minor", "text": "edited", "coords": [2, 2]},
     )
-    assert _published_annotations(doc, "403")[0]["category"] == "sides"
+    assert _published_remarks(doc, "403")[0]["category"] == "sides"
 
 
 def test_put_can_change_category(client):
     doc, page = "medinsky11klass", "404"
-    ann_id = client.post(
+    remark_id = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "x", "coords": [1, 1], "category": "sides"},
+        json={"kind": "minor", "text": "x", "coords": [1, 1], "category": "sides"},
     ).json()["id"]
 
     client.put(
-        f"/api/editor/{doc}/{page}/{ann_id}",
-        json={"annType": "comment", "text": "x", "coords": [1, 1], "category": "omission"},
+        f"/api/editor/{doc}/{page}/{remark_id}",
+        json={"kind": "minor", "text": "x", "coords": [1, 1], "category": "omission"},
     )
-    published = _published_annotations(doc, "404")[0]
+    published = _published_remarks(doc, "404")[0]
     assert published["category"] == "omission"
     assert published["tags"] == ["cat:omission"]
 
@@ -964,7 +972,7 @@ def test_unknown_category_is_rejected(client):
     doc, page = "medinsky11klass", "405"
     r = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "x", "coords": [1, 1], "category": "propaganda"},
+        json={"kind": "minor", "text": "x", "coords": [1, 1], "category": "propaganda"},
     )
     assert r.status_code == 400
     assert "propaganda" in r.json()["detail"]
@@ -976,7 +984,7 @@ def test_cat_tag_cannot_be_authored(client):
     doc, page = "medinsky11klass", "406"
     r = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "x", "coords": [1, 1], "tags": ["cat:today"]},
+        json={"kind": "minor", "text": "x", "coords": [1, 1], "tags": ["cat:today"]},
     )
     assert r.status_code == 400
     assert "category" in r.json()["detail"]
@@ -986,7 +994,69 @@ def test_editor_get_exposes_category(client):
     doc, page = "medinsky11klass", "407"
     client.post(
         f"/api/editor/{doc}/{page}",
-        json={"annType": "comment", "text": "x", "coords": [1, 1], "category": "evidence"},
+        json={"kind": "minor", "text": "x", "coords": [1, 1], "category": "evidence"},
     )
-    ann = client.get(f"/api/editor/{doc}/{page}").json()["annotations"][0]
+    ann = client.get(f"/api/editor/{doc}/{page}").json()["remarks"][0]
     assert ann["category"] == "evidence"
+
+
+# ---------------------------------------------------------------------------
+# Совместимость с клиентами, написанными до переименования сущности (2026-08-29).
+# Клиенты редактора — статика: они переезжают на remarkId/kind отдельной
+# выкладкой, уже после этого API. Всё, что ниже, снимается в фазе 6.
+# ---------------------------------------------------------------------------
+
+def test_editor_accepts_the_legacy_kind_key_and_values(client):
+    doc, page = "medinsky11klass", "22"
+    r = client.post(f"/api/editor/{doc}/{page}",
+                    json={"annType": "main", "text": "старый клиент", "coords": [1, 2]})
+    assert r.status_code == 200
+    remark_id = r.json()["id"]
+    stored = next(a for a in client.get(f"/api/editor/{doc}/{page}").json()["remarks"]
+                  if a["id"] == remark_id)
+    assert stored["kind"] == "major"
+
+
+def test_editor_page_response_carries_both_key_sets(client):
+    doc, page = "medinsky11klass", "23"
+    client.post(f"/api/editor/{doc}/{page}",
+                json={"kind": "minor", "text": "x", "coords": [1, 2]})
+    body = client.get(f"/api/editor/{doc}/{page}").json()
+    assert body["remarks"] == body["annotations"]
+    item = body["remarks"][0]
+    assert item["kind"] == "minor" and item["annType"] == "comment"
+
+
+def test_legacy_list_path_still_answers(client):
+    doc, page = "medinsky11klass", "24"
+    client.post(f"/api/editor/{doc}/{page}",
+                json={"kind": "major", "text": "y", "coords": [1, 2]})
+    old = client.get("/api/annotations", params={"docId": doc, "pageKey": page})
+    new = client.get("/api/remarks", params={"docId": doc, "pageKey": page})
+    assert old.status_code == 200 and old.json() == new.json()
+    item = new.json()["items"][0]
+    # Оба набора имён в одном элементе: кабинет ещё читает старые.
+    assert item["remarkId"] == item["annId"]
+    assert item["kind"] == "major" and item["annType"] == "main"
+
+
+def test_legacy_list_filter_accepts_old_kind_values(client):
+    doc, page = "medinsky11klass", "25"
+    client.post(f"/api/editor/{doc}/{page}",
+                json={"kind": "major", "text": "z", "coords": [1, 2]})
+    by_old = client.get("/api/annotations",
+                        params={"docId": doc, "pageKey": page, "annType": "main"})
+    assert by_old.status_code == 200
+    kinds = [i["kind"] for i in by_old.json()["items"]]
+    assert kinds and set(kinds) == {"major"}
+
+
+def test_legacy_history_filter_param_still_works(client):
+    doc, page = "medinsky11klass", "26"
+    created = client.post(f"/api/editor/{doc}/{page}",
+                          json={"kind": "minor", "text": "h", "coords": [1, 2]}).json()
+    old = client.get("/api/history", params={"docId": doc, "annId": created["id"]})
+    new = client.get("/api/history", params={"docId": doc, "remarkId": created["id"]})
+    assert old.status_code == 200 and old.json() == new.json()
+    assert [i["remarkId"] for i in new.json()["items"]] == [created["id"]]
+

@@ -2,13 +2,13 @@
 """
 publish_data.py
 
-Publishes generated data (images, text, annotations) to the artifacts repository.
+Publishes generated data (images, text, remarks) to the artifacts repository.
 
 Usage:
-    python publish_data.py --images path/to/images --text path/to/text --annotations path/to/annotations --output path/to/artifacts_repo
+    python publish_data.py --images path/to/images --text path/to/text --remarks path/to/remarks --output path/to/artifacts_repo
 
 Example:
-    python publish_data.py --images ./output/images --text ./output/text --annotations ./output/annotations --output ../artifacts_repo
+    python publish_data.py --images ./output/images --text ./output/text --remarks ./output/remarks --output ../artifacts_repo
 """
 
 import sys
@@ -39,20 +39,20 @@ def copy_files(src_dir, dest_dir, pattern="*"):
         shutil.copy2(file_path, dest_path)
         print(f"[+] Copied {file_path} to {dest_path}")
 
-def publish_data(images_dir, text_dir, annotations_dir, output_dir):
+def publish_data(images_dir, text_dir, remarks_dir, output_dir):
     """
     Publish generated data to the artifacts repository.
     
     Args:
         images_dir (str): Directory containing image files
         text_dir (str): Directory containing text JSON files
-        annotations_dir (str): Directory containing annotation JSON files
+        remarks_dir (str): Directory containing remark JSON files
         output_dir (str): Root directory of the artifacts repository
     """
     # Create output directories if they don't exist
     images_output = os.path.join(output_dir, "images")
     text_output = os.path.join(output_dir, "text")
-    annotations_output = os.path.join(output_dir, "annotations")
+    remarks_output = os.path.join(output_dir, "remarks")
     
     # Copy image files
     if images_dir:
@@ -62,9 +62,9 @@ def publish_data(images_dir, text_dir, annotations_dir, output_dir):
     if text_dir:
         copy_files(text_dir, text_output, "*.json")
     
-    # Copy annotation JSON files
-    if annotations_dir:
-        copy_files(annotations_dir, annotations_output, "*.json")
+    # Copy remark JSON files
+    if remarks_dir:
+        copy_files(remarks_dir, remarks_output, "*.json")
     
     print(f"[+] Data published to {output_dir}")
 
@@ -72,15 +72,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Publish generated data to the artifacts repository")
     parser.add_argument("--images", help="Directory containing image files")
     parser.add_argument("--text", help="Directory containing text JSON files")
-    parser.add_argument("--annotations", help="Directory containing annotation JSON files")
+    parser.add_argument("--remarks", help="Directory containing remark JSON files")
     parser.add_argument("--output", required=True, help="Root directory of the artifacts repository")
     
     args = parser.parse_args()
     
     # Ensure at least one source directory is provided
-    if not (args.images or args.text or args.annotations):
-        print("Error: At least one source directory (--images, --text, or --annotations) must be provided")
+    if not (args.images or args.text or args.remarks):
+        print("Error: At least one source directory (--images, --text, or --remarks) must be provided")
         parser.print_help()
         sys.exit(1)
     
-    publish_data(args.images, args.text, args.annotations, args.output)
+    publish_data(args.images, args.text, args.remarks, args.output)

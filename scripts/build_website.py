@@ -5,16 +5,16 @@ build_website.py
 A comprehensive script for building and publishing the website.
 
 This script:
-1. Converts markdown annotations to JSON
-2. Runs annotation position tests to verify correct positioning
-3. Publishes data (images, text, annotations) to the target directory (default: redpen-publish)
+1. Converts markdown remarks to JSON
+2. Runs remark position tests to verify correct positioning
+3. Publishes data (images, text, remarks) to the target directory (default: redpen-publish)
 4. Optionally commits and pushes changes to the redpen-publish repository (if target is the default redpen-publish)
 
 Usage:
     python scripts/build_website.py [--skip-tests] [--skip-push] [--target-dir TARGET_DIR] [--document DOCUMENT] [--folders FOLDERS]
 
 Options:
-    --skip-tests    Skip running annotation position tests
+    --skip-tests    Skip running remark position tests
     --skip-push     Skip pushing changes to the redpen-publish submodule
     --target-dir    Specify a target directory for the build output (default: redpen-publish)
     --document      Specify a document to build (default: build all documents)
@@ -147,8 +147,8 @@ def get_document_folders(specific_folders=None):
     for item in glob.glob(os.path.join(content_dir, '*')):
         if os.path.isdir(item):
             folder_name = os.path.basename(item)
-            # Check if this is a valid document folder (has images, text, or annotations subdirectory)
-            if any(os.path.isdir(os.path.join(item, subdir)) for subdir in ['images', 'text', 'annotations']):
+            # Check if this is a valid document folder (has images, text, or remarks subdirectory)
+            if any(os.path.isdir(os.path.join(item, subdir)) for subdir in ['images', 'text', 'remarks']):
                 folders.append(folder_name)
 
     if not folders:
@@ -166,10 +166,10 @@ def import_module_from_file(module_name, file_path):
     spec.loader.exec_module(module)
     return module
 
-# Import the annotation converter and publish_data modules
-annotation_converter = import_module_from_file(
-    'annotation_converter', 
-    os.path.join(project_root, 'scripts', 'annotation_converter.py')
+# Import the remark converter and publish_data modules
+remark_converter = import_module_from_file(
+    'remark_converter', 
+    os.path.join(project_root, 'scripts', 'remark_converter.py')
 )
 publish_data = import_module_from_file(
     'publish_data',
@@ -199,59 +199,59 @@ def run_command(command, cwd=None):
 
     return True, result.stdout, result.stderr
 
-def convert_annotations(target_dir=None, document=None, specific_folders=None):
+def convert_remarks(target_dir=None, document=None, specific_folders=None):
     """
-    Convert markdown annotations to JSON
+    Convert markdown remarks to JSON
 
     Args:
         target_dir (str): Target directory for output
         document (str): Specific document to convert
         specific_folders (list): List of specific folders to convert
     """
-    print(f"\n=== Converting Markdown Annotations to JSON for {document or (', '.join(specific_folders) if specific_folders else 'all documents')} ===")
+    print(f"\n=== Converting Markdown Remarks to JSON for {document or (', '.join(specific_folders) if specific_folders else 'all documents')} ===")
 
-    # If document is specified, only convert that document's annotations
+    # If document is specified, only convert that document's remarks
     if document:
-        md_dir = os.path.join(project_root, 'redpen-content', document, 'annotations')
+        md_dir = os.path.join(project_root, 'redpen-content', document, 'remarks')
 
         # Use target_dir if provided, otherwise use default redpen-publish
         if target_dir:
-            # Place annotations directly in the document directory
-            json_dir = os.path.join(target_dir, document, 'annotations')
+            # Place remarks directly in the document directory
+            json_dir = os.path.join(target_dir, document, 'remarks')
         else:
-            json_dir = os.path.join(project_root, 'redpen-publish', document, 'annotations')
+            json_dir = os.path.join(project_root, 'redpen-publish', document, 'remarks')
 
         # Create the directory if it doesn't exist
         os.makedirs(json_dir, exist_ok=True)
 
         try:
-            annotation_converter.md_to_json(md_dir, json_dir)
+            remark_converter.md_to_json(md_dir, json_dir)
             return True
         except Exception as e:
-            print(f"Error converting annotations for {document}: {e}")
+            print(f"Error converting remarks for {document}: {e}")
             return False
     else:
-        # Convert annotations for all documents or specific folders
+        # Convert remarks for all documents or specific folders
         documents = get_document_folders(specific_folders)
         success = True
 
         for doc in documents:
-            md_dir = os.path.join(project_root, 'redpen-content', doc, 'annotations')
+            md_dir = os.path.join(project_root, 'redpen-content', doc, 'remarks')
 
             # Use target_dir if provided, otherwise use default redpen-publish
             if target_dir:
-                # Place annotations directly in the document directory
-                json_dir = os.path.join(target_dir, doc, 'annotations')
+                # Place remarks directly in the document directory
+                json_dir = os.path.join(target_dir, doc, 'remarks')
             else:
-                json_dir = os.path.join(project_root, 'redpen-publish', doc, 'annotations')
+                json_dir = os.path.join(project_root, 'redpen-publish', doc, 'remarks')
 
             # Create the directory if it doesn't exist
             os.makedirs(json_dir, exist_ok=True)
 
             try:
-                annotation_converter.md_to_json(md_dir, json_dir)
+                remark_converter.md_to_json(md_dir, json_dir)
             except Exception as e:
-                print(f"Error converting annotations for {doc}: {e}")
+                print(f"Error converting remarks for {doc}: {e}")
                 success = False
 
         return success
@@ -287,13 +287,13 @@ def generate_page_html(target_dir=None, document=None, specific_folders=None):
     """
     Rebuild metadata.json's `chapters` from paragraphs_list.txt, then render one
     static HTML file per page (<doc>/pages/<label>/index.html) with the
-    published annotations inlined as real text.
+    published remarks inlined as real text.
 
     This is what makes the corpus indexable: before it, the whole book was a
     single HTML document that fetched everything over JSON, so a crawler saw
-    ~159 characters of text for all 1257 annotations. Must run after
+    ~159 characters of text for all 1257 remarks. Must run after
     generate_page_manifests() -- it needs the `pages` manifest -- and after
-    annotations/*.json are in place.
+    remarks/*.json are in place.
 
     Documents without a pages manifest or a paragraphs_list.txt are skipped,
     the same way legacy documents are skipped elsewhere.
@@ -321,18 +321,18 @@ def generate_page_html(target_dir=None, document=None, specific_folders=None):
 
     return success
 
-def run_annotation_tests(target_dir=None):
-    """Run annotation position tests"""
-    print("\n=== Running Annotation Position Tests ===")
+def run_remark_tests(target_dir=None):
+    """Run remark position tests"""
+    print("\n=== Running Remark Position Tests ===")
 
-    # Import the annotation_position_tests module
+    # Import the remark_position_tests module
     tests_module = import_module_from_file(
-        'annotation_position_tests',
-        os.path.join(project_root, 'tests', 'annotation_position_tests.py')
+        'remark_position_tests',
+        os.path.join(project_root, 'tests', 'remark_position_tests.py')
     )
 
     # Create test files in the target directory
-    print("\n=== Creating Test Files for Annotation Tests ===")
+    print("\n=== Creating Test Files for Remark Tests ===")
     tests_module.create_test_files(target_dir or os.path.join(project_root, 'redpen-publish'))
 
     try:
@@ -430,7 +430,7 @@ def run_annotation_tests(target_dir=None):
 
         return result.all_pass
     except Exception as e:
-        print(f"Error running annotation tests: {e}")
+        print(f"Error running remark tests: {e}")
         return False
 
 def run_editor_mode_tests(target_dir=None):
@@ -476,8 +476,8 @@ def publish_website_data(target_dir=None, document=None, specific_folders=None):
         if document:
             images_dir = os.path.join(project_root, 'redpen-content', document, 'images')
             text_dir = os.path.join(project_root, 'redpen-content', document, 'text')
-            # Skip annotations as they're already converted and in the right place
-            annotations_dir = None
+            # Skip remarks as they're already converted and in the right place
+            remarks_dir = None
 
             # Create document-specific output directory
             doc_output_dir = os.path.join(output_dir, document)
@@ -487,7 +487,7 @@ def publish_website_data(target_dir=None, document=None, specific_folders=None):
             doc_content_dir = doc_output_dir
 
             # Publish content data directly to the document directory
-            publish_data.publish_data(images_dir, text_dir, annotations_dir, doc_content_dir)
+            publish_data.publish_data(images_dir, text_dir, remarks_dir, doc_content_dir)
 
             # Check if illustrations folder exists and publish its content to images folder
             illustrations_dir = os.path.join(project_root, 'redpen-content', document, 'illustrations')
@@ -543,8 +543,8 @@ def publish_website_data(target_dir=None, document=None, specific_folders=None):
             for doc in documents:
                 images_dir = os.path.join(project_root, 'redpen-content', doc, 'images')
                 text_dir = os.path.join(project_root, 'redpen-content', doc, 'text')
-                # Skip annotations as they're already converted and in the right place
-                annotations_dir = None
+                # Skip remarks as they're already converted and in the right place
+                remarks_dir = None
 
                 # Create document-specific output directory
                 doc_output_dir = os.path.join(output_dir, doc)
@@ -554,7 +554,7 @@ def publish_website_data(target_dir=None, document=None, specific_folders=None):
                 doc_content_dir = doc_output_dir
 
                 # Publish content data directly to the document directory
-                publish_data.publish_data(images_dir, text_dir, annotations_dir, doc_content_dir)
+                publish_data.publish_data(images_dir, text_dir, remarks_dir, doc_content_dir)
 
                 # Check if illustrations folder exists and publish its content to images folder
                 illustrations_dir = os.path.join(project_root, 'redpen-content', doc, 'illustrations')
@@ -671,7 +671,7 @@ def _methods_density(doc_output_dirs):
     Числа для абзаца «Перед вами учебник пропаганды» на титульной.
 
     Считаем только то, что читатель реально видит: черновики (draft) исключены,
-    как и в _count_published_annotations. `method_pages` — страницы, где есть
+    как и в _count_published_remarks. `method_pages` — страницы, где есть
     хотя бы одно замечание-приём, то есть категория не «Прочее»; именно на этом
     числе держится фраза «почти на каждой». Категория берётся из общей таблицы
     scripts/annotation_categories.py — той же, по которой красится просмотрщик.
@@ -682,9 +682,9 @@ def _methods_density(doc_output_dirs):
 
     pages = 0
     method_pages = 0
-    annotations = 0
+    remarks = 0
     for doc_output_dir in doc_output_dirs:
-        ann_dir = os.path.join(doc_output_dir, 'annotations')
+        ann_dir = os.path.join(doc_output_dir, 'remarks')
         if not os.path.isdir(ann_dir):
             continue
         for name in sorted(os.listdir(ann_dir)):
@@ -704,11 +704,11 @@ def _methods_density(doc_output_dirs):
             if not published:
                 continue
             pages += 1
-            annotations += len(published)
+            remarks += len(published)
             if any(annotation_categories.category_for(a) != annotation_categories.OTHER
                    for a in published):
                 method_pages += 1
-    return {'pages': pages, 'method_pages': method_pages, 'annotations': annotations}
+    return {'pages': pages, 'method_pages': method_pages, 'remarks': remarks}
 
 
 def _methods_density_sentence(stats):
@@ -723,32 +723,32 @@ def _methods_density_sentence(stats):
     """
     pages = stats.get('pages') or 0
     method_pages = stats.get('method_pages') or 0
-    annotations = stats.get('annotations') or 0
-    if not pages or not annotations:
+    remarks = stats.get('remarks') or 0
+    if not pages or not remarks:
         return 'Разбор ещё готовится.'
 
     page_word = _plural_ru(pages, 'страницу', 'страницы', 'страниц')
-    ann_word = _plural_ru(annotations, 'замечание', 'замечания', 'замечаний')
-    head = (f'Мы разобрали {pages} {page_word}, на них {annotations} {ann_word}')
+    ann_word = _plural_ru(remarks, 'замечание', 'замечания', 'замечаний')
+    head = (f'Мы разобрали {pages} {page_word}, на них {remarks} {ann_word}')
     if method_pages >= pages * 0.8:
         return head + ' — и практически на каждой работает хотя бы один приём, а обычно два или три сразу.'
     return head + f' — и на {method_pages} из них работает хотя бы один приём, а обычно два или три сразу.'
 
 
-def _count_published_annotations(doc_output_dir):
+def _count_published_remarks(doc_output_dir):
     """
-    Count published annotations in a built document directory.
+    Count published remarks in a built document directory.
 
-    Returns {'annotations': N, 'pages': M} — M is the number of pages that
-    actually carry at least one annotation. Drafts share page_NNN.json with the
+    Returns {'remarks': N, 'pages': M} — M is the number of pages that
+    actually carry at least one remark. Drafts share page_NNN.json with the
     published ones now (each flagged draft/tagged 'draft') and are deliberately
     not counted: they are invisible without ?showDrafts=1. Legacy
     page_NNN.drafts.json companions are skipped for the same reason.
     """
     import json
 
-    result = {'annotations': 0, 'pages': 0}
-    ann_dir = os.path.join(doc_output_dir, 'annotations')
+    result = {'remarks': 0, 'pages': 0}
+    ann_dir = os.path.join(doc_output_dir, 'remarks')
     if not os.path.isdir(ann_dir):
         return result
 
@@ -766,13 +766,13 @@ def _count_published_annotations(doc_output_dir):
             continue
         published = [a for a in data if not (isinstance(a, dict) and a.get('draft'))]
         if published:
-            result['annotations'] += len(published)
+            result['remarks'] += len(published)
             result['pages'] += 1
     return result
 
 
 def _plural_ru(n, one, few, many):
-    """Russian plural: 1 аннотация / 2 аннотации / 5 аннотаций."""
+    """Russian plural: 1 замечание / 2 замечания / 5 замечаний."""
     n = abs(int(n))
     if n % 10 == 1 and n % 100 != 11:
         return one
@@ -870,18 +870,18 @@ def create_index_page(target_dir=None, specific_folders=None):
             'icon': icon_path,
             'subtitle': _document_subtitle(meta_data),
             'description': meta_data.get('description') or '',
-            'stats': _count_published_annotations(os.path.join(output_dir, doc_id)),
+            'stats': _count_published_remarks(os.path.join(output_dir, doc_id)),
         })
 
     # Разобранные книги — вперёд, «в работе» — в конец; внутри групп по названию.
-    documents.sort(key=lambda d: (0 if (d.get('stats') or {}).get('annotations') else 1, d['title']))
+    documents.sort(key=lambda d: (0 if (d.get('stats') or {}).get('remarks') else 1, d['title']))
 
     # Get current timestamp
     current_timestamp = datetime.datetime.now().strftime('%d.%m.%Y')
     books_modifier = ' books--single' if len(documents) == 1 else ''
 
     # Плотность приёмов для секции «Перед вами учебник пропаганды»: считается по
-    # опубликованным (не черновым) аннотациям, поэтому формулировка усиливается
+    # опубликованным (не черновым) замечаниям, поэтому формулировка усиливается
     # сама по мере публикации разбора.
     methods_density_sentence = _methods_density_sentence(
         _methods_density(os.path.join(output_dir, doc['id']) for doc in documents)
@@ -1100,7 +1100,7 @@ def create_index_page(target_dir=None, specific_folders=None):
     # Add document cards
     for doc in documents:
         stats = doc.get('stats') or {}
-        has_annotations = bool(stats.get('annotations'))
+        has_remarks = bool(stats.get('remarks'))
 
         # Add cover if available
         cover_html = ""
@@ -1120,10 +1120,10 @@ def create_index_page(target_dir=None, specific_folders=None):
             description_html = f"""
             <p class="document-card__desc">{_esc(doc['description'])}</p>"""
 
-        if has_annotations:
-            ann_n = stats['annotations']
+        if has_remarks:
+            ann_n = stats['remarks']
             pages_n = stats['pages']
-            ann_word = _plural_ru(ann_n, 'аннотация', 'аннотации', 'аннотаций')
+            ann_word = _plural_ru(ann_n, 'замечание', 'замечания', 'замечаний')
             page_word = _plural_ru(pages_n, 'странице', 'страницах', 'страницах')
             stats_html = f"""
             <p class="document-card__stats">{ann_n} {ann_word} на {pages_n} {page_word}</p>"""
@@ -1164,7 +1164,7 @@ def create_index_page(target_dir=None, specific_folders=None):
         <li><span class="dot dot--cat dot--other"></span><strong>Серый</strong> — не приём: недостающий контекст или исправление ошибки.</li>
       </ul>
       <p>Размер кружка по-прежнему показывает вес замечания: крупный — разбор фрагмента, мелкий — уточнение к детали.</p>
-      <p>Наведите курсор на кружок — разбор появится прямо поверх страницы; щелчок закрепит его. Под сканом те же комментарии идут списком, по порядку, — так разбор страницы можно прочитать подряд.</p>
+      <p>Наведите курсор на кружок — разбор появится прямо поверх страницы; щелчок закрепит его. Под сканом те же замечания идут списком, по порядку, — так разбор страницы можно прочитать подряд.</p>
       <p>У каждой страницы учебника свой адрес вида <code>/medinsky11klass/pages/17/</code> — такую ссылку удобно давать в споре, чтобы собеседник открыл ровно тот же разворот. Листать можно ссылками «вперёд» и «назад» внизу страницы или из оглавления учебника.</p>
     </section>
 
@@ -1172,7 +1172,7 @@ def create_index_page(target_dir=None, specific_folders=None):
       <h2>Правила разбора</h2>
       <ol class="rules">
         <li><strong>Привязка к месту.</strong> Замечание относится к конкретному абзацу, а не к учебнику вообще: рядом всегда видно, что именно разбирается.</li>
-        <li><strong>Проверяемость.</strong> Утверждение без ссылки на источник — не разбор, а мнение. Ссылки стоят в тексте самих аннотаций.</li>
+        <li><strong>Проверяемость.</strong> Утверждение без ссылки на источник — не разбор, а мнение. Ссылки стоят в тексте самих замечаний.</li>
         <li><strong>Факт отдельно, оценка отдельно.</strong> Мы отмечаем, где учебник подаёт оценку как установленный факт, и стараемся не делать того же сами.</li>
         <li><strong>Умолчание — тоже приём.</strong> Прежде чем написать «в учебнике об этом не сказано», мы ищем по всему тексту книги.</li>
       </ol>
@@ -1181,7 +1181,7 @@ def create_index_page(target_dir=None, specific_folders=None):
     <section class="offline prose">
       <h2>Этот сайт можно унести с собой</h2>
       <div class="note">
-        <p>Чтобы читать, не нужно ни регистрироваться, ни входить: здесь нет ни счётчиков, ни аналитики, ни рекламы — мы не следим за тем, кто какую страницу открыл. Страницы, текст и аннотации — обычные файлы, лежащие рядом: браузер скачивает их ровно так же, как картинки на любом другом сайте, и ничего больше никуда не отправляет. К нашему API — тому, через который разбор редактируется, — просмотрщик не обращается вовсе.</p>
+        <p>Чтобы читать, не нужно ни регистрироваться, ни входить: здесь нет ни счётчиков, ни аналитики, ни рекламы — мы не следим за тем, кто какую страницу открыл. Страницы, текст и замечания — обычные файлы, лежащие рядом: браузер скачивает их ровно так же, как картинки на любом другом сайте, и ничего больше никуда не отправляет. К нашему API — тому, через который разбор редактируется, — просмотрщик не обращается вовсе.</p>
         <p>Поэтому сайт не привязан к нашему серверу: он одинаково работает из любой папки. Архив с полной копией разбора, который можно положить на флешку и читать без интернета, мы сейчас готовим.</p>
       </div>
     </section>
@@ -1228,7 +1228,7 @@ def create_index_page(target_dir=None, specific_folders=None):
 
     # Clean up old structure
     print("\n=== Cleaning Up Old Structure ===")
-    old_dirs = ['annotations', 'images', 'text']
+    old_dirs = ['remarks', 'images', 'text']
     for old_dir in old_dirs:
         old_path = os.path.join(output_dir, old_dir)
         if os.path.exists(old_path) and os.path.isdir(old_path):
@@ -1317,7 +1317,7 @@ def push_to_submodule(target_dir=None):
 def main():
     """Main function to build and publish the website"""
     parser = argparse.ArgumentParser(description="Build and publish the website")
-    parser.add_argument("--skip-tests", action="store_true", help="Skip running annotation position tests")
+    parser.add_argument("--skip-tests", action="store_true", help="Skip running remark position tests")
     parser.add_argument("--skip-push", action="store_true", help="Skip pushing changes to the redpen-publish repository")
     parser.add_argument("--target-dir", help="Specify a target directory for the build output (default: redpen-publish)")
     parser.add_argument("--document", help="Specify a document to build (default: build all documents)")
@@ -1326,12 +1326,12 @@ def main():
     parser.add_argument("--clean-publish", action="store_true", help="Clean redpen-publish (remove all except .git) before build")
     parser.add_argument("--compare-paths", action="store_true", help="After build, compare file path sets before vs after (requires --backup-publish)")
     parser.add_argument(
-        "--annotations-from-md",
+        "--remarks-from-md",
         action="store_true",
         help=(
-            "Convert redpen-content/<doc>/annotations/*.md to JSON (legacy). "
-            "Off by default since stage 2: annotations/*.json in redpen-publish "
-            "are exported from the SQLite DB (scripts/api/export_annotations.py); "
+            "Convert redpen-content/<doc>/remarks/*.md to JSON (legacy). "
+            "Off by default since stage 2: remarks/*.json in redpen-publish "
+            "are exported from the SQLite DB (scripts/api/export_remarks.py); "
             "md is archive-only and converting it here would overwrite fresher data."
         ),
     )
@@ -1373,28 +1373,28 @@ def main():
         # If both --document and --folders are specified, --document takes precedence
         specific_folders = None
 
-    # Step 1: Convert markdown annotations to JSON (legacy/archive path -- see
-    # --annotations-from-md help text above). Skipped by default so a routine
-    # build never overwrites annotations/*.json exported from the DB.
-    if args.annotations_from_md:
-        if not convert_annotations(target_dir, document, specific_folders):
-            print("Failed to convert annotations. Aborting.")
+    # Step 1: Convert markdown remarks to JSON (legacy/archive path -- see
+    # --remarks-from-md help text above). Skipped by default so a routine
+    # build never overwrites remarks/*.json exported from the DB.
+    if args.remarks_from_md:
+        if not convert_remarks(target_dir, document, specific_folders):
+            print("Failed to convert remarks. Aborting.")
             sys.exit(1)
     else:
-        print("Skipping markdown->JSON annotation conversion (pass --annotations-from-md to force; md is archive-only)")
+        print("Skipping markdown->JSON remark conversion (pass --remarks-from-md to force; md is archive-only)")
 
-    # Step 2: Run annotation position tests (if not skipped)
+    # Step 2: Run remark position tests (if not skipped)
     if not args.skip_tests:
         # For now, we'll only run tests if no specific document is specified
         if not document:
-            tests_passed = run_annotation_tests(target_dir)
+            tests_passed = run_remark_tests(target_dir)
             if not tests_passed:
-                print("Annotation position tests failed. Aborting.")
+                print("Remark position tests failed. Aborting.")
                 sys.exit(1)
         else:
-            print("Skipping annotation position tests for specific document")
+            print("Skipping remark position tests for specific document")
     else:
-        print("Skipping annotation position tests")
+        print("Skipping remark position tests")
 
     # Step 3: Publish data
     if not publish_website_data(target_dir, document, specific_folders):

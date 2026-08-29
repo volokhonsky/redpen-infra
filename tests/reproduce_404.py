@@ -71,8 +71,8 @@ def main():
         original_dir = os.getcwd()
 
         # Run the build steps with our temporary directory
-        print(f"Converting annotations to {temp_output_dir}...")
-        build_website.convert_annotations(temp_output_dir)
+        print(f"Converting remarks to {temp_output_dir}...")
+        build_website.convert_remarks(temp_output_dir)
 
         print(f"Publishing website data to {temp_output_dir}...")
         build_website.publish_website_data(temp_output_dir)

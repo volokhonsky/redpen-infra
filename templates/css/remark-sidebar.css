@@ -1,6 +1,6 @@
 /* Styles for the global comment container (right block comments) */
 
-#global-comment-container {
+#remark-sidebar {
   padding: 1.5rem;
   background: #fff8f8; /* Light red background for better visibility */
   border-top: 2px solid #DC143C;
@@ -18,7 +18,7 @@
   scroll-margin-top: 70px; /* Ensure proper scrolling position */
 }
 
-#global-comment-container::before {
+#remark-sidebar::before {
   content: '';
   position: absolute;
   top: 0;
@@ -28,7 +28,7 @@
   background: linear-gradient(to right, #DC143C, #ff6b6b);
 }
 
-#global-comment-container h2 {
+#remark-sidebar h2 {
   color: #DC143C;
   border-bottom: 1px solid #ffcccb;
   padding-bottom: 8px;
@@ -36,7 +36,7 @@
 }
 
 /* Ensure images in global comment scale properly */
-#global-comment img {
+#remark-body img {
   max-width: 100%;
   height: auto;
 }

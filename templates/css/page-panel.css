@@ -2,7 +2,7 @@
  * Стили страницы разбора (<doc>/pages/<label>/index.html).
  *
  * Эти страницы не используют responsive.css: тот описывает SPA-просмотрщик с
- * его #global-comment-container и войной !important. Здесь раскладка своя и
+ * его #remark-sidebar и войной !important. Здесь раскладка своя и
  * целиком на медиазапросах — JS в неё не вмешивается.
  */
 
@@ -367,7 +367,7 @@
 
 @media (max-width: 767px) {
   /* На телефоне комментарий показывает #mobile-overlay по тапу. */
-  .comment-popup {
+  .remark-popup {
     display: none !important;
   }
 

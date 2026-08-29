@@ -1,19 +1,19 @@
 /**
  * Comment content handling for RedPen application
- * This file contains functions specifically for rendering and formatting the content inside annotations
+ * This file contains functions specifically for rendering and formatting the content inside remarks
  */
 
 /**
  * Renders the content of a comment popup
- * @param {number} index - The index of the annotation
- * @param {string} text - The text content of the annotation
+ * @param {number} index - The index of the remark
+ * @param {string} text - The text content of the remark
  * @returns {string} HTML content for the comment popup
  */
-function renderCommentContent(index, text, isDraft) {
+function renderRemarkContent(index, text, isDraft) {
   const badge = isDraft ? ' <span class="draft-tag">[черновик]</span>' : '';
   return `
-    <div class="comment-popup-title">Комментарий ${index + 1}${badge}</div>
-    <div class="comment-content">${formatCommentText(text)}</div>
+    <div class="remark-popup__title">Замечание ${index + 1}${badge}</div>
+    <div class="remark-content">${formatRemarkText(text)}</div>
   `;
 }
 
@@ -22,7 +22,7 @@ function renderCommentContent(index, text, isDraft) {
  * @param {string} text - The raw text content
  * @returns {string} Formatted HTML content
  */
-function formatCommentText(text) {
+function formatRemarkText(text) {
   // Return empty string for empty text
   if (!text) return '';
 
@@ -56,18 +56,18 @@ function formatCommentText(text) {
 
 /**
  * Creates a comment popup element
- * @param {Object} annotation - The annotation object
- * @param {number} index - The index of the annotation
+ * @param {Object} remark - The remark object
+ * @param {number} index - The index of the remark
  * @param {number} cx - X coordinate for positioning
  * @param {number} cy - Y coordinate for positioning
- * @param {number} diameter - Diameter of the annotation circle
+ * @param {number} diameter - Diameter of the remark circle
  * @returns {HTMLElement} The created popup element
  */
-function createCommentPopup(annotation, index, cx, cy, diameter) {
+function createRemarkPopup(remark, index, cx, cy, diameter) {
   const popup = document.createElement('div');
-  popup.className = 'comment-popup';
-  popup.id = (annotation.id || `ann-${currentPageId}-${index + 1}`);
-  popup.innerHTML = renderCommentContent(index, annotation.text, annotation.draft);
+  popup.className = 'remark-popup';
+  popup.id = (remark.id || `ann-${currentPageId}-${index + 1}`);
+  popup.innerHTML = renderRemarkContent(index, remark.text, remark.draft);
 
   // Set initial position to measure dimensions
   popup.style.left = cx + 'px';
@@ -78,8 +78,8 @@ function createCommentPopup(annotation, index, cx, cy, diameter) {
   // Check if comment contains an image or is longer than 600 characters
   // Only apply for desktop version
   let hasWidthAdjustment = false;
-  const hasImage = annotation.text && annotation.text.includes('![');
-  const isLong = annotation.text && annotation.text.length > 600;
+  const hasImage = remark.text && remark.text.includes('![');
+  const isLong = remark.text && remark.text.length > 600;
 
   if (!isMobile && (hasImage || isLong)) {
     hasWidthAdjustment = true;
@@ -111,7 +111,7 @@ function createCommentPopup(annotation, index, cx, cy, diameter) {
     const actualHeight = finalHeight || popupRect.height;
     const viewportHeight = window.innerHeight;
 
-    // Calculate space available below and above the annotation
+    // Calculate space available below and above the remark
     const spaceBelow = viewportHeight - (cy + diameter / 2 + 10);
     const spaceAbove = cy - diameter / 2 - 10;
 
@@ -126,25 +126,25 @@ function createCommentPopup(annotation, index, cx, cy, diameter) {
     // Position below if:
     // 1. It would extend beyond the top of the viewport when positioned above, or
     // 2. It's not an image and fits below, or
-    // 3. It's not an image, annotation is in upper half, and there's more space below
+    // 3. It's not an image, remark is in upper half, and there's more space below
     if (wouldExtendBeyondTop || 
         (!hasImage && actualHeight <= spaceBelow) || 
         (!hasImage && cy < viewportHeight / 2 && spaceBelow >= spaceAbove)) {
-      // Position below the annotation
+      // Position below the remark
       if (hasWidthAdjustment) {
         popup.style.top = (cy + diameter / 2 + 10) + 'px';
       }
       // Remove the above class if it exists
       popup.classList.remove('above');
-      console.log(`Positioned popup ${popup.id} below annotation`);
+      console.log(`Positioned popup ${popup.id} below remark`);
     } else {
-      // Position above the annotation circle
-      // Calculate position to place the popup above the annotation with proper spacing
+      // Position above the remark circle
+      // Calculate position to place the popup above the remark with proper spacing
       popup.style.top = (cy - diameter / 2 - actualHeight - 20) + 'px';
       popup.style.bottom = 'auto'; // Clear any bottom property
       // Add class to flip the arrow direction
       popup.classList.add('above');
-      console.log(`Positioned popup ${popup.id} above annotation`);
+      console.log(`Positioned popup ${popup.id} above remark`);
     }
 
     // Store the popup's dimensions for later use when showing/hiding
@@ -259,17 +259,17 @@ function createCommentPopup(annotation, index, cx, cy, diameter) {
 
 /**
  * Renders content for the mobile comment overlay
- * @param {number} index - The index of the annotation
- * @param {string} text - The text content of the annotation
+ * @param {number} index - The index of the remark
+ * @param {string} text - The text content of the remark
  * @returns {string} HTML content for the mobile overlay
  */
-function renderMobileCommentContent(index, text) {
+function renderMobileRemarkContent(index, text) {
   return `
-    <h3>Комментарий ${index + 1}</h3>
-    <p>${formatCommentText(text)}</p>
+    <h3>Замечание ${index + 1}</h3>
+    <p>${formatRemarkText(text)}</p>
     <div style="margin-top:20px;text-align:center;">
       <button id="scroll-to-global" style="background:#DC143C;color:white;border:none;padding:10px 15px;border-radius:5px;font-weight:bold;cursor:pointer;">
-        Показать общий комментарий
+        Показать общее замечание
       </button>
     </div>
   `;
@@ -278,8 +278,8 @@ function renderMobileCommentContent(index, text) {
 /**
  * Ensures that a popup is fully visible by adjusting the document's scrollable area if needed
  * @param {HTMLElement} popup - The popup element
- * @param {number} cy - Y coordinate of the annotation
- * @param {number} diameter - Diameter of the annotation circle
+ * @param {number} cy - Y coordinate of the remark
+ * @param {number} diameter - Diameter of the remark circle
  */
 function ensurePopupVisibility(popup, cy, diameter) {
   // Get the popup's position and dimensions
@@ -362,16 +362,16 @@ function removePopupSpacer(popup) {
 }
 
 /**
- * Updates the sidebar comment list with an annotation
- * @param {number} index - The index of the annotation
- * @param {string} text - The text content of the annotation
+ * Updates the sidebar comment list with an remark
+ * @param {number} index - The index of the remark
+ * @param {string} text - The text content of the remark
  */
-function updateCommentSidebar(index, text) {
-  const listUl = document.getElementById('comment-list');
+function updateRemarkSidebar(index, text) {
+  const listUl = document.getElementById('remark-list');
   if (!listUl) return;
 
   listUl.innerHTML = '';
   const li = document.createElement('li');
-  li.innerHTML = '<strong>' + (index + 1) + '.</strong> ' + formatCommentText(text);
+  li.innerHTML = '<strong>' + (index + 1) + '.</strong> ' + formatRemarkText(text);
   listUl.appendChild(li);
 }

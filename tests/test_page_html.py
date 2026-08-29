@@ -4,8 +4,8 @@ corpus indexable, and scripts/sitemap.py.
 
 The two invariants worth guarding:
 
-1. published annotations must appear as real text in the HTML (before this,
-   a crawler saw ~159 characters for the whole 1257-annotation corpus);
+1. published remarks must appear as real text in the HTML (before this,
+   a crawler saw ~159 characters for the whole 1257-remark corpus);
 2. drafts must ship with the page (so ?showDrafts=1 needs no request) but must
    NOT be indexable text -- they live in a <script type="application/json">.
 """
@@ -31,21 +31,21 @@ CHAPTERS = [{
 PUBLISHED = {
     "id": "ann-1",
     "text": "Опубликованный разбор со [ссылкой](https://example.org/istochnik).",
-    "annType": "main",
+    "kind": "major",
     "coords": [430, 215],
     "tags": ["omission", "confidence:high"],
 }
 DRAFT = {
     "id": "ann-2",
     "text": "Черновиковый текст про несогласованное утверждение.",
-    "annType": "comment",
+    "kind": "minor",
     "coords": [100, 100],
     "tags": ["draft", "framing"],
     "draft": True,
 }
 
 
-def render(annotations, label="7", page_name=None):
+def render(remarks, label="7", page_name=None):
     located = page_html.locate_label(CHAPTERS, label)
     return page_html.render_page(
         doc_id="testdoc",
@@ -53,7 +53,7 @@ def render(annotations, label="7", page_name=None):
         label=label,
         page_file="page_007",
         page_name=page_name,
-        annotations=annotations,
+        remarks=remarks,
         located=located,
         prev_label="6",
         next_label="8",
@@ -75,7 +75,7 @@ def blob(html):
 
 # --- индексируемость ------------------------------------------------------
 
-def test_published_annotation_is_real_text_in_the_html():
+def test_published_remark_is_real_text_in_the_html():
     html = render([PUBLISHED])
     assert "Опубликованный разбор" in visible_text(html)
 
@@ -84,7 +84,7 @@ def test_published_page_is_indexable():
     assert 'name="robots"' not in render([PUBLISHED])
 
 
-def test_page_without_published_annotations_is_noindex():
+def test_page_without_published_remarks_is_noindex():
     # Thin content: the address keeps working and stays crawlable onward,
     # but must not enter the index.
     assert '<meta name="robots" content="noindex,follow"/>' in render([DRAFT])
@@ -107,7 +107,7 @@ def test_canonical_and_open_graph():
     assert '<meta property="og:image" content="https://medinsky.net/testdoc/images/page_007.png"/>' in html
 
 
-def test_description_comes_from_the_first_published_annotation():
+def test_description_comes_from_the_first_published_remark():
     description = re.search(r'<meta name="description" content="([^"]*)"', render([PUBLISHED])).group(1)
     assert description.startswith("Опубликованный разбор")
     assert "[" not in description and "](" not in description   # markdown stripped
@@ -158,22 +158,22 @@ def test_markdown_link_becomes_a_real_link():
 def test_url_with_parentheses_survives_in_body_and_description():
     url = "https://ru.wikipedia.org/wiki/Голод_в_СССР_(1946—1947)"
     body = f"Голод назван, но не измерен. [Голод в СССР (1946—1947)]({url})"
-    html = page_html.render_annotation_html(body)
+    html = page_html.render_remark_html(body)
     assert f'<a href="{url}">' in html
     # Описание страницы не должно нести огрызок адреса или осиротевшую скобку.
-    plain = page_html.annotation_plain_text(body)
+    plain = page_html.remark_plain_text(body)
     assert plain == "Голод назван, но не измерен. Голод в СССР (1946—1947)"
 
 
 def test_raw_html_link_in_a_body_is_normalised_not_escaped():
-    # Two annotations in the corpus predate the markdown-only rule.
-    html = page_html.render_annotation_html('Читайте <a href="https://e.org/x" target="_blank">речь</a> целиком.')
+    # Two remarks in the corpus predate the markdown-only rule.
+    html = page_html.render_remark_html('Читайте <a href="https://e.org/x" target="_blank">речь</a> целиком.')
     assert '<a href="https://e.org/x">речь</a>' in html
     assert "&lt;a href" not in html
 
 
 def test_dangerous_markup_in_a_body_is_escaped():
-    html = page_html.render_annotation_html('<img src=x onerror="alert(1)">')
+    html = page_html.render_remark_html('<img src=x onerror="alert(1)">')
     assert "<img" not in html
     assert "&lt;img" in html
 
@@ -195,12 +195,12 @@ def test_list_is_wrapped_in_details_open_by_default():
     comment is shown by the overlay instead."""
     html = render([PUBLISHED])
     assert '<details class="panel-list-wrap" id="panel-list-wrap" open>' in html
-    assert "<summary>Все комментарии (1)</summary>" in html
+    assert "<summary>Все замечания (1)</summary>" in html
 
 
-def test_summary_counts_published_annotations():
+def test_summary_counts_published_remarks():
     html = render([PUBLISHED, dict(PUBLISHED, id="ann-3", text="Второй."), DRAFT])
-    assert "<summary>Все комментарии (2)</summary>" in html
+    assert "<summary>Все замечания (2)</summary>" in html
 
 
 def test_collapsed_list_still_carries_the_indexable_text():
@@ -236,7 +236,7 @@ def test_page_view_js_never_talks_to_the_network():
 
 def test_rendered_page_pulls_no_json():
     html = render([PUBLISHED, DRAFT])
-    assert "annotations/" not in html
+    assert "remarks/" not in html
     assert "metadata.json" not in html
 
 

@@ -1,3 +1,11 @@
+/*
+ * ВНИМАНИЕ (переименование сущности, 2026-08-29). Этот файл — клиент API, и он
+ * ещё говорит прежними именами: путь `/api/annotations`, поля `annId`/`annType`
+ * со значениями `main`/`comment`. Так и задумано: статика выкладывается раньше
+ * API, а на новые имена клиенты редактора переводятся отдельной выкладкой —
+ * уже после того, как API начнёт их понимать (он принимает и отдаёт оба
+ * набора). Читательская часть переведена сразу, см. page-view.js.
+ */
 
 (function(){
   var REDPEN_EDITOR_VERSION = '2.1.0';
@@ -154,7 +162,7 @@
         }
       } catch(e){ /* noop */ }
       try {
-        var gc = document.getElementById('global-comment');
+        var gc = document.getElementById('remark-body');
         var text = gc ? (gc.textContent || gc.innerText || '') : '';
         if (text && text.trim().length > 0) {
           return { id: undefined, content: text };
@@ -165,7 +173,7 @@
 
     function initGeneralCache(){
       try {
-        var el = document.getElementById('global-comment');
+        var el = document.getElementById('remark-body');
         if (!el) return;
 
         function maybeValidText(t){
@@ -485,7 +493,7 @@
         st.page.annotations = st.page.annotations || [];
         window.RedPenEditor.markers.rerenderAll();
         var gen = st.cache && st.cache.general ? st.cache.general : null;
-        if (gen) { var gc = document.getElementById('global-comment'); if (gc) gc.textContent = gen.content || ''; }
+        if (gen) { var gc = document.getElementById('remark-body'); if (gc) gc.textContent = gen.content || ''; }
         return;
       }
       const res = await fetch(apiBase('/api/pages/'+encodeURIComponent(pageId)), { credentials:'include' });
@@ -502,7 +510,7 @@
         var g = (data.annotations || []).find(function(a){ return a.annType==='general'; });
         if (g) {
           st.cache.general = { id: normalizeId(g.id), content: g.text || '' };
-          var gc = document.getElementById('global-comment'); if (gc) gc.textContent = g.text || '';
+          var gc = document.getElementById('remark-body'); if (gc) gc.textContent = g.text || '';
         }
       } catch(e){ /* noop */ }
     }
@@ -760,7 +768,7 @@
     window.RedPenEditor._isDirty = isDirty;
     window.RedPenEditor._snapshot = snapshotFromDraft;
 
-    var container = document.getElementById('global-comment-container');
+    var container = document.getElementById('remark-sidebar');
     if (!container) return;
 
     Array.prototype.slice.call(container.children).forEach(function(ch){
@@ -943,7 +951,7 @@
         if (annType === 'general') {
           if (!window.RedPenEditor.state.cache) window.RedPenEditor.state.cache = { general: null };
           window.RedPenEditor.state.cache.general = { id: id, content: content };
-          try { var gc = document.getElementById('global-comment'); if (gc) gc.textContent = content; } catch(e){ /* noop */ }
+          try { var gc = document.getElementById('remark-body'); if (gc) gc.textContent = content; } catch(e){ /* noop */ }
           window.RedPenEditor.state.draft = { id: id, annType: 'general', content: content, coords: undefined };
           beginEditingExisting(window.RedPenEditor.state.draft);
           try { clearSelection(); } catch(e){ /* noop */ }
@@ -1046,7 +1054,7 @@
 
         if (annType === 'general') {
           st.cache.general = { id: serverId ? serverId : undefined, content: content };
-          try { var gc = document.getElementById('global-comment'); if (gc) gc.textContent = content; } catch(e){}
+          try { var gc = document.getElementById('remark-body'); if (gc) gc.textContent = content; } catch(e){}
           st.draft = { id: serverId, annType: 'general', content: content, coords: undefined, status: status };
           beginEditingExisting(st.draft);
           try { window.RedPenEditor.markers.clearSelection(); } catch(e){}

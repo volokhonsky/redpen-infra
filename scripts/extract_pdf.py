@@ -65,7 +65,7 @@ def extract_images(pdf_path, out_dir, zoom=2.0):
 
     return len(images)
 
-def create_annotations(pdf_path, out_dir, base_id, logical_start=1, physical_start=1):
+def create_remarks(pdf_path, out_dir, base_id, logical_start=1, physical_start=1):
     os.makedirs(out_dir, exist_ok=True)
 
     # Get total pages
@@ -90,7 +90,7 @@ def create_annotations(pdf_path, out_dir, base_id, logical_start=1, physical_sta
     meta_path = os.path.join(out_dir, "meta.json")
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
-    print(f"[+] Created annotations in {out_dir} and meta.json with {total_pages} pages")
+    print(f"[+] Created remarks in {out_dir} and meta.json with {total_pages} pages")
 
 def main():
     parser = argparse.ArgumentParser(description="Extract text and images from a PDF file.")
@@ -105,7 +105,7 @@ def main():
 
     text_dir = os.path.join(args.output_dir, "text")
     images_dir = os.path.join(args.output_dir, "images")
-    annotations_dir = os.path.join(args.output_dir, "annotations")
+    remarks_dir = os.path.join(args.output_dir, "remarks")
 
     # Extract text
     extract_text(args.pdf_path, text_dir)
@@ -113,9 +113,9 @@ def main():
     # Extract images
     extract_images(args.pdf_path, images_dir, args.zoom)
 
-    # Create annotations
+    # Create remarks
     base_id = os.path.basename(os.path.normpath(args.output_dir))
-    create_annotations(args.pdf_path, annotations_dir, base_id)
+    create_remarks(args.pdf_path, remarks_dir, base_id)
 
     print("[+] All processing complete!")
 

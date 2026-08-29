@@ -141,17 +141,17 @@ def test_leaving_the_project_unlinks_the_account(monkeypatch):
 # Роли: лестница viewer < editor < reviewer < admin
 # ---------------------------------------------------------------------------
 
-def test_viewer_cannot_write_annotations(monkeypatch):
+def test_viewer_cannot_write_remarks(monkeypatch):
     client = login(monkeypatch, "viewer-1", role="viewer")
     response = client.post("/api/editor/medinsky11klass/50",
-                           json={"annType": "comment", "text": "x", "coords": [1, 1]})
+                           json={"kind": "minor", "text": "x", "coords": [1, 1]})
     assert response.status_code == 403
 
 
-def test_editor_can_write_annotations(monkeypatch):
+def test_editor_can_write_remarks(monkeypatch):
     client = login(monkeypatch, "editor-1", role="editor")
     response = client.post("/api/editor/medinsky11klass/51",
-                           json={"annType": "comment", "text": "x", "coords": [1, 1]})
+                           json={"kind": "minor", "text": "x", "coords": [1, 1]})
     assert response.status_code == 200
 
 
@@ -159,7 +159,7 @@ def test_reviewer_writes_like_an_editor(monkeypatch):
     # reviewer — это editor плюс право принимать чужое, а не вместо него.
     client = login(monkeypatch, "reviewer-1", role="reviewer")
     response = client.post("/api/editor/medinsky11klass/52",
-                           json={"annType": "comment", "text": "x", "coords": [1, 1]})
+                           json={"kind": "minor", "text": "x", "coords": [1, 1]})
     assert response.status_code == 200
 
 
@@ -278,7 +278,7 @@ def test_publish_all_requires_admin(monkeypatch):
 def test_publish_all_writes_files_for_admin(monkeypatch):
     import os
 
-    db.upsert_annotation_db("publishalldoc", "006", "ann-1", "comment", "hi")
+    db.upsert_remark_db("publishalldoc", "006", "ann-1", "minor", "hi")
     admin = login(monkeypatch, "publish-admin", role="admin")
 
     response = admin.post("/api/admin/publish-all")
@@ -286,5 +286,5 @@ def test_publish_all_writes_files_for_admin(monkeypatch):
     assert response.json()["pages"] >= 1
     assert response.json()["failed"] == 0
 
-    path = os.path.join(config.PUBLISH_DIR, "publishalldoc", "annotations", "page_006.json")
+    path = os.path.join(config.PUBLISH_DIR, "publishalldoc", "remarks", "page_006.json")
     assert os.path.exists(path)

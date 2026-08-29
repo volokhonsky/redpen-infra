@@ -1,21 +1,22 @@
 # RedPen API
 
-FastAPI-сервис для хранения входящих данных и редактирования аннотаций.
+FastAPI-сервис для хранения входящих данных и редактирования замечаний.
 Каноническая реализация: `scripts/api` (`main.py`, `db.py`, `publisher.py`,
 `storage.py`, `config.py`).
 
-С этапа 2 аннотации редактора хранятся в SQLite (`db.py`, таблицы
-`annotations`/`annotation_history`), а не в файлах. При каждой мутации
-`publisher.py` делает два шага: пишет `<docId>/annotations/page_NNN.json`
+С этапа 2 замечания редактора хранятся в SQLite (`db.py`, таблицы
+`remarks`/`remark_history`), а не в файлах. При каждой мутации
+`publisher.py` делает два шага: пишет `<docId>/remarks/page_NNN.json`
+(и, до фазы 6 переименования, тот же файл в прежний `<docId>/annotations/`)
 («голый массив») и перерисовывает `<docId>/pages/<label>/index.html`.
 
 Второй шаг обязателен: постраничный просмотрщик **не читает** JSON — он вообще
-ничего не загружает (инвариант офлайна) и берёт аннотации из инлайнового блока
+ничего не загружает (инвариант офлайна) и берёт замечания из инлайнового блока
 `redpen-page-data` внутри HTML. JSON остался для старого SPA и офлайн-бандла.
 Оглавление и `sitemap.xml` перерисовываются только полной сборкой.
 
 `storage.py` отвечает только за inbox
-(`/api/store*`); CLI `import_annotations.py`/`export_annotations.py`
+(`/api/store*`); CLI `import_remarks.py`/`export_remarks.py`
 переносят данные между файлами и БД (см. ниже).
 
 ## Конфигурация (переменные окружения)
@@ -27,8 +28,8 @@ FastAPI-сервис для хранения входящих данных и р
 | `LOG_LEVEL` | `INFO` | Уровень логирования |
 | `CORS_ALLOW_ORIGINS` | `_` (→ `*`) | Список origin через запятую; `_`/`*` = разрешить все |
 | `AGENT_TOKENS` | (пусто) | Токены входа агентов: `token1:agent1,token2:agent2`. Пусто = вход по токену отключён. `EDITOR_TOKENS` — прежнее имя, читается для совместимости |
-| `DB_PATH` | `/var/redpen-db/redpen.db` | SQLite-файл: users/sessions/invites + annotations/annotation_history/sections/agent_runs. Не должен лежать в `STORAGE_DIR` |
-| `PUBLISH_DIR` | (пусто) | Куда `publisher.py` пишет `<docId>/annotations/page_NNN.json`. Пусто = публикация отключена (тесты, dev без volume) |
+| `DB_PATH` | `/var/redpen-db/redpen.db` | SQLite-файл: users/sessions/invites + remarks/remark_history/sections/agent_runs. Не должен лежать в `STORAGE_DIR` |
+| `PUBLISH_DIR` | (пусто) | Куда `publisher.py` пишет `<docId>/remarks/page_NNN.json`. Пусто = публикация отключена (тесты, dev без volume) |
 | `GOOGLE_CLIENT_ID` | (пусто) | OAuth client id для верификации Google ID-token. Пусто = `POST /api/auth/google` отвечает 503 |
 | `IDENTITY_PEPPER` | (пусто) | **Обязателен.** Перец для `HMAC(перец, google_sub)`. Пусто = `POST /api/auth/google` отвечает 503. Только в `.env.secrets`, никогда в git и в БД — см. `docs/anonymity-model.md` |
 | `BOOTSTRAP_INVITE_CODE` | (пусто) | Одноразовый код, дающий роль `admin` первому вошедшему на пустой базе. Заменил `ADMIN_EMAILS` |
@@ -73,32 +74,32 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
   При наличии обоих полей приоритет у `bucket`. Ответ содержит
   `{stored,id,dateDir,bucket,relPath,size}`.
 
-Редактор аннотаций (канон — таблица `annotations` в `DB_PATH`; каждая мутация
-республикует голый массив в `${PUBLISH_DIR}/<docId>/annotations/page_NNN.json`):
+Редактор замечаний (канон — таблица `remarks` в `DB_PATH`; каждая мутация
+республикует голый массив в `${PUBLISH_DIR}/<docId>/remarks/page_NNN.json`):
 - `GET /api/editor/{docId}/{pageNum}` — вернуть страницу, рендер из БД
-  (`{pageId, serverPageSha, annotations}`). `pageNum` — 1..999. Анонимно/для
+  (`{pageId, serverPageSha, remarks}`). `pageNum` — 1..999. Анонимно/для
   `viewer` возвращает только `status='published'`; для сессии `editor`/`admin`
   дополнительно включает черновики (`status='draft'`) с флагом `draft: true`
   в каждом элементе. В анонимный ответ черновики не попадают. В статический
   `page_NNN.json` они, наоборот, попадают с 2026-08-15 — помеченные
   `"draft": true` и тегом `draft` (см. `publisher.py` и
-  `docs/annotation_specification.md`); просмотрщик скрывает их по умолчанию
+  `docs/remark_specification.md`); просмотрщик скрывает их по умолчанию
   и раскрывает по `?tags=draft`.
-- 🔒 `POST /api/editor/{docId}/{pageNum}` — добавить/обновить аннотацию.
-  Тело: `{annType, text, coords?[x,y], id?, clientPageSha?, status?, tags?}`.
+- 🔒 `POST /api/editor/{docId}/{pageNum}` — добавить/обновить замечание.
+  Тело: `{kind, text, coords?[x,y], id?, clientPageSha?, status?, tags?}`.
   `tags` — список строк; отсутствие поля означает «не трогать теги», `[]` —
   «очистить». Имена `draft`/`published`/`deleted` зарезервированы.
   `status` — `"draft"` или `"published"` (иначе `400`); если поле не
-  передано, у существующей аннотации статус сохраняется, у новой —
+  передано, у существующей замечания статус сохраняется, у новой —
   `"published"`. Можно передать целочисленные
   `coords`. Ответ: `{id, serverPageSha, published}` — `published` учитывает
-  и результат записи в volume, и статус самой аннотации (`false` для
+  и результат записи в volume, и статус самой замечания (`false` для
   черновиков — это не ошибка).
-- 🔒 `PUT /api/editor/{docId}/{pageNum}/{annId}` — обновить аннотацию по id
+- 🔒 `PUT /api/editor/{docId}/{pageNum}/{remarkId}` — обновить замечание по id
   (если не найдена — создаётся новая). То же тело/ответ/семантика `status`.
-- 🔒 `DELETE /api/editor/{docId}/{pageNum}/{annId}` — мягкое удаление
+- 🔒 `DELETE /api/editor/{docId}/{pageNum}/{remarkId}` — мягкое удаление
   (`status='deleted'`, остаётся в истории) + республикация. `404`, если
-  аннотации нет или она уже удалена. Ответ: `{id, serverPageSha, published}`.
+  замечания нет или она уже удалена. Ответ: `{id, serverPageSha, published}`.
 
 Оптимистичная блокировка: если `clientPageSha` передан, не пуст и не
 совпадает с текущим `serverPageSha` страницы — ответ `409`
@@ -106,27 +107,30 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 не передан, запрос принимается (переходный режим, пишется предупреждение в лог).
 
 Кабинет (`/cabinet/`, стадия 3) — списки/история/статистика поверх той же
-таблицы `annotations`/`annotation_history`:
-- 🔒 `GET /api/annotations?docId&pageKey&annType&status&authorId&q&limit&offset`
+таблицы `remarks`/`remark_history`:
+- 🔒 `GET /api/remarks?docId&pageKey&kind&status&authorId&q&limit&offset`
+  (прежний адрес `GET /api/annotations` и параметр `annType` приняты как алиасы —
+  до фазы 6 переименования; элементы ответа несут и `remarkId`/`kind`, и прежние
+  `annId`/`annType`)
   (роль `editor`/`admin`, CSRF не требуется — чтение) → `{items, total, limit, offset}`.
-  `items[]` — как `_annotation_row_to_dict` + `authorName` (псевдоним автора;
+  `items[]` — как `_remark_row_to_dict` + `authorName` (псевдоним автора;
   `null` для импортированных). Дополнительные фильтры: `category` (один из семи
   слагов) и `categorySource` (`default`/`tags-backfill`/`agent`/`human`) — вход
   очереди приёмки. Валидация: `docId`/`pageKey` — как в
   `/api/editor/...`; `status ∈ {published,draft,deleted}`;
-  `annType ∈ {main,comment}`; `limit ≤ 200` (по умолчанию 50);
+  `kind ∈ {main,comment}`; `limit ≤ 200` (по умолчанию 50);
   `offset ≥ 0`; `len(q) ≤ 200` — иначе `400`.
 - 🔒 `GET /api/tags?docId` (роль `editor`/`admin`, чтение) →
-  `{"tags": [{tag, count}, …]}` (по убыванию частоты, без удалённых аннотаций) — словарь тегов для фильтра в кабинете.
-- 🔒 `GET /api/history?docId&pageKey&annId&authorId&action&limit&offset`
+  `{"tags": [{tag, count}, …]}` (по убыванию частоты, без удалённых замечаний) — словарь тегов для фильтра в кабинете.
+- 🔒 `GET /api/history?docId&pageKey&remarkId&authorId&action&limit&offset`
   (та же защита) → `{items, hasMore, limit, offset}`; `items[].snapshot` —
-  распарсенное состояние аннотации на момент записи.
+  распарсенное состояние замечания на момент записи.
 - `GET /api/stats` (любая роль, включая `viewer`, требует только сессию) →
   `{"docs": [{"docId","published","draft","deleted"}, …], "recentActivity": […]}`.
-- 🔒 `POST /api/history/{histId}/revert` — восстанавливает аннотацию в
+- 🔒 `POST /api/history/{histId}/revert` — восстанавливает замечание в
   состояние из снапшота истории (включая его `status` — откат к записи
   `action='delete'` повторно удаляет) и республикует страницу. `404`, если
-  записи нет. Ответ: `{annId, docId, pageNum, serverPageSha, published}`.
+  записи нет. Ответ: `{remarkId, docId, pageNum, serverPageSha, published}`.
 - 🔒 `GET /api/sections?docId` (роль `editor` и выше, чтение) →
   `{"sections": [{sectionId, chapterId, chapterTitle, title, pageStart, pageEnd,
   counts: {total, published, draft, unclassified}, lastActivity}, …]}` — доска
@@ -193,20 +197,20 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 
 ## CLI: перенос данных между файлами и БД (этап 2)
 
-- `python scripts/api/import_annotations.py <source_dir> [--doc <docId>] [--dry-run] [--overwrite]` —
-  разовый импорт существующих `<source_dir>/<docId>/annotations/page_*.json`
+- `python scripts/api/import_remarks.py <source_dir> [--doc <docId>] [--dry-run] [--overwrite]` —
+  разовый импорт существующих `<source_dir>/<docId>/remarks/page_*.json`
   (оба формата: голый массив и старый page-объект) в БД. По умолчанию
-  идемпотентен (пропускает уже существующие `ann_id`); `--overwrite` обновляет
+  идемпотентен (пропускает уже существующие `remark_id`); `--overwrite` обновляет
   их. Ничего не публикует — после импорта вызовите `publish-all` (или
   перезапустите сервис).
-- `python scripts/api/export_annotations.py --to <dir> [--doc <docId>]` —
-  обратный экспорт: пишет голые массивы из БД в `<dir>/<docId>/annotations/page_*.json`
+- `python scripts/api/export_remarks.py --to <dir> [--doc <docId>]` —
+  обратный экспорт: пишет голые массивы из БД в `<dir>/<docId>/remarks/page_*.json`
   тем же рендером, что и `publisher.py`. Используется для синхронизации
   переносимого git-снапшота `redpen-publish` с БД.
 
 - `python scripts/api/backfill_tags.py <md_dir> [--doc <docId>] [--apply]` —
   подтягивает `tags`/`confidence` из markdown-черновиков к уже импортированным
-  аннотациям (`confidence: high` → тег `confidence:high`). По умолчанию только
+  замечанием (`confidence: high` → тег `confidence:high`). По умолчанию только
   отчёт; запись — `--apply`.
 
 ## Примеры
@@ -223,16 +227,16 @@ curl -s -b /tmp/redpen.cookies -X POST http://localhost:8080/api/store \
   -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d '{"hello":"world"}'
 curl -s -b /tmp/redpen.cookies -X POST http://localhost:8080/api/editor/medinsky11klass/7 \
   -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" \
-  -d '{"annType":"comment","text":"Текст","coords":[100,200]}'
+  -d '{"kind":"comment","text":"Текст","coords":[100,200]}'
 ```
 
 ## Тесты
 
 Эндпоинты покрыты `tests/test_api.py` и `tests/test_auth.py` (через
-`fastapi.TestClient`, без запуска сервера); БД аннотаций — `tests/test_db.py` /
-`tests/test_annotations_db.py`; рендер/публикация — `tests/test_publisher.py`;
-CLI — `tests/test_import_annotations.py` / `tests/test_export_annotations.py`.
+`fastapi.TestClient`, без запуска сервера); БД замечаний — `tests/test_db.py` /
+`tests/test_remarks_db.py`; рендер/публикация — `tests/test_publisher.py`;
+CLI — `tests/test_import_remarks.py` / `tests/test_export_remarks.py`.
 Кабинет (стадия 3) — `tests/test_cabinet_db.py` (запросы в `db.py`) и
 `tests/test_cabinet_api.py` (матрица прав anon/viewer/editor/admin на
-`/api/annotations`, `/api/history`, `/api/stats`, `/api/history/{id}/revert`,
+`/api/remarks`, `/api/history`, `/api/stats`, `/api/history/{id}/revert`,
 `/api/admin/users`). См. `tests/README.md`.

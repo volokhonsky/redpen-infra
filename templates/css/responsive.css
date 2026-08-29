@@ -19,14 +19,14 @@
     width: 100%;
   }
 
-  #global-comment-container {
+  #remark-sidebar {
     width: 300px;
     border-top: none;
     border-left: 2px solid #DC143C;
     box-shadow: -5px 0 15px rgba(0,0,0,0.05);
   }
 
-  #global-comment-container::before {
+  #remark-sidebar::before {
     top: 0;
     left: 0;
     right: auto;
@@ -39,7 +39,7 @@
     display: none !important; /* Never show mobile overlay on desktop */
   }
 
-  #comments-content {
+  #remarks-content {
     display: none !important; /* Hide comments sidebar in desktop view */
   }
 }
@@ -60,13 +60,13 @@
     min-height: 200px; /* Ensure minimum height */
   }
 
-  #global-comment-container {
+  #remark-sidebar {
     width: 100%;
     border-left: none;
     border-top: 2px solid #DC143C;
   }
 
-  #global-comment-container::before {
+  #remark-sidebar::before {
     top: 0;
     left: 0;
     right: 0;
@@ -86,13 +86,13 @@
     flex-direction: column;
   }
 
-  #comments-content {
+  #remarks-content {
     width: auto;
     border-left: none;
     border-top: 1px solid #ddd;
   }
 
-  #global-comment-container {
+  #remark-sidebar {
     width: 100%;
     border-left: none;
     border-top: 2px solid #DC143C;
@@ -107,12 +107,12 @@
     order: 999 !important; /* Ensure it's at the end of the flex container */
   }
 
-  .comment-popup {
+  .remark-popup {
     display: none !important; /* Never show popups on mobile */
   }
 
   /* Force global comment to be visible on mobile */
-  body #layout #global-comment-container {
+  body #layout #remark-sidebar {
     display: block !important;
     visibility: visible !important;
     opacity: 1 !important;

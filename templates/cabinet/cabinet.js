@@ -1,3 +1,11 @@
+/*
+ * ВНИМАНИЕ (переименование сущности, 2026-08-29). Этот файл — клиент API, и он
+ * ещё говорит прежними именами: путь `/api/annotations`, поля `annId`/`annType`
+ * со значениями `main`/`comment`. Так и задумано: статика выкладывается раньше
+ * API, а на новые имена клиенты редактора переводятся отдельной выкладкой —
+ * уже после того, как API начнёт их понимать (он принимает и отдаёт оба
+ * набора). Читательская часть переведена сразу, см. page-view.js.
+ */
 
 (function(){
   var CABINET_VERSION = '1.0.0';
@@ -257,7 +265,7 @@
     document.getElementById('cab-tab-admin-btn').style.display = state.user.role === 'admin' ? '' : 'none';
 
     if (!canEdit) {
-      document.getElementById('cab-tab-annotations').style.display = 'none';
+      document.getElementById('cab-tab-remarks').style.display = 'none';
       document.getElementById('cab-tab-history').style.display = 'none';
       document.getElementById('cab-tab-admin').style.display = 'none';
       return;
@@ -282,7 +290,7 @@
     Array.prototype.forEach.call(document.querySelectorAll('.cab-tab-btn'), function(btn){
       btn.classList.toggle('is-active', btn.getAttribute('data-tab') === tab);
     });
-    ['annotations', 'history', 'admin'].forEach(function(t){
+    ['remarks', 'history', 'admin'].forEach(function(t){
       document.getElementById('cab-tab-' + t).style.display = (t === tab) ? '' : 'none';
     });
     if (tab === 'admin' && state.user.role === 'admin' && !state.admin.loaded) loadAdmin();
@@ -321,29 +329,32 @@
     });
   }
 
-  // ===== annotations tab =====
+  // ===== remarks tab =====
+  // Путь /api/annotations и поля annId/annType — прежние имена. Кабинет
+  // переключается на /api/remarks и remarkId/kind отдельной выкладкой,
+  // уже после деплоя API (до него новых имён ещё нет).
 
   function renderAnnotationsShell(){
-    var host = document.getElementById('cab-tab-annotations');
+    var host = document.getElementById('cab-tab-remarks');
     host.innerHTML =
-      '<form id="cab-ann-filters" class="cab-filters">' +
+      '<form id="cab-remark-filters" class="cab-filters">' +
         '<label>Документ<select name="docId">' + docOptionsHtml() + '</select></label>' +
         '<label>Страница<input type="text" name="pageKey" placeholder="напр. 6" /></label>' +
         '<label>Тип<select name="annType"><option value="">Любой</option><option value="main">main</option><option value="comment">comment</option></select></label>' +
         '<label>Статус<select name="status"><option value="">Любой</option><option value="published">published</option><option value="draft">draft</option><option value="deleted">deleted</option></select></label>' +
-        '<label>Автор<select name="authorId" id="cab-ann-author-filter"><option value="">Все авторы</option></select></label>' +
-        '<label>Тег<select name="tag" id="cab-ann-tag-filter"><option value="">Любой</option></select></label>' +
+        '<label>Автор<select name="authorId" id="cab-remark-author-filter"><option value="">Все авторы</option></select></label>' +
+        '<label>Тег<select name="tag" id="cab-remark-tag-filter"><option value="">Любой</option></select></label>' +
         '<label>Поиск<input type="text" name="q" placeholder="текст" /></label>' +
         '<button type="submit">Применить</button>' +
-        '<button type="button" class="cab-btn-secondary" id="cab-ann-reset">Сбросить</button>' +
+        '<button type="button" class="cab-btn-secondary" id="cab-remark-reset">Сбросить</button>' +
       '</form>' +
       '<table class="cab-table"><thead><tr>' +
         '<th>Документ</th><th>Страница</th><th>Тип</th><th>Статус</th><th>Автор</th><th>Изменено</th><th>Текст</th><th>Действия</th>' +
-      '</tr></thead><tbody id="cab-ann-tbody"></tbody></table>' +
-      '<div id="cab-ann-empty" style="display:none;">Ничего не найдено.</div>' +
-      '<button type="button" id="cab-ann-more" class="cab-load-more" style="display:none;">Показать ещё</button>';
+      '</tr></thead><tbody id="cab-remark-tbody"></tbody></table>' +
+      '<div id="cab-remark-empty" style="display:none;">Ничего не найдено.</div>' +
+      '<button type="button" id="cab-remark-more" class="cab-load-more" style="display:none;">Показать ещё</button>';
 
-    document.getElementById('cab-ann-filters').addEventListener('submit', function(ev){
+    document.getElementById('cab-remark-filters').addEventListener('submit', function(ev){
       ev.preventDefault();
       var f = new FormData(ev.target);
       state.ann.filters = {
@@ -357,18 +368,18 @@
       };
       loadAnnotations(true);
     });
-    document.getElementById('cab-ann-reset').addEventListener('click', function(){
-      document.getElementById('cab-ann-filters').reset();
+    document.getElementById('cab-remark-reset').addEventListener('click', function(){
+      document.getElementById('cab-remark-filters').reset();
       state.ann.filters = {};
       loadAnnotations(true);
     });
-    document.getElementById('cab-ann-more').addEventListener('click', function(){ loadAnnotations(false); });
+    document.getElementById('cab-remark-more').addEventListener('click', function(){ loadAnnotations(false); });
     loadTagOptions();
   }
 
   /** Fill the tag filter from the vocabulary actually in use, most used first. */
   async function loadTagOptions(){
-    var sel = document.getElementById('cab-ann-tag-filter');
+    var sel = document.getElementById('cab-remark-tag-filter');
     if (!sel) return;
     var data;
     try { data = await apiGet('/api/tags'); }
@@ -391,7 +402,7 @@
     state.ann.offset = state.ann.offset + data.items.length;
 
     updateAuthorOptions(
-      document.getElementById('cab-ann-author-filter'), data.items, 'authorId',
+      document.getElementById('cab-remark-author-filter'), data.items, 'authorId',
       function(a){ return a.authorName; }
     );
     await prefetchManifests(data.items.map(function(a){ return a.docId; }));
@@ -399,7 +410,7 @@
   }
 
   function renderAnnotationsRows(){
-    var tbody = document.getElementById('cab-ann-tbody');
+    var tbody = document.getElementById('cab-remark-tbody');
     tbody.innerHTML = state.ann.items.map(function(a){
       var link = annotationLink(a.docId, a.pageNum, a.annId);
       var openBtn = link
@@ -407,14 +418,14 @@
         : '<span class="cab-muted" title="страница вне легаси-нумерации">Открыть</span>';
       var toggleLabel = a.status === 'draft' ? 'Опубликовать' : (a.status === 'published' ? 'В черновик' : '');
       var toggleBtn = toggleLabel
-        ? '<button type="button" class="cab-ann-toggle" data-ann="' + escapeHtml(a.annId) + '" data-doc="' + escapeHtml(a.docId) +
+        ? '<button type="button" class="cab-remark-toggle" data-ann="' + escapeHtml(a.annId) + '" data-doc="' + escapeHtml(a.docId) +
           '" data-page="' + escapeHtml(a.pageNum) + '" data-newstatus="' + (a.status === 'draft' ? 'published' : 'draft') + '">' + toggleLabel + '</button>'
         : '';
       var delBtn = a.status !== 'deleted'
-        ? '<button type="button" class="cab-btn-secondary cab-ann-delete" data-ann="' + escapeHtml(a.annId) + '" data-doc="' + escapeHtml(a.docId) +
+        ? '<button type="button" class="cab-btn-secondary cab-remark-delete" data-ann="' + escapeHtml(a.annId) + '" data-doc="' + escapeHtml(a.docId) +
           '" data-page="' + escapeHtml(a.pageNum) + '">Удалить</button>'
         : '';
-      var histBtn = '<button type="button" class="cab-btn-secondary cab-ann-history" data-ann="' + escapeHtml(a.annId) + '" data-doc="' + escapeHtml(a.docId) + '">История</button>';
+      var histBtn = '<button type="button" class="cab-btn-secondary cab-remark-history" data-ann="' + escapeHtml(a.annId) + '" data-doc="' + escapeHtml(a.docId) + '">История</button>';
       var badgeClass = 'cab-badge-' + a.status;
       return '<tr>' +
         '<td>' + escapeHtml(a.docId) + '</td>' +
@@ -428,18 +439,18 @@
       '</tr>';
     }).join('');
 
-    document.getElementById('cab-ann-empty').style.display = state.ann.items.length ? 'none' : '';
-    document.getElementById('cab-ann-more').style.display = state.ann.items.length < state.ann.total ? '' : 'none';
+    document.getElementById('cab-remark-empty').style.display = state.ann.items.length ? 'none' : '';
+    document.getElementById('cab-remark-more').style.display = state.ann.items.length < state.ann.total ? '' : 'none';
 
-    Array.prototype.forEach.call(tbody.querySelectorAll('.cab-ann-toggle'), function(btn){
+    Array.prototype.forEach.call(tbody.querySelectorAll('.cab-remark-toggle'), function(btn){
       btn.addEventListener('click', function(){
         toggleAnnotationStatus(btn.dataset.doc, btn.dataset.page, btn.dataset.ann, btn.dataset.newstatus);
       });
     });
-    Array.prototype.forEach.call(tbody.querySelectorAll('.cab-ann-delete'), function(btn){
+    Array.prototype.forEach.call(tbody.querySelectorAll('.cab-remark-delete'), function(btn){
       btn.addEventListener('click', function(){ deleteAnnotation(btn.dataset.doc, btn.dataset.page, btn.dataset.ann); });
     });
-    Array.prototype.forEach.call(tbody.querySelectorAll('.cab-ann-history'), function(btn){
+    Array.prototype.forEach.call(tbody.querySelectorAll('.cab-remark-history'), function(btn){
       btn.addEventListener('click', function(){
         state.hist.filters = { docId: btn.dataset.doc, annId: btn.dataset.ann };
         switchTab('history');
@@ -465,10 +476,10 @@
   }
 
   async function deleteAnnotation(docId, pageKey, annId){
-    if (!window.confirm('Удалить аннотацию?')) return;
+    if (!window.confirm('Удалить замечание?')) return;
     try {
       await apiMutate('DELETE', '/api/editor/' + encodeURIComponent(docId) + '/' + encodeURIComponent(pageKey) + '/' + encodeURIComponent(annId));
-      setStatus('Аннотация удалена', false);
+      setStatus('Замечание удалено', false);
       loadAnnotations(true);
     } catch (e) { /* status already shown */ }
   }
@@ -485,7 +496,7 @@
         '<button type="submit">Применить</button>' +
         '<button type="button" class="cab-btn-secondary" id="cab-hist-reset">Сбросить</button>' +
       '</form>' +
-      '<div id="cab-hist-ann-filter-note" class="cab-notice" style="display:none;"></div>' +
+      '<div id="cab-hist-remark-filter-note" class="cab-notice" style="display:none;"></div>' +
       '<div id="cab-hist-list"></div>' +
       '<div id="cab-hist-empty" style="display:none;">История пуста.</div>' +
       '<button type="button" id="cab-hist-more" class="cab-load-more" style="display:none;">Показать ещё</button>';
@@ -529,13 +540,13 @@
   var ACTION_LABELS = { create: 'создание', update: 'изменение', delete: 'удаление', revert: 'откат' };
 
   function renderHistoryList(){
-    var note = document.getElementById('cab-hist-ann-filter-note');
+    var note = document.getElementById('cab-hist-remark-filter-note');
     if (state.hist.filters.annId) {
       note.style.display = '';
-      note.innerHTML = 'Фильтр по аннотации ' + escapeHtml(state.hist.filters.annId) +
+      note.innerHTML = 'Фильтр по замечанию ' + escapeHtml(state.hist.filters.annId) +
         ' в документе ' + escapeHtml(state.hist.filters.docId || '') +
-        ' <button type="button" class="cab-btn-secondary" id="cab-hist-clear-ann">Сбросить фильтр</button>';
-      document.getElementById('cab-hist-clear-ann').addEventListener('click', function(){
+        ' <button type="button" class="cab-btn-secondary" id="cab-hist-clear-remark">Сбросить фильтр</button>';
+      document.getElementById('cab-hist-clear-remark').addEventListener('click', function(){
         state.hist.filters = {};
         loadHistory(true);
       });
@@ -565,7 +576,7 @@
   }
 
   async function revertHistory(histId){
-    if (!window.confirm('Откатить аннотацию к этому состоянию?')) return;
+    if (!window.confirm('Откатить замечание к этому состоянию?')) return;
     try {
       await apiMutate('POST', '/api/history/' + encodeURIComponent(histId) + '/revert');
       setStatus('Откат выполнен', false);

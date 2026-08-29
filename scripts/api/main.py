@@ -261,24 +261,28 @@ def _check_optimistic_lock(body: Dict[str, Any], server_sha: str, docId: str, pa
     return None
 
 
-def _parse_annotation_body(body: Dict[str, Any]) -> Dict[str, Any]:
+def _parse_remark_body(body: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="body must be a JSON object")
-    ann_type = body.get("annType")
+    # `annType` — имя ключа до переименования сущности в «замечание». Клиенты
+    # редактора статические и обновляются отдельной выкладкой, поэтому приём
+    # старого имени и старых значений живёт до фазы 6 переименования.
+    remark_kind = body.get("kind", body.get("annType"))
     text = body.get("text")
     coords = body.get("coords", None)
 
-    if not isinstance(ann_type, str) or ann_type.strip() == "":
-        raise HTTPException(status_code=400, detail="annType must be a string")
+    if not isinstance(remark_kind, str) or remark_kind.strip() == "":
+        raise HTTPException(status_code=400, detail="kind must be a string")
+    remark_kind = db.LEGACY_KINDS.get(remark_kind, remark_kind)
     # "general" (общий комментарий к странице) is retired: it had no anchor on
     # the scan, and with per-page addresses every comment needs one. Rejected
     # rather than silently accepted so old clients fail loudly.
-    if ann_type not in ANNOTATION_TYPES:
-        raise HTTPException(status_code=400, detail=f"annType must be one of {', '.join(ANNOTATION_TYPES)}")
+    if remark_kind not in REMARK_KINDS:
+        raise HTTPException(status_code=400, detail=f"kind must be one of {', '.join(REMARK_KINDS)}")
     if not isinstance(text, str):
         raise HTTPException(status_code=400, detail="text must be a string")
 
-    ann: Dict[str, Any] = {"annType": ann_type, "text": text}
+    ann: Dict[str, Any] = {"kind": remark_kind, "text": text}
 
     if coords is not None:
         if (
@@ -761,7 +765,7 @@ async def store(request: Request, user: Dict[str, str] = Depends(require_editor)
 @app.get("/api/pages/{pageId}")
 async def get_page(pageId: str):
     """GET page data by pageId (legacy endpoint, for backwards compatibility).
-    Rendered from the SQLite annotations store (stage 2); imageUrl/origW/origH
+    Rendered from the SQLite remarks store (stage 2); imageUrl/origW/origH
     were never populated by this endpoint and remain placeholders."""
     # pageId format: "medinsky11klass_page_006"
     parts = pageId.rsplit("_page_", 1)
@@ -782,7 +786,7 @@ async def get_page(pageId: str):
         "origW": 0,
         "origH": 0,
         "serverPageSha": sha,
-        "annotations": rendered,
+        "remarks": rendered,
     }
 
 
@@ -814,8 +818,8 @@ def _current_page_sha(docId: str, page_num_str: str) -> str:
 
 def _resolve_status(parsed: Dict[str, Any], existing: Optional[Dict[str, Any]]) -> str:
     """If the client sent an explicit status, use it. Otherwise preserve the
-    existing annotation's status (a PUT without status must not silently
-    publish a draft); brand-new annotations default to published."""
+    existing remark's status (a PUT without status must not silently
+    publish a draft); brand-new remarks default to published."""
     if "status" in parsed:
         return parsed["status"]
     if existing is not None:
@@ -824,14 +828,14 @@ def _resolve_status(parsed: Dict[str, Any], existing: Optional[Dict[str, Any]]) 
 
 
 def _resolve_category(parsed: Dict[str, Any]) -> Optional[str]:
-    """None ("category" absent) tells upsert_annotation_db to leave the category
+    """None ("category" absent) tells upsert_remark_db to leave the category
     alone -- the editor has no category UI yet and must not reset everything to
     'other' just by saving a text edit."""
     return parsed.get("category") if "category" in parsed else None
 
 
 def _resolve_tags(parsed: Dict[str, Any]) -> Optional[List[str]]:
-    """None ("tags" absent) tells upsert_annotation_db to leave the tag set
+    """None ("tags" absent) tells upsert_remark_db to leave the tag set
     alone -- the editor doesn't send tags yet and must not wipe them. An
     explicit [] clears them."""
     return parsed.get("tags") if "tags" in parsed else None
@@ -839,8 +843,8 @@ def _resolve_tags(parsed: Dict[str, Any]) -> Optional[List[str]]:
 
 @app.get("/api/editor/{docId}/{pageNum}")
 async def get_editor_page(docId: str, pageNum: str, user: Optional[Dict[str, Any]] = Depends(get_optional_user)):
-    """GET page data for editor, rendered from the SQLite annotations store.
-    Anonymous/viewer callers see only published annotations; editor/admin
+    """GET page data for editor, rendered from the SQLite remarks store.
+    Anonymous/viewer callers see only published remarks; editor/admin
     additionally see drafts, flagged draft=true.
 
     Note the drafts are flagged with the boolean, NOT with a "draft" entry in
@@ -857,10 +861,10 @@ async def get_editor_page(docId: str, pageNum: str, user: Optional[Dict[str, Any
     # sha считается по «голому» render_page ДО обогащения: категория и теги в
     # него не входят и входить не должны (см. docstring render_page).
     sha = publisher.compute_page_sha(rendered)
-    published_rows = db.list_page_annotations(docId, page_num_str)
-    tags_by_id = {ann["annId"]: ann["tags"] for ann in published_rows}
-    category_by_id = {ann["annId"]: ann["category"] for ann in published_rows}
-    annotations = []
+    published_rows = db.list_page_remarks(docId, page_num_str)
+    tags_by_id = {ann["remarkId"]: ann["tags"] for ann in published_rows}
+    category_by_id = {ann["remarkId"]: ann["category"] for ann in published_rows}
+    remarks = []
     for item in rendered:
         item = dict(item)
         if tags_by_id.get(item["id"]):
@@ -868,29 +872,39 @@ async def get_editor_page(docId: str, pageNum: str, user: Optional[Dict[str, Any
         item["category"] = annotation_categories.normalize_category(
             category_by_id.get(item["id"])
         )
-        annotations.append(item)
+        # render_page() заморожен в легаси-именах: он вход оптимистической
+        # блокировки (см. его docstring). Обогащение идёт уже после подсчёта
+        # sha, поэтому текущее имя вида добавляем здесь.
+        item["kind"] = db.LEGACY_KINDS.get(item.get("annType"), item.get("annType"))
+        remarks.append(item)
 
     if user is not None and user.get("role") in EDITOR_ROLES:
-        for ann in db.list_annotations(doc_id=docId, page_num=page_num_str, status="draft", limit=1000):
-            item: Dict[str, Any] = {"id": ann["annId"], "text": ann["text"], "annType": ann["annType"], "draft": True}
+        for ann in db.list_remarks(doc_id=docId, page_num=page_num_str, status="draft", limit=1000):
+            item: Dict[str, Any] = {
+                "id": ann["remarkId"], "text": ann["text"], "kind": ann["kind"],
+                "annType": publisher.legacy_kind(ann["kind"]), "draft": True,
+            }
             if ann["coordX"] is not None and ann["coordY"] is not None:
                 item["coords"] = [ann["coordX"], ann["coordY"]]
             if ann["tags"]:
                 item["tags"] = ann["tags"]
             item["category"] = annotation_categories.normalize_category(ann.get("category"))
-            annotations.append(item)
+            remarks.append(item)
 
-    logger.info("GET editor docId=%s pageKey=%s anns=%d", docId, page_num_str, len(annotations))
+    logger.info("GET editor docId=%s pageKey=%s remarks=%d", docId, page_num_str, len(remarks))
     return {
         "pageId": f"{docId}_page_{page_num_str}",
         "serverPageSha": sha,
-        "annotations": annotations,
+        "remarks": remarks,
+        # Прежнее имя ключа: клиенты редактора переключаются отдельной
+        # выкладкой статики, уже после этого деплоя. Снимается в фазе 6.
+        "annotations": remarks,
     }
 
 
 @app.post("/api/editor/{docId}/{pageNum}")
-async def post_editor_annotation(docId: str, pageNum: str, request: Request, user: Dict[str, Any] = Depends(require_editor)):
-    """POST new annotation: upserts into the DB, records history, republishes."""
+async def post_editor_remark(docId: str, pageNum: str, request: Request, user: Dict[str, Any] = Depends(require_editor)):
+    """POST new remark: upserts into the DB, records history, republishes."""
     if not _validate_doc_id(docId):
         raise HTTPException(status_code=400, detail="invalid docId")
     page_num_str = _validate_page_key(pageNum)
@@ -902,7 +916,7 @@ async def post_editor_annotation(docId: str, pageNum: str, request: Request, use
     except Exception:
         raise HTTPException(status_code=400, detail="body must be a JSON object")
 
-    ann = _parse_annotation_body(body if isinstance(body, dict) else {})
+    ann = _parse_remark_body(body if isinstance(body, dict) else {})
     if not ann.get("id"):
         ann["id"] = f"srv-{int(time.time())}-{uuid4().hex[:6]}"
 
@@ -914,12 +928,12 @@ async def post_editor_annotation(docId: str, pageNum: str, request: Request, use
 
     coords = ann.get("coords")
     coord_x, coord_y = (coords[0], coords[1]) if coords else (None, None)
-    existing = db.get_annotation(docId, page_num_str, ann["id"])
+    existing = db.get_remark(docId, page_num_str, ann["id"])
     action = "update" if existing else "create"
     status = _resolve_status(ann, existing)
 
-    db.upsert_annotation_db(
-        docId, page_num_str, ann["id"], ann["annType"], ann["text"],
+    db.upsert_remark_db(
+        docId, page_num_str, ann["id"], ann["kind"], ann["text"],
         coord_x=coord_x, coord_y=coord_y, status=status, author_id=user["userId"], action=action,
         tags=_resolve_tags(ann),
         category=_resolve_category(ann),
@@ -930,15 +944,15 @@ async def post_editor_annotation(docId: str, pageNum: str, request: Request, use
     new_sha = _current_page_sha(docId, page_num_str)
 
     logger.info(
-        "POST editor SUCCESS docId=%s pageKey=%s annId=%s status=%s published=%s",
+        "POST editor SUCCESS docId=%s pageKey=%s remarkId=%s status=%s published=%s",
         docId, page_num_str, ann["id"], status, published,
     )
     return {"id": ann["id"], "serverPageSha": new_sha, "published": published}
 
 
-@app.put("/api/editor/{docId}/{pageNum}/{annId}")
-async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: Request, user: Dict[str, Any] = Depends(require_editor)):
-    """PUT update (or create, if annId doesn't exist yet) an annotation."""
+@app.put("/api/editor/{docId}/{pageNum}/{remarkId}")
+async def put_editor_remark(docId: str, pageNum: str, remarkId: str, request: Request, user: Dict[str, Any] = Depends(require_editor)):
+    """PUT update (or create, if remarkId doesn't exist yet) an remark."""
     if not _validate_doc_id(docId):
         raise HTTPException(status_code=400, detail="invalid docId")
     page_num_str = _validate_page_key(pageNum)
@@ -950,8 +964,8 @@ async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: R
     except Exception:
         raise HTTPException(status_code=400, detail="body must be a JSON object")
 
-    parsed = _parse_annotation_body(body if isinstance(body, dict) else {})
-    parsed["id"] = annId
+    parsed = _parse_remark_body(body if isinstance(body, dict) else {})
+    parsed["id"] = remarkId
 
     conflict = _check_optimistic_lock(
         body if isinstance(body, dict) else {}, _current_page_sha(docId, page_num_str), docId, page_num_str
@@ -961,12 +975,12 @@ async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: R
 
     coords = parsed.get("coords")
     coord_x, coord_y = (coords[0], coords[1]) if coords else (None, None)
-    existing = db.get_annotation(docId, page_num_str, annId)
+    existing = db.get_remark(docId, page_num_str, remarkId)
     action = "update" if existing else "create"
     status = _resolve_status(parsed, existing)
 
-    db.upsert_annotation_db(
-        docId, page_num_str, annId, parsed["annType"], parsed["text"],
+    db.upsert_remark_db(
+        docId, page_num_str, remarkId, parsed["kind"], parsed["text"],
         coord_x=coord_x, coord_y=coord_y, status=status, author_id=user["userId"], action=action,
         tags=_resolve_tags(parsed),
         category=_resolve_category(parsed),
@@ -977,44 +991,44 @@ async def put_editor_annotation(docId: str, pageNum: str, annId: str, request: R
     new_sha = _current_page_sha(docId, page_num_str)
 
     logger.info(
-        "PUT editor SUCCESS docId=%s pageKey=%s annId=%s status=%s published=%s",
-        docId, page_num_str, annId, status, published,
+        "PUT editor SUCCESS docId=%s pageKey=%s remarkId=%s status=%s published=%s",
+        docId, page_num_str, remarkId, status, published,
     )
-    return {"id": annId, "serverPageSha": new_sha, "published": published}
+    return {"id": remarkId, "serverPageSha": new_sha, "published": published}
 
 
-@app.delete("/api/editor/{docId}/{pageNum}/{annId}")
-async def delete_editor_annotation(docId: str, pageNum: str, annId: str, user: Dict[str, Any] = Depends(require_editor)):
-    """Soft-delete an annotation and republish the page."""
+@app.delete("/api/editor/{docId}/{pageNum}/{remarkId}")
+async def delete_editor_remark(docId: str, pageNum: str, remarkId: str, user: Dict[str, Any] = Depends(require_editor)):
+    """Soft-delete an remark and republish the page."""
     if not _validate_doc_id(docId):
         raise HTTPException(status_code=400, detail="invalid docId")
     page_num_str = _validate_page_key(pageNum)
     if page_num_str is None:
         raise HTTPException(status_code=400, detail="invalid pageNum")
 
-    deleted = db.soft_delete_annotation(docId, page_num_str, annId,
+    deleted = db.soft_delete_remark(docId, page_num_str, remarkId,
                                         author_id=user["userId"])
     if not deleted:
-        raise HTTPException(status_code=404, detail="annotation not found")
+        raise HTTPException(status_code=404, detail="remark not found")
 
     published = publisher.publish_page(docId, page_num_str)
     new_sha = _current_page_sha(docId, page_num_str)
 
     logger.info(
-        "DELETE editor SUCCESS docId=%s pageKey=%s annId=%s published=%s",
-        docId, page_num_str, annId, published,
+        "DELETE editor SUCCESS docId=%s pageKey=%s remarkId=%s published=%s",
+        docId, page_num_str, remarkId, published,
     )
-    return {"id": annId, "serverPageSha": new_sha, "published": published}
+    return {"id": remarkId, "serverPageSha": new_sha, "published": published}
 
 
 # ===== CABINET (stage 3) =====
 
 #: Резюме правки: одна строка, а не второй текст аннотации.
 MAX_SUMMARY_LENGTH = 200
-ANNOTATION_STATUSES = ("published", "draft", "deleted")
+REMARK_STATUSES = ("published", "draft", "deleted")
 # "general" ушёл: см. docs/general-migration-map.json. Строки со status='deleted'
-# могут по-прежнему иметь ann_type='general' — их никто не читает, кроме истории.
-ANNOTATION_TYPES = ("main", "comment")
+# могут по-прежнему иметь kind='general' — их никто не читает, кроме истории.
+REMARK_KINDS = ("major", "minor")
 
 
 async def require_editor_read(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
@@ -1024,8 +1038,23 @@ async def require_editor_read(user: Dict[str, Any] = Depends(require_user)) -> D
     return user
 
 
+def _with_legacy_keys(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Продублировать поля замечания прежними именами.
+
+    Кабинет и `/app/` — статика: они переезжают на `remarkId`/`kind` отдельной
+    выкладкой, уже после этого деплоя. Снимается в фазе 6 переименования."""
+    if not isinstance(item, dict):
+        return item
+    out = dict(item)
+    if "remarkId" in out:
+        out["annId"] = out["remarkId"]
+    if "kind" in out:
+        out["annType"] = publisher.legacy_kind(out["kind"])
+    return out
+
+
 def _validate_list_params(
-    docId: Optional[str], pageKey: Optional[str], annType: Optional[str],
+    docId: Optional[str], pageKey: Optional[str], kind: Optional[str],
     status: Optional[str], limit: int, offset: int, q: Optional[str],
 ) -> Dict[str, Any]:
     if docId is not None and not _validate_doc_id(docId):
@@ -1035,23 +1064,30 @@ def _validate_list_params(
         page_num_str = _validate_page_key(pageKey)
         if page_num_str is None:
             raise HTTPException(status_code=400, detail="invalid pageKey")
-    if status is not None and status not in ANNOTATION_STATUSES:
+    if status is not None and status not in REMARK_STATUSES:
         raise HTTPException(status_code=400, detail="invalid status")
-    if annType is not None and annType not in ANNOTATION_TYPES:
-        raise HTTPException(status_code=400, detail="invalid annType")
+    if kind is not None:
+        kind = db.LEGACY_KINDS.get(kind, kind)
+        if kind not in REMARK_KINDS:
+            raise HTTPException(status_code=400, detail="invalid kind")
     if limit < 1 or limit > 200:
         raise HTTPException(status_code=400, detail="limit must be between 1 and 200")
     if offset < 0:
         raise HTTPException(status_code=400, detail="offset must be >= 0")
     if q is not None and len(q) > 200:
         raise HTTPException(status_code=400, detail="q must be at most 200 characters")
-    return {"pageKey": page_num_str}
+    return {"pageKey": page_num_str, "kind": kind}
 
 
+# `/api/annotations` — прежний адрес тех же двух ручек. Живёт, пока клиенты
+# редактора (статика) не переехали на новый; снимается в фазе 6.
+@app.get("/api/remarks")
 @app.get("/api/annotations")
-async def list_annotations(
+async def list_remarks(
     docId: Optional[str] = None,
     pageKey: Optional[str] = None,
+    kind: Optional[str] = None,
+    # Прежнее имя того же параметра: кабинет шлёт его до своей выкладки.
     annType: Optional[str] = None,
     status: Optional[str] = None,
     authorId: Optional[int] = None,
@@ -1064,7 +1100,8 @@ async def list_annotations(
     offset: int = 0,
     user: Dict[str, Any] = Depends(require_editor_read),
 ):
-    validated = _validate_list_params(docId, pageKey, annType, status, limit, offset, q)
+    validated = _validate_list_params(docId, pageKey, kind or annType,
+                                      status, limit, offset, q)
     if tag is not None:
         try:
             tag = db.normalize_tag(tag)
@@ -1082,34 +1119,37 @@ async def list_annotations(
             categorySource = db.normalize_category_source(categorySource)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-    items = db.list_annotations(
-        doc_id=docId, page_num=validated["pageKey"], ann_type=annType, status=status,
+    kind = validated["kind"]
+    items = [_with_legacy_keys(item) for item in db.list_remarks(
+        doc_id=docId, page_num=validated["pageKey"], kind=kind, status=status,
         author_id=authorId, q=q, limit=limit, offset=offset, tag=tag,
         category=category, category_source=categorySource, section_id=section,
-    )
-    total = db.count_annotations(
-        doc_id=docId, page_num=validated["pageKey"], ann_type=annType, status=status,
+    )]
+    total = db.count_remarks(
+        doc_id=docId, page_num=validated["pageKey"], kind=kind, status=status,
         author_id=authorId, q=q, tag=tag,
         category=category, category_source=categorySource, section_id=section,
     )
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
-@app.get("/api/annotations/{docId}/{pageKey}/{annId}")
-async def get_one_annotation(docId: str, pageKey: str, annId: str,
+@app.get("/api/remarks/{docId}/{pageKey}/{remarkId}")
+@app.get("/api/annotations/{docId}/{pageKey}/{remarkId}")
+async def get_one_remark(docId: str, pageKey: str, remarkId: str,
                              user: Dict[str, Any] = Depends(require_editor_read)):
     """Один комментарий целиком — вход карточки в редакторе.
 
-    Список `/api/annotations` для этого не годится: карточке нужен конкретный
+    Список `/api/remarks` для этого не годится: карточке нужен конкретный
     комментарий по адресу, а не страница выдачи, из которой его надо выуживать."""
     if not _validate_doc_id(docId):
         raise HTTPException(status_code=400, detail="invalid docId")
     page_num_str = _validate_page_key(pageKey)
-    ann = db.get_annotation(docId, page_num_str, annId)
+    ann = db.get_remark(docId, page_num_str, remarkId)
     if ann is None:
-        raise HTTPException(status_code=404, detail="annotation not found")
+        raise HTTPException(status_code=404, detail="remark not found")
     section = db.find_section_for_page(docId, page_num_str)
-    return {"annotation": ann, "section": section}
+    ann = _with_legacy_keys(ann)
+    return {"remark": ann, "annotation": ann, "section": section}
 
 
 @app.get("/api/sections")
@@ -1136,6 +1176,8 @@ async def get_tags(docId: Optional[str] = None, user: Dict[str, Any] = Depends(r
 async def list_history(
     docId: Optional[str] = None,
     pageKey: Optional[str] = None,
+    remarkId: Optional[str] = None,
+    # Прежнее имя того же параметра: кабинет шлёт его до своей выкладки.
     annId: Optional[str] = None,
     authorId: Optional[int] = None,
     action: Optional[str] = None,
@@ -1145,7 +1187,8 @@ async def list_history(
 ):
     validated = _validate_list_params(docId, pageKey, None, None, limit, offset, None)
     items = db.list_history(
-        doc_id=docId, page_num=validated["pageKey"], ann_id=annId, author_id=authorId,
+        doc_id=docId, page_num=validated["pageKey"], remark_id=remarkId or annId,
+        author_id=authorId,
         action=action, limit=limit, offset=offset,
     )
     return {"items": items, "hasMore": len(items) == limit, "limit": limit, "offset": offset}
@@ -1158,7 +1201,7 @@ async def get_stats(user: Dict[str, Any] = Depends(require_user)):
 
 @app.post("/api/history/{histId}/revert")
 async def revert_history(histId: int, user: Dict[str, Any] = Depends(require_editor)):
-    """Restore an annotation to the exact state recorded in a history
+    """Restore a remark to the exact state recorded in a history
     snapshot (including that snapshot's own status -- reverting to a
     delete-record re-deletes, which is intentional: the cabinet shows every
     record's action and lets the user pick the state they want back)."""
@@ -1169,13 +1212,13 @@ async def revert_history(histId: int, user: Dict[str, Any] = Depends(require_edi
     snapshot = record["snapshot"] or {}
     doc_id = record["docId"]
     page_num = record["pageNum"]
-    ann_id = record["annId"]
+    remark_id = record["remarkId"]
     coords = None
     if snapshot.get("coordX") is not None and snapshot.get("coordY") is not None:
         coords = [snapshot["coordX"], snapshot["coordY"]]
 
-    db.upsert_annotation_db(
-        doc_id, page_num, ann_id, snapshot.get("annType"), snapshot.get("text"),
+    db.upsert_remark_db(
+        doc_id, page_num, remark_id, snapshot.get("kind"), snapshot.get("text"),
         coord_x=coords[0] if coords else None, coord_y=coords[1] if coords else None,
         status=snapshot.get("status", "published"), author_id=user["userId"], action="revert",
         # Only snapshots taken after tags existed carry the key; older ones must
@@ -1187,10 +1230,10 @@ async def revert_history(histId: int, user: Dict[str, Any] = Depends(require_edi
     new_sha = _current_page_sha(doc_id, page_num)
 
     logger.info(
-        "revert histId=%s docId=%s pageKey=%s annId=%s by=%s",
-        histId, doc_id, page_num, ann_id, user["userId"],
+        "revert histId=%s docId=%s pageKey=%s remarkId=%s by=%s",
+        histId, doc_id, page_num, remark_id, user["userId"],
     )
-    return {"annId": ann_id, "docId": doc_id, "pageNum": page_num, "serverPageSha": new_sha, "published": published}
+    return {"remarkId": remark_id, "docId": doc_id, "pageNum": page_num, "serverPageSha": new_sha, "published": published}
 
 
 @app.get("/api/admin/users")

@@ -45,7 +45,7 @@ def site(tmp_path):
     (site_dir / "css").mkdir(parents=True)
     (site_dir / "js").mkdir()
     (site_dir / "css" / "main.css").write_text("body{}", encoding="utf-8")
-    for name in ("layout.js", "comment-content.js", "annotations.js", "mobile.js", "main.js"):
+    for name in ("layout.js", "comment-content.js", "remarks.js", "mobile.js", "main.js"):
         (site_dir / "js" / name).write_text("// %s" % name, encoding="utf-8")
     # редакторские скрипты — в архив попасть не должны
     (site_dir / "js" / "redpen-auth.js").write_text(
@@ -56,7 +56,7 @@ def site(tmp_path):
     (site_dir / "favicon.svg").write_text("<svg/>", encoding="utf-8")
 
     doc = site_dir / DOC
-    for sub in ("annotations", "text", "images"):
+    for sub in ("remarks", "text", "images"):
         (doc / sub).mkdir(parents=True)
     (doc / "metadata.json").write_text(json.dumps({
         "id": DOC,
@@ -71,12 +71,12 @@ def site(tmp_path):
         (doc / "images" / (page + ".png")).write_bytes(_PNG_1x1)
         (doc / "text" / (page + ".json")).write_text(
             json.dumps([{"id": page + "_line001", "bbox": [1, 2, 3, 4]}]), encoding="utf-8")
-        (doc / "annotations" / (page + ".json")).write_text(json.dumps([
+        (doc / "remarks" / (page + ".json")).write_text(json.dumps([
             {"id": "ann-1", "text": "Разбор «ёлки» — см. https://example.org/источник",
-             "annType": "main", "coords": [10, 20], "tags": []},
+             "kind": "major", "coords": [10, 20], "tags": []},
         ], ensure_ascii=False), encoding="utf-8")
     # легаси-компаньон: в архив попасть не должен
-    (doc / "annotations" / "page_001.drafts.json").write_text("[]", encoding="utf-8")
+    (doc / "remarks" / "page_001.drafts.json").write_text("[]", encoding="utf-8")
 
     (doc / "index.html").write_text("""<!DOCTYPE html>
 <html><head><link rel="stylesheet" href="../css/main.css"></head>
@@ -89,7 +89,7 @@ def site(tmp_path):
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="../js/layout.js"></script>
   <script src="../js/comment-content.js"></script>
-  <script src="../js/annotations.js"></script>
+  <script src="../js/remarks.js"></script>
   <script src="../js/mobile.js"></script>
   <script src="../js/main.js?v=tags-1"></script>
   <script src="../js/redpen-editor-panel.js"></script>
@@ -129,7 +129,7 @@ def test_editor_scripts_and_legacy_files_dropped(bundle):
     for name in mob.EDITOR_SCRIPTS:
         assert not os.path.exists(os.path.join(root, "js", name))
     assert not os.path.exists(os.path.join(root, DOC, "document_index.html"))
-    assert not os.path.exists(os.path.join(root, DOC, "annotations", "page_001.drafts.json"))
+    assert not os.path.exists(os.path.join(root, DOC, "remarks", "page_001.drafts.json"))
 
 
 def test_no_network_references(bundle):
@@ -147,7 +147,7 @@ def test_doc_index_loads_offline_data_before_viewer(bundle):
     assert html.index("redpen-offline.js") < html.index("../js/main.js")
     assert html.index("offline-data.js") < html.index("redpen-offline.js")
     # просмотрщик при этом остался на месте
-    assert "../js/annotations.js" in html
+    assert "../js/remarks.js" in html
     assert 'href="../css/main.css"' in html
 
 
@@ -164,16 +164,16 @@ def test_offline_data_covers_every_page(bundle):
     root, _ = bundle
     payload = _parse_offline_data(_read(root, DOC, "offline-data.js"))
     assert payload["metadata"]["title"] == "Тестовая книга"
-    assert sorted(payload["annotations"]) == ["page_001", "page_002"]
+    assert sorted(payload["remarks"]) == ["page_001", "page_002"]
     assert sorted(payload["text"]) == ["page_001", "page_002"]
-    assert payload["annotations"]["page_001"][0]["id"] == "ann-1"
-    assert "page_001.drafts" not in payload["annotations"]
+    assert payload["remarks"]["page_001"][0]["id"] == "ann-1"
+    assert "page_001.drafts" not in payload["remarks"]
 
 
 def test_offline_data_survives_non_ascii(bundle):
     root, _ = bundle
     payload = _parse_offline_data(_read(root, DOC, "offline-data.js"))
-    assert "«ёлки»" in payload["annotations"]["page_001"][0]["text"]
+    assert "«ёлки»" in payload["remarks"]["page_001"][0]["text"]
 
 
 def _parse_offline_data(js):
@@ -190,7 +190,7 @@ def _parse_offline_data(js):
 def test_stats_counted(bundle):
     _root, stats = bundle
     assert stats["pages"] == 2
-    assert stats["annotations"] == 2
+    assert stats["remarks"] == 2
     assert stats["vendoredMarked"] is False
 
 

@@ -2,7 +2,7 @@
 Regression test for scripts/api/storage.py::save_inbox file permissions.
 
 tempfile.mkstemp() defaults to mode 0600 (owner-only); the identical pattern
-in publisher.py/export_annotations.py caused a live 403 once those files
+in publisher.py/export_remarks.py caused a live 403 once those files
 started being served by nginx (see docs/deployment-log.md, 2026-07-09 entry).
 save_inbox() writes into STORAGE_DIR/inbox/, which nginx never serves, but
 the file should still be world-readable for consistency and to avoid

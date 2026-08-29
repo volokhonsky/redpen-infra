@@ -1,10 +1,10 @@
 /**
  * Категория аннотации — один из шести приёмов пропаганды либо «Прочее».
  *
- * Близнец `scripts/annotation_categories.py`, который является источником правды.
+ * Близнец `scripts/remark_categories.py`, который является источником правды.
  * Дублируется, а не импортируется, потому что просмотрщик обязан работать без
  * сети, без сборки и с флешки (docs/README.md, «Ключевое ограничение»).
- * Расхождение двух копий ловит `tests/test_annotation_categories.py` —
+ * Расхождение двух копий ловит `tests/test_remark_categories.py` —
  * правя одну, правь обе.
  *
  * Дизайн и обоснование палитры: docs/annotation-classification-2026-08.md.
@@ -144,7 +144,7 @@
 
   /**
    * РАЗОВАЯ МИГРАЦИЯ, не рантайм: угадать категорию по тегам. Оставлено, чтобы
-   * бэкфилл и тесты считали ровно то же, что scripts/annotation_categories.py.
+   * бэкфилл и тесты считали ровно то же, что scripts/remark_categories.py.
    */
   function categoryForTags(tags) {
     if (!tags || !tags.length) return OTHER;

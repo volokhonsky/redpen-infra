@@ -1,6 +1,6 @@
 """Ревизии аннотаций: непрерывная нумерация, цепочка версий, резюме правки.
 
-`annotation_history` — журнал ревизий, а строка в `annotations` — всего лишь
+`remark_history` — журнал ревизий, а строка в `remarks` — всего лишь
 материализованная «голова» последней из них. На этом инварианте держатся
 карточка комментария, «мои правки» и лента изменений.
 """
@@ -29,15 +29,15 @@ def _fresh_db(tmp_path, monkeypatch):
 
 
 def _upsert(**kwargs):
-    base = dict(doc_id="doc1", page_num="006", ann_id="ann-1",
-                ann_type="comment", text="hello")
+    base = dict(doc_id="doc1", page_num="006", remark_id="ann-1",
+                kind="minor", text="hello")
     base.update(kwargs)
-    return db.upsert_annotation_db(**base)
+    return db.upsert_remark_db(**base)
 
 
-def _revisions(ann_id="ann-1"):
+def _revisions(remark_id="ann-1"):
     # list_history отдаёт свежие первыми; для чтения истории удобнее наоборот.
-    return list(reversed(db.list_history(doc_id="doc1", ann_id=ann_id)))
+    return list(reversed(db.list_history(doc_id="doc1", remark_id=remark_id)))
 
 
 def test_revision_numbers_start_at_one_and_are_continuous():
@@ -57,17 +57,17 @@ def test_revisions_form_a_chain():
     assert revs[2]["parentRevId"] == revs[1]["id"]
 
 
-def test_numbering_is_per_annotation_not_global():
+def test_numbering_is_per_remark_not_global():
     _upsert(action="create")
-    _upsert(ann_id="ann-2", action="create")
-    _upsert(ann_id="ann-2", text="v2")
+    _upsert(remark_id="ann-2", action="create")
+    _upsert(remark_id="ann-2", text="v2")
     assert [r["revNo"] for r in _revisions("ann-1")] == [1]
     assert [r["revNo"] for r in _revisions("ann-2")] == [1, 2]
 
 
 def test_delete_is_a_revision_too():
     _upsert(action="create")
-    db.soft_delete_annotation("doc1", "006", "ann-1")
+    db.soft_delete_remark("doc1", "006", "ann-1")
     revs = _revisions()
     assert [r["action"] for r in revs] == ["create", "delete"]
     assert [r["revNo"] for r in revs] == [1, 2]
@@ -75,11 +75,11 @@ def test_delete_is_a_revision_too():
 
 
 def test_head_equals_the_latest_revision_snapshot():
-    # Главный инвариант: строка в annotations не должна расходиться с журналом.
+    # Главный инвариант: строка в remarks не должна расходиться с журналом.
     _upsert(action="create", category="today", author_id=3)
     head = _upsert(text="edited", coord_x=11, coord_y=22, author_id=3)
     latest = _revisions()[-1]["snapshot"]
-    for field in ("annId", "docId", "pageNum", "annType", "text", "coordX",
+    for field in ("remarkId", "docId", "pageNum", "kind", "text", "coordX",
                   "coordY", "status", "category", "categorySource", "tags"):
         assert latest[field] == head[field], field
 
@@ -109,32 +109,32 @@ def test_legacy_rows_get_numbered_on_migration(tmp_path, monkeypatch):
     conn = sqlite3.connect(legacy)
     conn.executescript(
         """
-        CREATE TABLE annotation_history (
+        CREATE TABLE remark_history (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
-          doc_id TEXT NOT NULL, page_num TEXT NOT NULL, ann_id TEXT NOT NULL,
+          doc_id TEXT NOT NULL, page_num TEXT NOT NULL, remark_id TEXT NOT NULL,
           action TEXT NOT NULL, snapshot TEXT NOT NULL,
           author_id INTEGER, created_at TEXT NOT NULL
         );
         """
     )
     same_time = "2026-08-01T00:00:00"
-    for ann_id, action in (("a", "create"), ("a", "update"), ("b", "create"), ("a", "update")):
+    for remark_id, action in (("a", "create"), ("a", "update"), ("b", "create"), ("a", "update")):
         conn.execute(
-            "INSERT INTO annotation_history (doc_id, page_num, ann_id, action, snapshot,"
+            "INSERT INTO remark_history (doc_id, page_num, remark_id, action, snapshot,"
             " author_id, created_at) VALUES ('doc1','006',?,?,?,NULL,?)",
-            (ann_id, action, json.dumps({}), same_time),
+            (remark_id, action, json.dumps({}), same_time),
         )
     conn.commit()
     conn.close()
 
     monkeypatch.setattr(config, "DB_PATH", legacy)
     db.init_db()
-    assert [r["revNo"] for r in reversed(db.list_history(doc_id="doc1", ann_id="a"))] == [1, 2, 3]
-    assert [r["revNo"] for r in db.list_history(doc_id="doc1", ann_id="b")] == [1]
+    assert [r["revNo"] for r in reversed(db.list_history(doc_id="doc1", remark_id="a"))] == [1, 2, 3]
+    assert [r["revNo"] for r in db.list_history(doc_id="doc1", remark_id="b")] == [1]
 
     # Идемпотентность: повторный init_db ничего не пересчитывает и не ломает.
     db.init_db()
-    assert [r["revNo"] for r in reversed(db.list_history(doc_id="doc1", ann_id="a"))] == [1, 2, 3]
+    assert [r["revNo"] for r in reversed(db.list_history(doc_id="doc1", remark_id="a"))] == [1, 2, 3]
 
 
 def test_new_revisions_continue_after_a_backfill(tmp_path, monkeypatch):
@@ -143,7 +143,7 @@ def test_new_revisions_continue_after_a_backfill(tmp_path, monkeypatch):
     # Симулируем «старые строки без номера» и повторную миграцию.
     conn = db.get_connection()
     with db._lock:
-        conn.execute("UPDATE annotation_history SET rev_no = NULL, parent_rev_id = NULL")
+        conn.execute("UPDATE remark_history SET rev_no = NULL, parent_rev_id = NULL")
         conn.commit()
         db._backfill_revision_numbers(conn)
         conn.commit()

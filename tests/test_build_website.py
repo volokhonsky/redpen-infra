@@ -7,7 +7,7 @@ The build script is hard-wired to ``<project_root>/redpen-content`` and
 directory containing a minimal synthetic book, and symlink the real templates.
 
 These tests assert the CURRENT publish layout, where each document is published
-into ``<target>/<doc>/{annotations,images,text}`` (not flat at the target root,
+into ``<target>/<doc>/{remarks,images,text}`` (not flat at the target root,
 which is what the previous version of this test incorrectly expected).
 """
 
@@ -32,7 +32,7 @@ id: ann-1
 target: page_007_line003
 ~~~
 
-Main annotation.
+Main remark.
 
 ~~~meta
 type: comment
@@ -40,7 +40,7 @@ id: ann-2
 target: [400, 600]
 ~~~
 
-Second annotation.
+Second remark.
 """
 
 
@@ -56,11 +56,11 @@ def _load_build_website():
 def synthetic_project(tmp_path):
     """Create a temp project root with one minimal book and real templates."""
     content = tmp_path / "redpen-content" / DOC
-    (content / "annotations").mkdir(parents=True)
+    (content / "remarks").mkdir(parents=True)
     (content / "images").mkdir()
     (content / "text").mkdir()
 
-    (content / "annotations" / "page_007.md").write_text(_SAMPLE_MD, encoding="utf-8")
+    (content / "remarks" / "page_007.md").write_text(_SAMPLE_MD, encoding="utf-8")
     (content / "text" / "page_007.json").write_text("[]", encoding="utf-8")
     (content / "images" / "page_007.png").write_bytes(_PNG_1x1)
     (content / "meta.json").write_text('{"title": "Test Book"}', encoding="utf-8")
@@ -85,13 +85,13 @@ def test_build_produces_per_document_layout(synthetic_project, tmp_path):
     build, _ = synthetic_project
     target = tmp_path / "out"
 
-    assert build.convert_annotations(str(target)) is True
+    assert build.convert_remarks(str(target)) is True
     assert build.publish_website_data(str(target)) is True
     build.create_index_page(str(target))
 
     doc_dir = target / DOC
     # Per-document content lives under <target>/<doc>/...
-    assert (doc_dir / "annotations" / "page_007.json").is_file()
+    assert (doc_dir / "remarks" / "page_007.json").is_file()
     assert (doc_dir / "images" / "page_007.png").is_file()
     assert (doc_dir / "text" / "page_007.json").is_file()
     assert (doc_dir / "index.html").is_file()
@@ -146,36 +146,36 @@ def test_site_carries_new_branding(synthetic_project, tmp_path):
     assert "Антимифы к единому учебнику. Проверяем избыточные победы." in index_html
 
 
-def test_converted_annotation_json_is_valid(synthetic_project, tmp_path):
+def test_converted_remark_json_is_valid(synthetic_project, tmp_path):
     build, _ = synthetic_project
     target = tmp_path / "out"
-    build.convert_annotations(str(target))
+    build.convert_remarks(str(target))
 
     import json
 
-    data = json.loads((target / DOC / "annotations" / "page_007.json").read_text("utf-8"))
+    data = json.loads((target / DOC / "remarks" / "page_007.json").read_text("utf-8"))
     assert isinstance(data, list) and len(data) == 2
-    assert data[0]["annType"] == "main"
+    assert data[0]["kind"] == "major"
     assert data[0]["targetBlock"] == "page_007_line003"
-    assert data[1]["annType"] == "comment"
+    assert data[1]["kind"] == "minor"
     assert data[1]["coords"] == [400, 600]
 
 
 # ---------------------------------------------------------------------------
-# --annotations-from-md (stage 2, A2.7): md->json conversion is archive-only
-# and off by default so a routine build doesn't clobber annotations/*.json
-# exported from the SQLite DB by scripts/api/export_annotations.py.
+# --remarks-from-md (stage 2, A2.7): md->json conversion is archive-only
+# and off by default so a routine build doesn't clobber remarks/*.json
+# exported from the SQLite DB by scripts/api/export_remarks.py.
 # ---------------------------------------------------------------------------
 
-def test_default_build_does_not_touch_existing_annotations_json(synthetic_project, tmp_path, monkeypatch):
+def test_default_build_does_not_touch_existing_remarks_json(synthetic_project, tmp_path, monkeypatch):
     build, _ = synthetic_project
     target = tmp_path / "out"
 
     # Simulate a page_007.json already exported from the DB, distinct from
     # what md_to_json would produce from the synthetic page_007.md.
-    ann_dir = target / DOC / "annotations"
+    ann_dir = target / DOC / "remarks"
     ann_dir.mkdir(parents=True)
-    exported_marker = '[{"id": "from-db", "text": "exported from db", "annType": "comment"}]'
+    exported_marker = '[{"id": "from-db", "text": "exported from db", "kind": "minor"}]'
     (ann_dir / "page_007.json").write_text(exported_marker, encoding="utf-8")
 
     monkeypatch.setattr(
@@ -187,21 +187,21 @@ def test_default_build_does_not_touch_existing_annotations_json(synthetic_projec
     assert (ann_dir / "page_007.json").read_text("utf-8") == exported_marker
 
 
-def test_annotations_from_md_flag_converts(synthetic_project, tmp_path, monkeypatch):
+def test_remarks_from_md_flag_converts(synthetic_project, tmp_path, monkeypatch):
     build, _ = synthetic_project
     target = tmp_path / "out"
 
     monkeypatch.setattr(
         "sys.argv",
-        ["build_website.py", "--target-dir", str(target), "--skip-tests", "--skip-push", "--annotations-from-md"],
+        ["build_website.py", "--target-dir", str(target), "--skip-tests", "--skip-push", "--remarks-from-md"],
     )
     build.main()
 
     import json
 
-    data = json.loads((target / DOC / "annotations" / "page_007.json").read_text("utf-8"))
+    data = json.loads((target / DOC / "remarks" / "page_007.json").read_text("utf-8"))
     assert isinstance(data, list) and len(data) == 2
-    assert data[0]["annType"] == "main"
+    assert data[0]["kind"] == "major"
 
 
 # ---------------------------------------------------------------------------
@@ -255,23 +255,23 @@ def test_index_page_lists_document_title(synthetic_project, tmp_path):
     assert f"{DOC}/index.html" in index_html   # link to the document
 
 
-def test_count_published_annotations_ignores_drafts(tmp_path):
-    """Drafts share page_NNN.json with published annotations now, so the
+def test_count_published_remarks_ignores_drafts(tmp_path):
+    """Drafts share page_NNN.json with published remarks now, so the
     landing-page counter has to skip them explicitly."""
     build = _load_build_website()
-    ann_dir = tmp_path / "annotations"
+    ann_dir = tmp_path / "remarks"
     ann_dir.mkdir()
     (ann_dir / "page_007.json").write_text(
-        '[{"id": "a1", "text": "x", "annType": "main"},'
-        ' {"id": "d1", "text": "wip", "annType": "main", "draft": true, "tags": ["draft"]}]',
+        '[{"id": "a1", "text": "x", "kind": "major"},'
+        ' {"id": "d1", "text": "wip", "kind": "major", "draft": true, "tags": ["draft"]}]',
         encoding="utf-8",
     )
     # A page holding nothing but drafts must not count as an annotated page.
     (ann_dir / "page_008.json").write_text(
-        '[{"id": "d2", "text": "wip", "annType": "main", "draft": true, "tags": ["draft"]}]',
+        '[{"id": "d2", "text": "wip", "kind": "major", "draft": true, "tags": ["draft"]}]',
         encoding="utf-8",
     )
     # Legacy sidecars are still skipped.
-    (ann_dir / "page_009.drafts.json").write_text('[{"id": "d3", "text": "x", "annType": "main"}]', encoding="utf-8")
+    (ann_dir / "page_009.drafts.json").write_text('[{"id": "d3", "text": "x", "kind": "major"}]', encoding="utf-8")
 
-    assert build._count_published_annotations(str(tmp_path)) == {"annotations": 1, "pages": 1}
+    assert build._count_published_remarks(str(tmp_path)) == {"remarks": 1, "pages": 1}

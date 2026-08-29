@@ -77,7 +77,8 @@ def test_classify_reader_page():
 
 @pytest.mark.parametrize("uri,kind", [
     ("/medinsky10klass/images/page_006.png", "image"),
-    ("/medinsky11klass/annotations/page_017.json", "data"),
+    ("/medinsky11klass/remarks/page_017.json", "data"),
+    ("/medinsky11klass/remarks/page_017.json", "data"),
     ("/medinsky11klass/", "doc"),
     ("/", "home"),
     ("/blog/why/", "blog"),
@@ -92,7 +93,7 @@ def test_classify_kinds(uri, kind):
 
 
 @pytest.mark.parametrize("uri", [
-    "/app/", "/app/index.html", "/cabinet/", "/api/annotations/x/y",
+    "/app/", "/app/index.html", "/cabinet/", "/api/remarks/x/y",
     "/.hooks/redpen-publish",
     "/medinsky11klass/pages/17/?editor=1",
 ])
@@ -104,7 +105,7 @@ def test_editor_traffic_is_private(uri):
 
 def test_permalink_and_legacy_params():
     info = analytics.classify_path("/medinsky11klass/pages/17/?only=circle-3")
-    assert info["ann_id"] == "circle-3"
+    assert info["remark_id"] == "circle-3"
     assert analytics.classify_path("/?page=17")["legacy_param"] == "17"
     assert analytics.classify_path("/medinsky11klass/pages/17/?tags=draft")["tag_filter"]
 
@@ -378,8 +379,8 @@ def test_report_shows_demand_without_coverage(tmp_path, log_dir, site_dir):
     """Главный вопрос отчёта: какие страницы читают, хотя разбора там нет."""
     content_db = tmp_path / "redpen.db"
     conn = redpen_stats.sqlite3.connect(str(content_db))
-    conn.execute("CREATE TABLE annotations (doc_id TEXT, page_num TEXT, status TEXT)")
-    conn.executemany("INSERT INTO annotations VALUES (?, ?, ?)", [
+    conn.execute("CREATE TABLE remarks (doc_id TEXT, page_num TEXT, status TEXT)")
+    conn.executemany("INSERT INTO remarks VALUES (?, ?, ?)", [
         ("medinsky11klass", "017", "published"),   # разобрана
         ("medinsky11klass", "018", "draft"),       # только черновики
     ])
@@ -390,7 +391,7 @@ def test_report_shows_demand_without_coverage(tmp_path, log_dir, site_dir):
     redpen_stats.ingest(stats, log_dir, ("medinsky.net",))
     text = redpen_stats.report(stats, days=3650, site_dir=site_dir,
                                content_db=str(content_db))
-    demand = text.split("== Спрос против покрытия")[1].split("== Комментарии")[0]
+    demand = text.split("== Спрос против покрытия")[1].split("== Замечания")[0]
     assert "\n  medinsky11klass  18 " in demand
     assert "\n  medinsky11klass  17 " not in demand
 
@@ -449,7 +450,7 @@ def test_same_page_from_outside_still_counts():
         log_line(uri="/medinsky11klass/pages/210/?only=circle-2",
                  referer="https://t.me/channel"))
     hit = analytics.build_hit(parsed, ("medinsky.net",))
-    assert hit is not None and hit["ann_id"] == "circle-2"
+    assert hit is not None and hit["remark_id"] == "circle-2"
 
 
 def test_export_drops_preview_traffic(tmp_path, site_dir):

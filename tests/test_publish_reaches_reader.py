@@ -2,7 +2,7 @@
 
 Постраничный просмотрщик ничего не загружает (инвариант офлайна): аннотации
 приезжают к нему инлайновым блоком `redpen-page-data`, вшитым в HTML. Пока
-публикатор писал только `annotations/page_NNN.json`, правка через редактор
+публикатор писал только `remarks/page_NNN.json`, правка через редактор
 обновляла файл, который на новых адресах не читает никто.
 """
 
@@ -41,7 +41,7 @@ def site(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", os.path.join(tmp_path, "redpen.db"))
     publish_dir = os.path.join(tmp_path, "site")
     doc_dir = os.path.join(publish_dir, DOC)
-    os.makedirs(os.path.join(doc_dir, "annotations"))
+    os.makedirs(os.path.join(doc_dir, "remarks"))
     with open(os.path.join(doc_dir, "metadata.json"), "w", encoding="utf-8") as f:
         json.dump(MANIFEST, f, ensure_ascii=False)
     monkeypatch.setattr(config, "PUBLISH_DIR", publish_dir)
@@ -67,7 +67,7 @@ def _inline_data(html):
 
 
 def test_publishing_writes_the_reader_page(site):
-    db.upsert_annotation_db(DOC, "006", "a1", "main", "Видно ли это читателю",
+    db.upsert_remark_db(DOC, "006", "a1", "major", "Видно ли это читателю",
                             coord_x=10, coord_y=20, action="create",
                             category="omission")
     assert publisher.publish_page(DOC, "006") is True
@@ -78,14 +78,14 @@ def test_publishing_writes_the_reader_page(site):
 
 
 def test_inline_block_matches_the_json(site):
-    db.upsert_annotation_db(DOC, "006", "a1", "main", "первая", coord_x=1, coord_y=1,
+    db.upsert_remark_db(DOC, "006", "a1", "major", "первая", coord_x=1, coord_y=1,
                             action="create", category="today")
-    db.upsert_annotation_db(DOC, "006", "a2", "comment", "черновик", coord_x=2, coord_y=2,
+    db.upsert_remark_db(DOC, "006", "a2", "minor", "черновик", coord_x=2, coord_y=2,
                             action="create", status="draft")
     publisher.publish_page(DOC, "006")
 
     inline = _inline_data(_page_html(site, "6"))
-    with open(os.path.join(site, "annotations", "page_006.json"), encoding="utf-8") as f:
+    with open(os.path.join(site, "remarks", "page_006.json"), encoding="utf-8") as f:
         on_disk = json.load(f)
 
     assert [a["id"] for a in inline] == [a["id"] for a in on_disk]
@@ -95,12 +95,12 @@ def test_inline_block_matches_the_json(site):
 
 
 def test_edit_updates_the_reader_page(site):
-    db.upsert_annotation_db(DOC, "006", "a1", "main", "старый текст",
+    db.upsert_remark_db(DOC, "006", "a1", "major", "старый текст",
                             coord_x=1, coord_y=1, action="create")
     publisher.publish_page(DOC, "006")
     assert "старый текст" in _page_html(site, "6")
 
-    db.upsert_annotation_db(DOC, "006", "a1", "main", "новый текст",
+    db.upsert_remark_db(DOC, "006", "a1", "major", "новый текст",
                             coord_x=1, coord_y=1)
     publisher.publish_page(DOC, "006")
 
@@ -110,18 +110,18 @@ def test_edit_updates_the_reader_page(site):
 
 
 def test_delete_removes_it_from_the_reader_page(site):
-    db.upsert_annotation_db(DOC, "006", "a1", "main", "будет удалена",
+    db.upsert_remark_db(DOC, "006", "a1", "major", "будет удалена",
                             coord_x=1, coord_y=1, action="create")
     publisher.publish_page(DOC, "006")
-    db.soft_delete_annotation(DOC, "006", "a1")
+    db.soft_delete_remark(DOC, "006", "a1")
     publisher.publish_page(DOC, "006")
     assert "будет удалена" not in _page_html(site, "6")
 
 
 def test_only_the_touched_page_is_rewritten(site):
-    db.upsert_annotation_db(DOC, "006", "a1", "main", "стр 6", coord_x=1, coord_y=1,
+    db.upsert_remark_db(DOC, "006", "a1", "major", "стр 6", coord_x=1, coord_y=1,
                             action="create")
-    db.upsert_annotation_db(DOC, "007", "b1", "main", "стр 7", coord_x=1, coord_y=1,
+    db.upsert_remark_db(DOC, "007", "b1", "major", "стр 7", coord_x=1, coord_y=1,
                             action="create")
     publisher.publish_page(DOC, "006")
     assert _page_html(site, "6") is not None
@@ -139,10 +139,10 @@ def test_missing_manifest_does_not_break_publication(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "PUBLISH_DIR", publish_dir)
     db.init_db()
     try:
-        db.upsert_annotation_db(DOC, "006", "a1", "main", "текст", coord_x=1, coord_y=1,
+        db.upsert_remark_db(DOC, "006", "a1", "major", "текст", coord_x=1, coord_y=1,
                                 action="create")
         assert publisher.publish_page(DOC, "006") is True
-        assert os.path.exists(os.path.join(publish_dir, DOC, "annotations", "page_006.json"))
+        assert os.path.exists(os.path.join(publish_dir, DOC, "remarks", "page_006.json"))
         assert not os.path.exists(os.path.join(publish_dir, DOC, "pages"))
     finally:
         db._conn.close()
@@ -150,16 +150,16 @@ def test_missing_manifest_does_not_break_publication(tmp_path, monkeypatch):
 
 
 def test_page_outside_the_manifest_is_skipped(site):
-    db.upsert_annotation_db(DOC, "099", "a1", "main", "нет такой страницы",
+    db.upsert_remark_db(DOC, "099", "a1", "major", "нет такой страницы",
                             coord_x=1, coord_y=1, action="create")
     assert publisher.publish_page(DOC, "099") is True
     assert _page_html(site, "99") is None
 
 
 def test_publish_all_heals_reader_pages(site):
-    db.upsert_annotation_db(DOC, "006", "a1", "main", "стр 6", coord_x=1, coord_y=1,
+    db.upsert_remark_db(DOC, "006", "a1", "major", "стр 6", coord_x=1, coord_y=1,
                             action="create")
-    db.upsert_annotation_db(DOC, "007", "b1", "main", "стр 7", coord_x=1, coord_y=1,
+    db.upsert_remark_db(DOC, "007", "b1", "major", "стр 7", coord_x=1, coord_y=1,
                             action="create")
     result = publisher.publish_all()
     assert result["failed"] == 0
@@ -176,7 +176,7 @@ def test_reader_page_stamp_has_no_time_of_day(site):
     """
     import re
 
-    db.upsert_annotation_db(DOC, "006", "a1", "main", "текст", coord_x=1, coord_y=1,
+    db.upsert_remark_db(DOC, "006", "a1", "major", "текст", coord_x=1, coord_y=1,
                             action="create")
     publisher.publish_page(DOC, "006")
 
@@ -195,7 +195,7 @@ def test_unwritable_pages_dir_does_not_break_json_publication(site):
     """
     import stat
 
-    db.upsert_annotation_db(DOC, "006", "a1", "main", "текст", coord_x=1, coord_y=1,
+    db.upsert_remark_db(DOC, "006", "a1", "major", "текст", coord_x=1, coord_y=1,
                             action="create")
     publisher.publish_page(DOC, "006")
 
@@ -203,10 +203,10 @@ def test_unwritable_pages_dir_does_not_break_json_publication(site):
     mode = os.stat(pages_dir).st_mode
     os.chmod(pages_dir, stat.S_IRUSR | stat.S_IXUSR)  # только чтение
     try:
-        db.upsert_annotation_db(DOC, "006", "a1", "main", "новый текст",
+        db.upsert_remark_db(DOC, "006", "a1", "major", "новый текст",
                                 coord_x=1, coord_y=1)
         assert publisher.publish_page(DOC, "006") is True
-        with open(os.path.join(site, "annotations", "page_006.json"), encoding="utf-8") as f:
+        with open(os.path.join(site, "remarks", "page_006.json"), encoding="utf-8") as f:
             assert "новый текст" in f.read()
     finally:
         os.chmod(pages_dir, mode)

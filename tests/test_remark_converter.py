@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-test_annotation_converter.py
+test_remark_converter.py
 
-Automated tests for the annotation_converter.py script.
+Automated tests for the remark_converter.py script.
 
-This script tests the conversion between JSON and Markdown annotation formats
+This script tests the conversion between JSON and Markdown remark formats
 in both directions, ensuring that the conversion is correct and consistent.
 
 Usage:
-    python -m unittest tests/test_annotation_converter.py
+    python -m unittest tests/test_remark_converter.py
 """
 
 import unittest
@@ -21,10 +21,10 @@ import shutil
 # Add the scripts directory to the Python path
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 
-# Import the functions from the annotation_converter.py script
-from annotation_converter import (
+# Import the functions from the remark_converter.py script
+from remark_converter import (
     convert_json_to_md,
-    parse_markdown_annotation,
+    parse_markdown_remark,
     parse_tags_field,
     json_to_md,
     md_to_json
@@ -42,7 +42,7 @@ class TestTags(unittest.TestCase):
         self.assertEqual(parse_tags_field(''), [])
         self.assertEqual(parse_tags_field(None), [])
 
-    def test_meta_tags_and_confidence_reach_the_annotation(self):
+    def test_meta_tags_and_confidence_reach_the_remark(self):
         md = (
             "~~~meta\n"
             "type: main\n"
@@ -53,25 +53,25 @@ class TestTags(unittest.TestCase):
             "~~~\n\n"
             "Текст аннотации\n"
         )
-        ann = parse_markdown_annotation(md)[0]
+        ann = parse_markdown_remark(md)[0]
         self.assertEqual(ann['tags'], ['omission', 'tc-usa-origin', 'confidence:high'])
         self.assertEqual(ann['coords'], [350, 255])
 
-    def test_annotation_without_tags_has_no_tags_key(self):
+    def test_remark_without_tags_has_no_tags_key(self):
         md = "~~~meta\ntype: comment\nid: ann-1\n~~~\n\nТекст\n"
-        self.assertNotIn('tags', parse_markdown_annotation(md)[0])
+        self.assertNotIn('tags', parse_markdown_remark(md)[0])
 
     def test_tags_round_trip_through_md(self):
         with tempfile.TemporaryDirectory() as tmp:
             src = os.path.join(tmp, 'page_007.json')
             with open(src, 'w', encoding='utf-8') as f:
-                json.dump([{"id": "a1", "text": "t", "annType": "main",
+                json.dump([{"id": "a1", "text": "t", "kind": "major",
                             "coords": [1, 2], "tags": ["omission", "framing"]}], f)
-            back = parse_markdown_annotation(convert_json_to_md(src))[0]
+            back = parse_markdown_remark(convert_json_to_md(src))[0]
             self.assertEqual(back['tags'], ['omission', 'framing'])
 
-class TestAnnotationConverter(unittest.TestCase):
-    """Test cases for the annotation_converter.py script."""
+class TestRemarkConverter(unittest.TestCase):
+    """Test cases for the remark_converter.py script."""
 
     def setUp(self):
         """Set up the test environment."""
@@ -84,9 +84,9 @@ class TestAnnotationConverter(unittest.TestCase):
 
     def test_convert_json_to_md(self):
         """Test the conversion from JSON to Markdown."""
-        # Test with a file containing annotations
-        json_file = os.path.join(self.test_data_dir, 'test_annotations.json')
-        expected_md_file = os.path.join(self.test_data_dir, 'test_annotations.md')
+        # Test with a file containing remarks
+        json_file = os.path.join(self.test_data_dir, 'test_remarks.json')
+        expected_md_file = os.path.join(self.test_data_dir, 'test_remarks.md')
 
         # Convert JSON to Markdown
         md_content = convert_json_to_md(json_file)
@@ -99,8 +99,8 @@ class TestAnnotationConverter(unittest.TestCase):
         self.assertEqual(md_content.strip(), expected_md_content.strip())
 
         # Test with an empty file
-        json_file = os.path.join(self.test_data_dir, 'empty_annotations.json')
-        expected_md_file = os.path.join(self.test_data_dir, 'empty_annotations.md')
+        json_file = os.path.join(self.test_data_dir, 'empty_remarks.json')
+        expected_md_file = os.path.join(self.test_data_dir, 'empty_remarks.md')
 
         # Convert JSON to Markdown
         md_content = convert_json_to_md(json_file)
@@ -112,43 +112,43 @@ class TestAnnotationConverter(unittest.TestCase):
         # Compare the converted content with the expected content
         self.assertEqual(md_content.strip(), expected_md_content.strip())
 
-    def test_parse_markdown_annotation(self):
-        """Test parsing Markdown annotations."""
-        # Test with a file containing annotations
-        md_file = os.path.join(self.test_data_dir, 'test_annotations.md')
-        expected_json_file = os.path.join(self.test_data_dir, 'test_annotations.json')
+    def test_parse_markdown_remark(self):
+        """Test parsing Markdown remarks."""
+        # Test with a file containing remarks
+        md_file = os.path.join(self.test_data_dir, 'test_remarks.md')
+        expected_json_file = os.path.join(self.test_data_dir, 'test_remarks.json')
 
         # Read the Markdown content
         with open(md_file, 'r', encoding='utf-8') as f:
             md_content = f.read()
 
         # Parse the Markdown content
-        annotations = parse_markdown_annotation(md_content)
+        remarks = parse_markdown_remark(md_content)
 
         # Read the expected JSON content
         with open(expected_json_file, 'r', encoding='utf-8') as f:
-            expected_annotations = json.load(f)
+            expected_remarks = json.load(f)
 
-        # Compare the parsed annotations with the expected annotations
-        self.assertEqual(annotations, expected_annotations)
+        # Compare the parsed remarks with the expected remarks
+        self.assertEqual(remarks, expected_remarks)
 
         # Test with an empty file
-        md_file = os.path.join(self.test_data_dir, 'empty_annotations.md')
-        expected_json_file = os.path.join(self.test_data_dir, 'empty_annotations.json')
+        md_file = os.path.join(self.test_data_dir, 'empty_remarks.md')
+        expected_json_file = os.path.join(self.test_data_dir, 'empty_remarks.json')
 
         # Read the Markdown content
         with open(md_file, 'r', encoding='utf-8') as f:
             md_content = f.read()
 
         # Parse the Markdown content
-        annotations = parse_markdown_annotation(md_content)
+        remarks = parse_markdown_remark(md_content)
 
         # Read the expected JSON content
         with open(expected_json_file, 'r', encoding='utf-8') as f:
-            expected_annotations = json.load(f)
+            expected_remarks = json.load(f)
 
-        # Compare the parsed annotations with the expected annotations
-        self.assertEqual(annotations, expected_annotations)
+        # Compare the parsed remarks with the expected remarks
+        self.assertEqual(remarks, expected_remarks)
 
     def test_fence_with_trailing_whitespace_still_separates(self):
         """Пробел после закрывающего ~~~ не должен склеивать аннотации."""
@@ -167,11 +167,11 @@ class TestAnnotationConverter(unittest.TestCase):
             "Вторая.\n"
         )
 
-        annotations = parse_markdown_annotation(md_content)
+        remarks = parse_markdown_remark(md_content)
 
-        self.assertEqual([a['id'] for a in annotations], ['ann-1', 'ann-2'])
-        self.assertEqual(annotations[0]['text'], 'Первая.')
-        self.assertEqual(annotations[1]['text'], 'Вторая.')
+        self.assertEqual([a['id'] for a in remarks], ['ann-1', 'ann-2'])
+        self.assertEqual(remarks[0]['text'], 'Первая.')
+        self.assertEqual(remarks[1]['text'], 'Вторая.')
 
     def test_json_to_md_directory(self):
         """Test the conversion from JSON to Markdown for a directory."""
@@ -182,7 +182,7 @@ class TestAnnotationConverter(unittest.TestCase):
         os.makedirs(md_dir, exist_ok=True)
 
         # Copy test JSON files to the input directory
-        for filename in ['test_annotations.json', 'empty_annotations.json']:
+        for filename in ['test_remarks.json', 'empty_remarks.json']:
             src = os.path.join(self.test_data_dir, filename)
             dst = os.path.join(json_dir, filename)
             shutil.copy2(src, dst)
@@ -191,7 +191,7 @@ class TestAnnotationConverter(unittest.TestCase):
         json_to_md(json_dir, md_dir)
 
         # Check that the output files exist and have the correct content
-        for filename in ['test_annotations.md', 'empty_annotations.md']:
+        for filename in ['test_remarks.md', 'empty_remarks.md']:
             expected_file = os.path.join(self.test_data_dir, filename)
             output_file = os.path.join(md_dir, filename)
 
@@ -216,7 +216,7 @@ class TestAnnotationConverter(unittest.TestCase):
         os.makedirs(json_dir, exist_ok=True)
 
         # Copy test Markdown files to the input directory
-        for filename in ['test_annotations.md', 'empty_annotations.md']:
+        for filename in ['test_remarks.md', 'empty_remarks.md']:
             src = os.path.join(self.test_data_dir, filename)
             dst = os.path.join(md_dir, filename)
             shutil.copy2(src, dst)
@@ -225,7 +225,7 @@ class TestAnnotationConverter(unittest.TestCase):
         md_to_json(md_dir, json_dir)
 
         # Check that the output files exist and have the correct content
-        for filename in ['test_annotations.json', 'empty_annotations.json']:
+        for filename in ['test_remarks.json', 'empty_remarks.json']:
             expected_file = os.path.join(self.test_data_dir, filename)
             output_file = os.path.join(json_dir, filename)
 
@@ -252,7 +252,7 @@ class TestAnnotationConverter(unittest.TestCase):
         os.makedirs(json_final_dir, exist_ok=True)
 
         # Copy test JSON files to the input directory
-        for filename in ['test_annotations.json', 'empty_annotations.json']:
+        for filename in ['test_remarks.json', 'empty_remarks.json']:
             src = os.path.join(self.test_data_dir, filename)
             dst = os.path.join(json_dir, filename)
             shutil.copy2(src, dst)
@@ -264,7 +264,7 @@ class TestAnnotationConverter(unittest.TestCase):
         md_to_json(md_dir, json_final_dir)
 
         # Check that the final JSON files match the original JSON files
-        for filename in ['test_annotations.json', 'empty_annotations.json']:
+        for filename in ['test_remarks.json', 'empty_remarks.json']:
             original_file = os.path.join(json_dir, filename)
             final_file = os.path.join(json_final_dir, filename)
 

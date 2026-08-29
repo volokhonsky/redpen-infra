@@ -1,14 +1,14 @@
-# Annotation Positioning Tests Summary
+# Remark Positioning Tests Summary
 
 ## Overview
 
-As requested in the issue description, I've created a series of automated tests that verify the positioning of annotation circles at different screen widths and during window resizing. The tests focus on page 7 of the RedPen application and ensure that the circles are positioned correctly at desktop width (1280px), mobile width (800px), and during resizing between these widths.
+As requested in the issue description, I've created a series of automated tests that verify the positioning of remark circles at different screen widths and during window resizing. The tests focus on page 7 of the RedPen application and ensure that the circles are positioned correctly at desktop width (1280px), mobile width (800px), and during resizing between these widths.
 
 ## Implementation Details
 
 The implementation consists of:
 
-1. **A Playwright-based test script** (`tests/annotation_position_tests.py`) that:
+1. **A Playwright-based test script** (`tests/remark_position_tests.py`) that:
    - Measures circle positions at desktop width (1280px)
    - Measures circle positions at mobile width (800px)
    - Tests resizing from desktop to mobile
@@ -16,7 +16,7 @@ The implementation consists of:
    - Compares positions against baseline values
    - Takes screenshots for visual verification
 
-2. **A shell script** (`tests/run_annotation_tests.sh`) that:
+2. **A shell script** (`tests/run_remark_tests.sh`) that:
    - Installs dependencies
    - Runs the tests
    - Provides options to update baseline positions
@@ -40,7 +40,7 @@ To run the tests and establish a baseline:
 
 1. Run the tests with the update baseline flag:
    ```bash
-   ./tests/run_annotation_tests.sh --update-baseline
+   ./tests/run_remark_tests.sh --update-baseline
    ```
 
 2. This will:
@@ -51,7 +51,7 @@ To run the tests and establish a baseline:
 
 3. For future runs, simply use:
    ```bash
-   ./tests/run_annotation_tests.sh
+   ./tests/run_remark_tests.sh
    ```
 
 4. This will:
@@ -90,4 +90,4 @@ The test suite includes 10 distinct test scenarios:
 
 ## Conclusion
 
-These tests provide a comprehensive way to verify that annotation circles are positioned correctly at different screen widths and during window resizing. By establishing a baseline of correct positions and comparing against it, we can ensure that future changes to the codebase don't break the positioning of annotation circles.
+These tests provide a comprehensive way to verify that remark circles are positioned correctly at different screen widths and during window resizing. By establishing a baseline of correct positions and comparing against it, we can ensure that future changes to the codebase don't break the positioning of remark circles.

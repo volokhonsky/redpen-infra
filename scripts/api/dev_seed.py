@@ -60,8 +60,8 @@ def _import_page(doc_id, page_num, path):
     for item in items:
         tags = [t for t in (item.get("tags") or []) if not t.startswith("cat:")]
         tags = [t for t in tags if t not in db.RESERVED_TAGS]
-        db.upsert_annotation_db(
-            doc_id, page_num, item["id"], item.get("annType", "comment"),
+        db.upsert_remark_db(
+            doc_id, page_num, item["id"], item.get("kind", "comment"),
             item.get("text", ""),
             coord_x=(item.get("coords") or [None, None])[0],
             coord_y=(item.get("coords") or [None, None])[1],
@@ -102,7 +102,7 @@ def main() -> int:
     wanted = _parse_pages(args.pages)
     total = 0
     pages = 0
-    pattern = os.path.join(args.publish_dir, args.doc, "annotations", "page_*.json")
+    pattern = os.path.join(args.publish_dir, args.doc, "remarks", "page_*.json")
     for path in sorted(glob.glob(pattern)):
         page_num = os.path.basename(path)[len("page_"):-len(".json")]
         if wanted is not None and page_num not in wanted:

@@ -36,10 +36,13 @@ publish_from_repo() {
   set -e
   sync_log "Publishing to /srv/public via staging"
   rm -rf /srv/staging && mkdir -p /srv/staging
-  # */annotations/ is owned by the API (stage 2: SQLite is canonical, the API's
+  # */remarks/ is owned by the API (stage 2: SQLite is canonical, the API's
   # publisher.py writes page_NNN.json straight into /srv/public). Excluding it
   # here (without --delete-excluded) also protects it from --delete below.
-  rsync -a --delete --exclude ".git" --exclude "/*/annotations/" /srv/repo/ /srv/staging/
+  # */annotations/ is the pre-rename name of the same directory: it stays
+  # excluded while the publisher still double-writes there (see the rename
+  # plan, phase 6). Dropping either exclude wipes live data.
+  rsync -a --delete --exclude ".git" --exclude "/*/annotations/" --exclude "/*/remarks/" /srv/repo/ /srv/staging/
 
   # Generate app-config.js into staging
   if [ -n "${API_BASE_URL}" ]; then
@@ -50,12 +53,14 @@ publish_from_repo() {
   /usr/bin/env python3 /app/content_sync.py --mutate-only --staging /srv/staging || true
 
   # Sync to public (shared volume)
-  rsync -a --delete --exclude "/*/annotations/" /srv/staging/ /srv/public/
+  rsync -a --delete --exclude "/*/annotations/" --exclude "/*/remarks/" /srv/staging/ /srv/public/
 
   # Каталоги, куда пишет API (uid 10001): этот процесс работает от root, и после
   # rsync владельцем снова становится root.
   #
-  #   annotations — канон публикации, владелец API с этапа 2;
+  #   remarks     — канон публикации, владелец API с этапа 2;
+  #   annotations — прежнее имя того же каталога, живо, пока publisher
+  #                 дублирует запись туда;
   #   pages       — HTML читателя. У него два писателя: сборка (через git и этот
   #                 rsync) и API, который перерисовывает затронутую страницу на
   #                 каждую правку. Просмотрщик читает аннотации не из JSON, а из
@@ -64,7 +69,7 @@ publish_from_repo() {
   if [ -d /srv/public ]; then
     for doc_dir in /srv/public/*/; do
       [ -d "$doc_dir" ] || continue
-      for owned in annotations pages; do
+      for owned in annotations remarks pages; do
         mkdir -p "${doc_dir}${owned}"
         chown -R 10001:10001 "${doc_dir}${owned}"
       done

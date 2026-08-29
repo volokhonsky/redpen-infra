@@ -5,7 +5,7 @@ redpen-content/<docId>/paragraphs_list.txt.
 Why this exists: the hand-maintained `chapters` in meta.json had lost §10-§23
 (~170 pages had no section at all), and its sections carried only `startPage`,
 so "which paragraph is this page in?" had to be guessed as "the last section
-whose startPage <= page". paragraphs_list.txt -- which the annotation pipeline
+whose startPage <= page". paragraphs_list.txt -- which the remark pipeline
 already relies on (see docs/annotation-agent-prompt.md) -- has every entry with
 both bounds, so the mapping becomes exact.
 
@@ -220,7 +220,7 @@ def write_chapters(doc_dir: str, chapters: List[Dict[str, Any]]) -> None:
 
 def generate(doc_dir: str, paragraphs_path: str) -> Optional[List[Dict[str, Any]]]:
     """Returns the written chapters, or None if the document has no
-    paragraphs_list.txt (expected for documents outside the annotation
+    paragraphs_list.txt (expected for documents outside the remark
     pipeline, not an error)."""
     if not os.path.exists(paragraphs_path):
         print(f"[chapters] {paragraphs_path} not found; leaving chapters in metadata.json untouched")

@@ -184,7 +184,7 @@ def test_page_blob_and_panel_agree_on_category(tmp_path):
     разъедутся по цвету — так уже случалось с белым списком ключей блоба."""
     import page_html
 
-    ann = {"id": "a-1", "text": "x", "annType": "main", "coords": [1, 2],
+    ann = {"id": "a-1", "text": "x", "kind": "major", "coords": [1, 2],
            "category": "today", "tags": ["anachronism", "cat:today"]}
 
     blob = page_html._page_data_blob([ann])

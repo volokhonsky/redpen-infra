@@ -1,18 +1,18 @@
 """
-CLI: import existing annotations/page_*.json files into the SQLite store
+CLI: import existing remarks/page_*.json files into the SQLite store
 (db.py), stage 2 (docs/agent-instructions-stage-2.md, A2.3).
 
 Usage:
-    python import_annotations.py <source_dir> [--doc <docId>] [--dry-run] [--overwrite]
+    python import_remarks.py <source_dir> [--doc <docId>] [--dry-run] [--overwrite]
 
-Walks <source_dir>/<docId>/annotations/page_*.json for every docId under
+Walks <source_dir>/<docId>/remarks/page_*.json for every docId under
 source_dir (or just the one given via --doc). Accepts both the current bare
--array format and the legacy page-object format ({"annotations": [...]})
+-array format and the legacy page-object format ({"remarks": [...]})
 that older versions of the API wrote to the mounted working copy.
 
-Idempotent by default: an existing (doc_id, page_num, ann_id) row is left
-alone (counted as skipped). --overwrite updates text/annType/coords instead.
-Imported rows get action="import" in annotation_history with author_id=NULL.
+Idempotent by default: an existing (doc_id, page_num, remark_id) row is left
+alone (counted as skipped). --overwrite updates text/kind/coords instead.
+Imported rows get action="import" in remark_history with author_id=NULL.
 This script never publishes -- run publish_all() (or restart the API) after.
 """
 
@@ -38,12 +38,12 @@ PAGE_FILE_RE = re.compile(r"^page_(-?\d+)\.json$")
 
 def _iter_doc_dirs(source_dir: str, doc_id: Optional[str]) -> List[str]:
     if doc_id:
-        return [doc_id] if os.path.isdir(os.path.join(source_dir, doc_id, "annotations")) else []
+        return [doc_id] if os.path.isdir(os.path.join(source_dir, doc_id, "remarks")) else []
     result = []
     if not os.path.isdir(source_dir):
         return result
     for name in sorted(os.listdir(source_dir)):
-        if os.path.isdir(os.path.join(source_dir, name, "annotations")):
+        if os.path.isdir(os.path.join(source_dir, name, "remarks")):
             result.append(name)
     return result
 
@@ -51,7 +51,7 @@ def _iter_doc_dirs(source_dir: str, doc_id: Optional[str]) -> List[str]:
 def _iter_page_files(source_dir: str, doc_id: str) -> List[Tuple[str, str]]:
     """Return [(page_num, file_path), ...], page_num taken verbatim from the
     filename (so "000"/"-01" survive as-is), sorted by filename."""
-    ann_dir = os.path.join(source_dir, doc_id, "annotations")
+    ann_dir = os.path.join(source_dir, doc_id, "remarks")
     if not os.path.isdir(ann_dir):
         return []
     out = []
@@ -63,13 +63,13 @@ def _iter_page_files(source_dir: str, doc_id: str) -> List[Tuple[str, str]]:
     return out
 
 
-def _extract_annotations(data: Any) -> List[Dict[str, Any]]:
-    """Accept both the bare-array format and the legacy {"annotations": [...]}
+def _extract_remarks(data: Any) -> List[Dict[str, Any]]:
+    """Accept both the bare-array format and the legacy {"remarks": [...]}
     page-object format."""
     if isinstance(data, list):
         return [a for a in data if isinstance(a, dict)]
     if isinstance(data, dict):
-        anns = data.get("annotations")
+        anns = data.get("remarks")
         if isinstance(anns, list):
             return [a for a in anns if isinstance(a, dict)]
     return []
@@ -95,13 +95,13 @@ def import_file(doc_id: str, page_num: str, path: str, overwrite: bool, dry_run:
         counts["errors"] += 1
         return counts
 
-    for ann in _extract_annotations(data):
+    for ann in _extract_remarks(data):
         raw_id = ann.get("id")
-        ann_id = raw_id.strip() if isinstance(raw_id, str) and raw_id.strip() else f"srv-import-{secrets.token_hex(4)}"
+        remark_id = raw_id.strip() if isinstance(raw_id, str) and raw_id.strip() else f"srv-import-{secrets.token_hex(4)}"
 
-        ann_type = ann.get("annType")
-        if not isinstance(ann_type, str) or not ann_type.strip():
-            ann_type = "comment"
+        remark_kind = ann.get("kind")
+        if not isinstance(remark_kind, str) or not remark_kind.strip():
+            remark_kind = "comment"
 
         text = ann.get("text")
         if not isinstance(text, str):
@@ -109,7 +109,7 @@ def import_file(doc_id: str, page_num: str, path: str, overwrite: bool, dry_run:
 
         coord_x, coord_y = _normalize_coords(ann)
 
-        # Absent "tags" leaves an existing annotation's tags alone; unknown or
+        # Absent "tags" leaves an existing remark's tags alone; unknown or
         # reserved tags abort the file rather than land half-imported.
         # Категория: как и теги, отсутствие ключа = «не трогать», чтобы повторный
         # импорт не сбрасывал уже проставленные категории в «Прочее».
@@ -125,21 +125,21 @@ def import_file(doc_id: str, page_num: str, path: str, overwrite: bool, dry_run:
             try:
                 tags = db.normalize_tags(ann["tags"])
             except db.TagError as exc:
-                print(f"  {path}: {ann_id}: {exc}", file=sys.stderr)
+                print(f"  {path}: {remark_id}: {exc}", file=sys.stderr)
                 counts["errors"] += 1
                 continue
 
-        existing = db.get_annotation(doc_id, page_num, ann_id)
+        existing = db.get_remark(doc_id, page_num, remark_id)
         if existing is not None and not overwrite:
             counts["skipped"] += 1
             continue
 
         if not dry_run:
-            db.upsert_annotation_db(
+            db.upsert_remark_db(
                 doc_id,
                 page_num,
-                ann_id,
-                ann_type,
+                remark_id,
+                remark_kind,
                 text,
                 coord_x=coord_x,
                 coord_y=coord_y,
@@ -175,13 +175,13 @@ def run(source_dir: str, doc_id: Optional[str], overwrite: bool, dry_run: bool, 
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("source_dir", help="Directory containing <docId>/annotations/page_*.json")
+    parser.add_argument("source_dir", help="Directory containing <docId>/remarks/page_*.json")
     parser.add_argument("--doc", dest="doc_id", default=None, help="Import only this docId")
     parser.add_argument("--dry-run", action="store_true", help="Report counts without writing to the DB")
-    parser.add_argument("--overwrite", action="store_true", help="Update existing annotations instead of skipping them")
+    parser.add_argument("--overwrite", action="store_true", help="Update existing remarks instead of skipping them")
     parser.add_argument("--status", choices=["published", "draft"], default="published",
-                        help="Status to assign imported annotations (default: published). Use 'draft' to add "
-                             "reviewer-only annotations: they render into page_<NNN>.json carrying the 'draft' "
+                        help="Status to assign imported remarks (default: published). Use 'draft' to add "
+                             "reviewer-only remarks: they render into page_<NNN>.json carrying the 'draft' "
                              "tag, which the viewer hides unless the URL asks for it (?showDrafts=1 / ?tags=draft).")
     args = parser.parse_args(argv)
 

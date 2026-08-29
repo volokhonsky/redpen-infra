@@ -6,15 +6,17 @@
   //
   // Зачем вообще: у страницы, открытой как file://, origin равен null, и
   // браузер блокирует fetch к соседним файлам. Просмотрщик грузит fetch'ем
-  // ровно три вида данных (metadata.json, annotations/<page>.json,
-  // text/<page>.json) — их и подменяем, чтобы main.js и annotations.js не
+  // ровно три вида данных (metadata.json, remarks/<page>.json,
+  // text/<page>.json) — их и подменяем, чтобы main.js и remarks.js не
   // пришлось трогать. Картинки идут через <img src> и на file:// работают.
 
   var data = window.REDPEN_OFFLINE;
   if (!data || typeof data !== 'object') return;
 
   var metadata = data.metadata || null;
-  var annotations = data.annotations || {};
+  // И новый ключ, и старый: архивы, скачанные до переименования сущности,
+  // лежат у людей на флешках и не обновятся никогда.
+  var remarks = data.remarks || data.annotations || {};
   var text = data.text || {};
 
   // Ответ-утка вместо настоящего Response: вызывающий код использует только
@@ -46,12 +48,13 @@
   }
 
   // Путь без query/hash. Относительные адреса (metadata.json,
-  // annotations/page_007.json) остаются как есть.
+  // remarks/page_007.json) остаются как есть.
   function pathOf(url){
     return String(url).split('#')[0].split('?')[0];
   }
 
-  var RE_ANNOTATIONS = /(?:^|\/)annotations\/([^\/]+)\.json$/;
+  // Оба имени каталога — навсегда, по той же причине, что и ключ выше.
+  var RE_REMARKS = /(?:^|\/)(?:annotations|remarks)\/([^\/]+)\.json$/;
   var RE_TEXT = /(?:^|\/)text\/([^\/]+)\.json$/;
   var RE_METADATA = /(?:^|\/)metadata\.json$/;
 
@@ -62,8 +65,8 @@
     var path = pathOf(url);
     var m;
     if (RE_METADATA.test(path)) return metadata || null;
-    if ((m = RE_ANNOTATIONS.exec(path))) {
-      return Object.prototype.hasOwnProperty.call(annotations, m[1]) ? annotations[m[1]] : null;
+    if ((m = RE_REMARKS.exec(path))) {
+      return Object.prototype.hasOwnProperty.call(remarks, m[1]) ? remarks[m[1]] : null;
     }
     if ((m = RE_TEXT.exec(path))) {
       return Object.prototype.hasOwnProperty.call(text, m[1]) ? text[m[1]] : null;

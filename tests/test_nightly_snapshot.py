@@ -68,26 +68,26 @@ def _run(repo, **kwargs):
 
 
 def test_dry_run_writes_nothing(repo):
-    db.upsert_annotation_db(DOC, "006", "a1", "main", "текст", coord_x=1, coord_y=1,
+    db.upsert_remark_db(DOC, "006", "a1", "major", "текст", coord_x=1, coord_y=1,
                             action="create")
     assert _run(repo) == 0
-    assert not os.path.exists(os.path.join(repo, DOC, "annotations", "page_006.json"))
+    assert not os.path.exists(os.path.join(repo, DOC, "remarks", "page_006.json"))
     assert _git(repo, "status", "--porcelain") == ""
 
 
 def test_apply_exports_json_and_rebuilds_pages(repo):
-    db.upsert_annotation_db(DOC, "006", "a1", "main", "видно читателю", coord_x=1, coord_y=1,
+    db.upsert_remark_db(DOC, "006", "a1", "major", "видно читателю", coord_x=1, coord_y=1,
                             action="create", category="omission")
     assert _run(repo, apply=True) == 0
 
-    with open(os.path.join(repo, DOC, "annotations", "page_006.json"), encoding="utf-8") as f:
+    with open(os.path.join(repo, DOC, "remarks", "page_006.json"), encoding="utf-8") as f:
         assert json.load(f)[0]["category"] == "omission"
     with open(os.path.join(repo, DOC, "pages", "6", "index.html"), encoding="utf-8") as f:
         assert "видно читателю" in f.read()
 
 
 def test_apply_commits_once_with_a_dated_message(repo):
-    db.upsert_annotation_db(DOC, "006", "a1", "main", "текст", coord_x=1, coord_y=1,
+    db.upsert_remark_db(DOC, "006", "a1", "major", "текст", coord_x=1, coord_y=1,
                             action="create")
     _run(repo, apply=True)
     assert _git(repo, "status", "--porcelain") == ""
@@ -98,7 +98,7 @@ def test_apply_commits_once_with_a_dated_message(repo):
 
 
 def test_second_run_without_changes_commits_nothing(repo):
-    db.upsert_annotation_db(DOC, "006", "a1", "main", "текст", coord_x=1, coord_y=1,
+    db.upsert_remark_db(DOC, "006", "a1", "major", "текст", coord_x=1, coord_y=1,
                             action="create")
     _run(repo, apply=True)
     before = _git(repo, "rev-parse", "HEAD")
@@ -107,9 +107,9 @@ def test_second_run_without_changes_commits_nothing(repo):
 
 
 def test_untouched_pages_keep_their_stamp(repo):
-    db.upsert_annotation_db(DOC, "006", "a1", "main", "стр 6", coord_x=1, coord_y=1,
+    db.upsert_remark_db(DOC, "006", "a1", "major", "стр 6", coord_x=1, coord_y=1,
                             action="create")
-    db.upsert_annotation_db(DOC, "007", "b1", "main", "стр 7", coord_x=1, coord_y=1,
+    db.upsert_remark_db(DOC, "007", "b1", "major", "стр 7", coord_x=1, coord_y=1,
                             action="create")
     _run(repo, apply=True)
 
@@ -118,7 +118,7 @@ def test_untouched_pages_keep_their_stamp(repo):
         before = f.read()
 
     # Меняется только шестая страница; седьмую не должно перезаписать даже меткой.
-    db.upsert_annotation_db(DOC, "006", "a1", "main", "стр 6 исправлено",
+    db.upsert_remark_db(DOC, "006", "a1", "major", "стр 6 исправлено",
                             coord_x=1, coord_y=1)
     _run(repo, apply=True)
 
@@ -129,13 +129,13 @@ def test_untouched_pages_keep_their_stamp(repo):
 
 
 def test_deletion_reaches_the_snapshot(repo):
-    db.upsert_annotation_db(DOC, "006", "a1", "main", "исчезнет", coord_x=1, coord_y=1,
+    db.upsert_remark_db(DOC, "006", "a1", "major", "исчезнет", coord_x=1, coord_y=1,
                             action="create")
     _run(repo, apply=True)
-    db.soft_delete_annotation(DOC, "006", "a1")
+    db.soft_delete_remark(DOC, "006", "a1")
     _run(repo, apply=True)
 
-    with open(os.path.join(repo, DOC, "annotations", "page_006.json"), encoding="utf-8") as f:
+    with open(os.path.join(repo, DOC, "remarks", "page_006.json"), encoding="utf-8") as f:
         assert json.load(f) == []
     with open(os.path.join(repo, DOC, "pages", "6", "index.html"), encoding="utf-8") as f:
         assert "исчезнет" not in f.read()
@@ -153,10 +153,10 @@ def test_write_only_touches_files_but_not_git(repo):
     Так ключ с правом записи не нужен внутри контейнера, который смотрит в
     интернет: коммит и push делаются снаружи, в том же клоне.
     """
-    db.upsert_annotation_db(DOC, "006", "a1", "main", "текст", coord_x=1, coord_y=1,
+    db.upsert_remark_db(DOC, "006", "a1", "major", "текст", coord_x=1, coord_y=1,
                             action="create")
     assert _run(repo, write_only=True) == 0
-    assert os.path.exists(os.path.join(repo, DOC, "annotations", "page_006.json"))
+    assert os.path.exists(os.path.join(repo, DOC, "remarks", "page_006.json"))
     # Изменения остались незакоммиченными — их заберёт внешний шаг.
     assert _git(repo, "status", "--porcelain") != ""
     assert _git(repo, "log", "-1", "--pretty=%s") == "init"
@@ -171,10 +171,10 @@ def test_from_dir_takes_ready_files_without_touching_the_db(repo, tmp_path, monk
     которым API (uid 10001) потеряет доступ.
     """
     src = os.path.join(tmp_path, "volume")
-    os.makedirs(os.path.join(src, DOC, "annotations"))
+    os.makedirs(os.path.join(src, DOC, "remarks"))
     os.makedirs(os.path.join(src, DOC, "pages", "6"))
-    with open(os.path.join(src, DOC, "annotations", "page_006.json"), "w", encoding="utf-8") as f:
-        json.dump([{"id": "a1", "text": "из тома", "annType": "main"}], f, ensure_ascii=False)
+    with open(os.path.join(src, DOC, "remarks", "page_006.json"), "w", encoding="utf-8") as f:
+        json.dump([{"id": "a1", "text": "из тома", "kind": "major"}], f, ensure_ascii=False)
     with open(os.path.join(src, DOC, "pages", "6", "index.html"), "w", encoding="utf-8") as f:
         f.write("<html>страница из тома</html>")
 
@@ -190,7 +190,7 @@ def test_from_dir_takes_ready_files_without_touching_the_db(repo, tmp_path, monk
     finally:
         sys.argv = old
 
-    with open(os.path.join(repo, DOC, "annotations", "page_006.json"), encoding="utf-8") as f:
+    with open(os.path.join(repo, DOC, "remarks", "page_006.json"), encoding="utf-8") as f:
         assert json.load(f)[0]["text"] == "из тома"
     # Страницы забираются как есть — иначе content-sync затрёт свежие старыми.
     with open(os.path.join(repo, DOC, "pages", "6", "index.html"), encoding="utf-8") as f:
@@ -200,10 +200,10 @@ def test_from_dir_takes_ready_files_without_touching_the_db(repo, tmp_path, monk
 def test_no_pages_leaves_html_alone(repo):
     """Пока на проде старый код, рендер новым page_html выложил бы заодно
     незапланированные изменения вёрстки. JSON при этом уезжает как надо."""
-    db.upsert_annotation_db(DOC, "006", "a1", "main", "только json", coord_x=1, coord_y=1,
+    db.upsert_remark_db(DOC, "006", "a1", "major", "только json", coord_x=1, coord_y=1,
                             action="create")
     assert _run(repo, apply=True, no_pages=True) == 0
-    assert os.path.exists(os.path.join(repo, DOC, "annotations", "page_006.json"))
+    assert os.path.exists(os.path.join(repo, DOC, "remarks", "page_006.json"))
     assert not os.path.exists(os.path.join(repo, DOC, "pages", "6", "index.html"))
 
 
@@ -216,10 +216,10 @@ def test_host_mode_needs_no_project_modules(repo, tmp_path):
     import subprocess
     import sys
 
-    export = os.path.join(tmp_path, "export", DOC, "annotations")
+    export = os.path.join(tmp_path, "export", DOC, "remarks")
     os.makedirs(export)
     with open(os.path.join(export, "page_006.json"), "w", encoding="utf-8") as f:
-        json.dump([{"id": "a1", "text": "с хоста", "annType": "main"}], f, ensure_ascii=False)
+        json.dump([{"id": "a1", "text": "с хоста", "kind": "major"}], f, ensure_ascii=False)
 
     script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                           "scripts", "nightly_snapshot.py")
@@ -231,5 +231,5 @@ def test_host_mode_needs_no_project_modules(repo, tmp_path):
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
     assert result.returncode == 0, result.stdout
-    with open(os.path.join(repo, DOC, "annotations", "page_006.json"), encoding="utf-8") as f:
+    with open(os.path.join(repo, DOC, "remarks", "page_006.json"), encoding="utf-8") as f:
         assert json.load(f)[0]["text"] == "с хоста"

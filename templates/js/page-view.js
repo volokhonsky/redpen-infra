@@ -10,19 +10,35 @@
  * ни XMLHttpRequest, ни обращения к API. Просмотрщик обязан работать с флешки
  * и офлайн (см. docs/README.md, «Ключевое ограничение»); на это есть тест.
  *
- * Намеренно не переиспользует main.js/annotations.js: те написаны под
+ * Намеренно не переиспользует main.js/remarks.js: те написаны под
  * SPA-переключение страниц, которого здесь больше нет — навигация это обычные
  * ссылки.
  */
 (function () {
   'use strict';
 
-  var MARKER_SIZES = { main: 90, comment: 50, small: 25 };
-  // Размер по-прежнему задаётся annType (main/comment), а цвет — категорией
-  // приёма (redpen-categories.js). Раньше цвет тоже шёл от annType, поэтому
+  var MARKER_SIZES = { major: 90, minor: 50, small: 25 };
+  // Размер по-прежнему задаётся видом замечания (major/minor), а цвет —
+  // категорией приёма (redpen-categories.js). Раньше цвет тоже шёл от вида,
+  // поэтому
   // привычка «красный = главное» на этих страницах больше не действует;
   // легенда на титульной переписана под категории.
   var CATEGORY_FALLBACK_COLOR = '#546E7A';
+
+  /**
+   * Вид замечания: major (крупный маркер) или minor (обычный).
+   *
+   * Читает и новый ключ `kind`, и старый `annType` со старыми значениями:
+   * страницы перерисовываются по одной, поэтому в момент выкладки этот JS
+   * встречает и то и другое. Легаси-ветка снимается в фазе 6 переименования.
+   * Упразднённый `general` показываем как обычное замечание.
+   */
+  function remarkKind(ann) {
+    var k = (ann && (ann.kind || ann.annType)) || 'minor';
+    if (k === 'main') return 'major';
+    if (k === 'comment' || k === 'general') return 'minor';
+    return k;
+  }
 
   function markerColor(ann) {
     var cats = window.RedPenCategories;
@@ -83,7 +99,7 @@
     }).filter(Boolean);
   }
 
-  function annotationTags(ann) {
+  function remarkTags(ann) {
     var tags = (ann.tags || []).map(function (t) {
       return String(t).toLowerCase();
     });
@@ -102,7 +118,7 @@
     return { include: include, exclude: exclude };
   }
 
-  // ?only=<id> — постоянная ссылка на один комментарий: страница со сканом и
+  // ?only=<id> — постоянная ссылка на одно замечание: страница со сканом и
   // единственным выделенным маркером. Это по-прежнему чистая фильтрация уже
   // встроенных данных, ни одного запроса, поэтому инвариант офлайна цел.
   // Черновик по такой ссылке показывается: ссылка адресная, а не обзорная,
@@ -112,14 +128,14 @@
     return value ? value.trim() : null;
   }
 
-  function applyFilter(annotations) {
+  function applyFilter(remarks) {
     var only = onlyId();
     if (only) {
-      return annotations.filter(function (ann) { return String(ann.id) === only; });
+      return remarks.filter(function (ann) { return String(ann.id) === only; });
     }
     var filter = getFilter();
-    return annotations.filter(function (ann) {
-      var tags = annotationTags(ann);
+    return remarks.filter(function (ann) {
+      var tags = remarkTags(ann);
       for (var i = 0; i < filter.exclude.length; i++) {
         if (tags.indexOf(filter.exclude[i]) !== -1) return false;
       }
@@ -178,7 +194,7 @@
     list.innerHTML = '';
     shown.forEach(function (ann, index) {
       var item = document.createElement('li');
-      item.className = 'panel-item panel-item--' + (ann.annType || 'comment')
+      item.className = 'panel-item panel-item--' + remarkKind(ann)
         + ' panel-item--cat-' + categorySlug(ann) + (ann.draft ? ' is-draft' : '');
       item.id = 'panel-item-' + ann.id;
       item.setAttribute('data-ann-id', ann.id);
@@ -189,7 +205,7 @@
       num.textContent = String(index + 1);
 
       var body = document.createElement('div');
-      body.className = 'panel-item__body comment-content';
+      body.className = 'panel-item__body remark-content';
       // html приходит из сборки (scripts/page_html.py), где он собран из
       // markdown с экранированием — не пользовательский ввод.
       body.innerHTML = (ann.draft ? '<em class="draft-tag">[черновик]</em> ' : '') + (ann.html || '');
@@ -216,7 +232,7 @@
     if (!shown.length) {
       var note = document.createElement('p');
       note.className = 'panel-empty';
-      note.textContent = 'Ни один комментарий не подходит под выбранный фильтр.';
+      note.textContent = 'Ни одно замечание не подходит под выбранный фильтр.';
       list.parentNode.insertBefore(note, list.nextSibling);
     }
 
@@ -225,7 +241,7 @@
   }
 
   /**
-   * Список свёрнут только там, где комментарий показывает оверлей по тапу, —
+   * Список свёрнут только там, где замечание показывает оверлей по тапу, —
    * то есть на тач-устройствах. В разметке <details> приходит открытым, чтобы
    * краулер и читатель без JS видели весь текст; сворачиваем уже здесь.
    *
@@ -237,7 +253,7 @@
     var wrap = document.getElementById('panel-list-wrap');
     if (!wrap) return;
     var summary = wrap.querySelector('summary');
-    if (summary) summary.textContent = 'Все комментарии (' + count + ')';
+    if (summary) summary.textContent = 'Все замечания (' + count + ')';
     if (canHover()) wrap.setAttribute('open', '');
     else wrap.removeAttribute('open');
   }
@@ -251,9 +267,9 @@
     }
     var mod10 = n % 10;
     var mod100 = n % 100;
-    var word = 'комментариев';
-    if (mod10 === 1 && mod100 !== 11) word = 'комментарий';
-    else if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) word = 'комментария';
+    var word = 'замечаний';
+    if (mod10 === 1 && mod100 !== 11) word = 'замечание';
+    else if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) word = 'замечания';
     el.textContent = n + ' ' + word + ' к странице';
   }
 
@@ -268,10 +284,10 @@
   }
 
   // --- поп-апы ------------------------------------------------------------
-  // Основная механика сайта: наведение на маркер показывает комментарий поверх
+  // Основная механика сайта: наведение на маркер показывает замечание поверх
   // страницы, клик его закрепляет. Логика перенесена из SPA
-  // (comment-content.js createCommentPopup, annotations.js) без её глобалов:
-  // разметка комментария уже готова в инлайн-данных, markdown-библиотека не
+  // (remark-content.js createRemarkPopup, remarks.js) без её глобалов:
+  // разметка замечания уже готова в инлайн-данных, markdown-библиотека не
   // нужна.
 
   var POPUP_GAP_BELOW = 10;   // зазор под маркером
@@ -349,7 +365,7 @@
   }
 
   function hideAllPopups() {
-    Array.prototype.forEach.call(document.querySelectorAll('.comment-popup'), function (popup) {
+    Array.prototype.forEach.call(document.querySelectorAll('.remark-popup'), function (popup) {
       popup.dataset.clickShown = 'false';
       popup.dataset.hoverShown = 'false';
       hidePopup(popup);
@@ -358,12 +374,12 @@
 
   function createPopup(ann, index, cx, cy, diameter) {
     var popup = document.createElement('div');
-    popup.className = 'comment-popup';
+    popup.className = 'remark-popup';
     popup.id = 'popup-' + ann.id;
     popup.innerHTML =
-      '<div class="comment-popup-title">Комментарий ' + (index + 1) +
+      '<div class="remark-popup__title">Замечание ' + (index + 1) +
       (ann.draft ? ' <span class="draft-tag">[черновик]</span>' : '') + '</div>' +
-      '<div class="comment-content">' + (ann.html || '') + '</div>';
+      '<div class="remark-content">' + (ann.html || '') + '</div>';
 
     // left + CSS transform: translateX(-50%) центрируют поп-ап на маркере.
     popup.style.left = cx + 'px';
@@ -441,7 +457,7 @@
   }
 
   function pinPopup(popup) {
-    Array.prototype.forEach.call(document.querySelectorAll('.comment-popup'), function (other) {
+    Array.prototype.forEach.call(document.querySelectorAll('.remark-popup'), function (other) {
       other.dataset.clickShown = 'false';
       if (other !== popup) {
         other.dataset.hoverShown = 'false';
@@ -471,7 +487,7 @@
     drawMarkersInner();
     // Поп-апы только что пересозданы — раскрыть заново. Живёт здесь, а не в
     // refresh(), потому что перерисовка случается ещё и по resize и по load.
-    openOnlyAnnotation();
+    openOnlyRemark();
   }
 
   function drawMarkersInner() {
@@ -493,10 +509,10 @@
     visible.forEach(function (ann, index) {
       if (!Array.isArray(ann.coords) || ann.coords.length !== 2) return;
 
-      var type = ann.annType || 'comment';
+      var type = remarkKind(ann);
       // Диаметр задан в координатах исходной страницы и масштабируется вместе
       // с картинкой — иначе на телефоне диск занимает весь экран.
-      var diameter = (MARKER_SIZES[type] || MARKER_SIZES.comment) * (scaleX || 1);
+      var diameter = (MARKER_SIZES[type] || MARKER_SIZES.minor) * (scaleX || 1);
       var cx = ann.coords[0] * scaleX;
       var cy = ann.coords[1] * scaleY;
       var color = markerColor(ann);
@@ -527,7 +543,7 @@
         circle.addEventListener('click', function (event) {
           event.stopPropagation();
           pinPopup(popup);
-          selectAnnotation(ann.id, null);
+          selectRemark(ann.id, null);
         });
       } else {
         circle.addEventListener('click', function (event) {
@@ -540,10 +556,10 @@
 
   // --- синхронизация списка и маркеров ------------------------------------
 
-  function highlight(annId, scrollList) {
+  function highlight(remarkId, scrollList) {
     clearHighlight();
-    var circle = document.getElementById('circle-' + annId);
-    var item = document.getElementById('panel-item-' + annId);
+    var circle = document.getElementById('circle-' + remarkId);
+    var item = document.getElementById('panel-item-' + remarkId);
     if (circle) circle.classList.add('is-highlighted');
     if (item) {
       item.classList.add('is-highlighted');
@@ -564,19 +580,19 @@
    * список теперь под страницей, и прокрутка к нему уводила бы читателя от
    * скана прямо в момент, когда он открыл поп-ап.
    */
-  function selectAnnotation(annId, scroll) {
-    pinnedId = annId;
+  function selectRemark(remarkId, scroll) {
+    pinnedId = remarkId;
     Array.prototype.forEach.call(document.querySelectorAll('.panel-item.is-active'), function (el) {
       el.classList.remove('is-active');
     });
-    var item = document.getElementById('panel-item-' + annId);
+    var item = document.getElementById('panel-item-' + remarkId);
     if (item) {
       item.classList.add('is-active');
       if (scroll === 'list') item.scrollIntoView({ block: 'nearest' });
     }
-    var circle = document.getElementById('circle-' + annId);
+    var circle = document.getElementById('circle-' + remarkId);
     if (circle && scroll === 'image') circle.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    highlight(annId, false);
+    highlight(remarkId, false);
   }
 
   function wirePanel() {
@@ -592,7 +608,7 @@
     panel.addEventListener('click', function (event) {
       if (event.target.closest('a')) return;   // ссылки в тексте и чипы тегов
       var item = event.target.closest ? event.target.closest('.panel-item') : null;
-      if (item) selectAnnotation(item.getAttribute('data-ann-id'), 'image');
+      if (item) selectRemark(item.getAttribute('data-ann-id'), 'image');
     });
   }
 
@@ -600,12 +616,12 @@
 
   function showMobileComment(index, ann) {
     var overlayEl = document.getElementById('mobile-overlay');
-    var content = document.getElementById('mobile-comment-content');
+    var content = document.getElementById('mobile-remark-body');
     if (!overlayEl || !content) return;
-    content.innerHTML = '<h3>Комментарий ' + (index + 1) + '</h3>' +
+    content.innerHTML = '<h3>Замечание ' + (index + 1) + '</h3>' +
       (ann.draft ? '<em class="draft-tag">[черновик]</em> ' : '') + (ann.html || '');
     overlayEl.style.display = 'block';
-    selectAnnotation(ann.id, null);
+    selectRemark(ann.id, null);
   }
 
   function closeMobileOverlay() {
@@ -630,10 +646,10 @@
 
   // --- запуск -------------------------------------------------------------
 
-  // По ссылке на один комментарий он должен быть сразу раскрыт: кружок без
-  // текста — не ответ на «покажи мне вот этот комментарий». Работает и как
+  // По ссылке на одно замечание оно должно быть сразу раскрыто: кружок без
+  // текста — не ответ на «покажи мне вот это замечание». Работает и как
   // постоянная ссылка для читателя, и как окно предпросмотра в редакторе.
-  function openOnlyAnnotation() {
+  function openOnlyRemark() {
     var only = onlyId();
     if (!only) return;
     var ann = null;
@@ -652,9 +668,9 @@
       var popup = document.getElementById('popup-' + ann.id);
       if (popup) pinPopup(popup);
     }
-    // Прокручиваем к маркеру: по ссылке на один комментарий он может быть в
+    // Прокручиваем к маркеру: по ссылке на одно замечание оно может быть в
     // самом низу длинной страницы, и без этого читатель увидит пустой скан.
-    selectAnnotation(ann.id, 'image');
+    selectRemark(ann.id, 'image');
   }
 
   function refresh() {

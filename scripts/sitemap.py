@@ -4,7 +4,7 @@ Generate sitemap.xml and robots.txt for the built site.
 Deliberately works by scanning the output directory rather than by being told
 what was built: the sitemap then cannot drift from what is actually published.
 Any page carrying <meta name="robots" content="noindex..."> is skipped, which
-is what keeps the ~362 pages with no published annotations out of the index
+is what keeps the ~362 pages with no published remarks out of the index
 while their addresses keep working.
 
 Usage:

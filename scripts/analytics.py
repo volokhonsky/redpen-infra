@@ -27,7 +27,11 @@ from urllib.parse import parse_qs, quote, urlsplit
 _RE_PAGE = re.compile(r"^/(?P<doc>[A-Za-z0-9_-]+)/pages/(?P<label>[^/]+)/?$")
 _RE_DOC = re.compile(r"^/(?P<doc>[A-Za-z0-9_-]+)/(index\.html)?$")
 _RE_IMAGE = re.compile(r"^/(?P<doc>[A-Za-z0-9_-]+)/images/(?P<file>page_\d+)\.(png|jpe?g|webp)$")
-_RE_ANNJSON = re.compile(r"^/(?P<doc>[A-Za-z0-9_-]+)/annotations/page_\d+\.json$")
+#: Замечания страницы. Оба имени каталога — навсегда: `annotations` было
+#: до переименования сущности в «замечание», а исторические access-логи
+#: Caddy неизменяемы и разбираются этим же кодом.
+_RE_REMARK_JSON = re.compile(
+    r"^/(?P<doc>[A-Za-z0-9_-]+)/(annotations|remarks)/page_\d+\.json$")
 _RE_TEXTJSON = re.compile(r"^/(?P<doc>[A-Za-z0-9_-]+)/text/page_\d+\.json$")
 _RE_SPA = re.compile(r"^/(?P<doc>[A-Za-z0-9_-]+/)?document_index\.html$")
 _RE_ASSET = re.compile(r"\.(js|css|svg|ico|woff2?|map)$", re.I)
@@ -80,7 +84,7 @@ def classify_path(uri: str) -> Dict[str, Any]:
         "kind": "other",
         "doc_id": None,
         "page_label": None,
-        "ann_id": q("only"),
+        "remark_id": q("only"),
         "private": False,
         # ?editor=1 на странице читателя — это загрузка редактора поверх
         # статики, то есть снова не читатель.
@@ -102,7 +106,7 @@ def classify_path(uri: str) -> Dict[str, Any]:
     if m:
         out.update(kind="image", doc_id=m.group("doc"))
         return out
-    m = _RE_ANNJSON.match(path) or _RE_TEXTJSON.match(path)
+    m = _RE_REMARK_JSON.match(path) or _RE_TEXTJSON.match(path)
     if m:
         out.update(kind="data", doc_id=m.group("doc"))
         return out
@@ -314,7 +318,7 @@ def build_hit(parsed: Dict[str, Any],
         "kind": info["kind"],
         "doc_id": info["doc_id"],
         "page_label": info["page_label"],
-        "ann_id": info["ann_id"],
+        "remark_id": info["remark_id"],
         "legacy_param": info["legacy_param"],
         "tag_filter": 1 if info["tag_filter"] else 0,
         "path": info["path"],

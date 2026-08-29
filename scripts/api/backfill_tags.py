@@ -1,17 +1,17 @@
 """
-CLI: backfill annotation tags from the markdown drafts into the SQLite store.
+CLI: backfill remark tags from the markdown drafts into the SQLite store.
 
 Usage:
     python backfill_tags.py <md_dir> --doc <docId> [--apply] [--overwrite]
 
 The `tags:`/`confidence:` meta fields have always been written by the
 annotator agent but dropped by the md -> JSON conversion, so the ~1200
-annotations already in the DB carry none. This walks <md_dir>/page_*.md,
+remarks already in the DB carry none. This walks <md_dir>/page_*.md,
 parses each meta block with the very same parser the converter uses
-(scripts/annotation_converter.py), and attaches the tags to the matching
-(doc_id, page_num, ann_id) row.
+(scripts/remark_converter.py), and attaches the tags to the matching
+(doc_id, page_num, remark_id) row.
 
-Reports without writing unless --apply is given. Annotations that already have
+Reports without writing unless --apply is given. Remarks that already have
 tags are left alone unless --overwrite is given; unmatched ids are listed so a
 mismatch between the md corpus and the DB is visible rather than silent.
 
@@ -28,14 +28,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import db  # noqa: E402
-from annotation_converter import parse_markdown_annotation  # noqa: E402
+from remark_converter import parse_markdown_remark  # noqa: E402
 
 PAGE_MD_RE = re.compile(r"^page_(-?\d+)\.md$")
 
 
 def iter_page_files(md_dir: str) -> List[tuple]:
     """[(page_num, path), ...] -- page_num verbatim from the filename, so
-    "000"/"-01" survive. Service files (_report_*, _typical_comments) are
+    "000"/"-01" survive. Service files (_report_*, _typical_remarks) are
     skipped by the pattern."""
     if not os.path.isdir(md_dir):
         return []
@@ -48,36 +48,36 @@ def iter_page_files(md_dir: str) -> List[tuple]:
 
 
 def run(md_dir: str, doc_id: str, apply: bool, overwrite: bool) -> Dict[str, int]:
-    totals = {"pages": 0, "annotations": 0, "tagged": 0, "skipped": 0, "unmatched": 0, "errors": 0}
+    totals = {"pages": 0, "remarks": 0, "tagged": 0, "skipped": 0, "unmatched": 0, "errors": 0}
     tag_counts: Dict[str, int] = {}
 
     for page_num, path in iter_page_files(md_dir):
         totals["pages"] += 1
         try:
             with open(path, "r", encoding="utf-8") as f:
-                parsed = parse_markdown_annotation(f.read())
+                parsed = parse_markdown_remark(f.read())
         except Exception as exc:
             print(f"{path}: unreadable ({exc})", file=sys.stderr)
             totals["errors"] += 1
             continue
 
         for ann in parsed:
-            totals["annotations"] += 1
-            ann_id = (ann.get("id") or "").strip()
+            totals["remarks"] += 1
+            remark_id = (ann.get("id") or "").strip()
             raw_tags = ann.get("tags") or []
-            if not ann_id or not raw_tags:
+            if not remark_id or not raw_tags:
                 continue
 
             try:
                 tags = db.normalize_tags(raw_tags)
             except db.TagError as exc:
-                print(f"{path}: {ann_id}: {exc}", file=sys.stderr)
+                print(f"{path}: {remark_id}: {exc}", file=sys.stderr)
                 totals["errors"] += 1
                 continue
 
-            existing = db.get_annotation(doc_id, page_num, ann_id)
+            existing = db.get_remark(doc_id, page_num, remark_id)
             if existing is None:
-                print(f"unmatched: {doc_id}/{page_num}/{ann_id}", file=sys.stderr)
+                print(f"unmatched: {doc_id}/{page_num}/{remark_id}", file=sys.stderr)
                 totals["unmatched"] += 1
                 continue
             if existing["tags"] and not overwrite:
@@ -88,11 +88,11 @@ def run(md_dir: str, doc_id: str, apply: bool, overwrite: bool) -> Dict[str, int
                 # Tags only: text/type/coords stay whatever the DB already holds,
                 # which is canon. status is passed back unchanged for the same
                 # reason -- upsert always writes the status column.
-                db.upsert_annotation_db(
+                db.upsert_remark_db(
                     doc_id,
                     page_num,
-                    ann_id,
-                    existing["annType"],
+                    remark_id,
+                    existing["kind"],
                     existing["text"],
                     coord_x=existing["coordX"],
                     coord_y=existing["coordY"],
@@ -114,19 +114,19 @@ def run(md_dir: str, doc_id: str, apply: bool, overwrite: bool) -> Dict[str, int
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("md_dir", help="Directory containing page_*.md annotation drafts")
+    parser.add_argument("md_dir", help="Directory containing page_*.md remark drafts")
     parser.add_argument("--doc", dest="doc_id", required=True, help="docId the markdown belongs to")
     parser.add_argument("--apply", action="store_true",
                         help="Actually write to the DB (default: report only)")
     parser.add_argument("--overwrite", action="store_true",
-                        help="Replace tags on annotations that already have some")
+                        help="Replace tags on remarks that already have some")
     args = parser.parse_args(argv)
 
     db.init_db()
     totals = run(args.md_dir, args.doc_id, apply=args.apply, overwrite=args.overwrite)
 
     print(
-        "{}: pages={pages} annotations={annotations} tagged={tagged} "
+        "{}: pages={pages} remarks={remarks} tagged={tagged} "
         "skipped={skipped} unmatched={unmatched} errors={errors}".format(
             "applied" if args.apply else "dry-run", **totals
         )

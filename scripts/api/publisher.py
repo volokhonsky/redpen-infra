@@ -1,7 +1,7 @@
 """
-Renders published (status='published') annotations from the SQLite store
+Renders published (status='published') remarks from the SQLite store
 (db.py) into the static "bare array" JSON files the viewer reads
-(<PUBLISH_DIR>/<docId>/annotations/page_<NNN>.json), and computes the sha256
+(<PUBLISH_DIR>/<docId>/remarks/page_<NNN>.json), and computes the sha256
 used as serverPageSha for optimistic locking.
 
 PUBLISH_DIR is empty by default (publication disabled) -- see config.py.
@@ -29,12 +29,24 @@ logger = logging.getLogger("redpen.api")
 _SHA_JSON_KWARGS = dict(ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
+#: Обратное отображение вида замечания в имена, действовавшие до
+#: переименования сущности. Нужно ровно в одном месте — во входе
+#: compute_page_sha (см. render_page).
+_LEGACY_KIND_BY_KIND = {v: k for k, v in db.LEGACY_KINDS.items()}
+
+
+def legacy_kind(kind: str) -> str:
+    """`major`/`minor` в прежние `main`/`comment`."""
+    return _LEGACY_KIND_BY_KIND.get(kind, kind)
+
+
 def _render_item(ann: Dict[str, Any], draft: bool = False, with_tags: bool = True) -> Dict[str, Any]:
-    item: Dict[str, Any] = {
-        "id": ann["annId"],
-        "text": ann["text"],
-        "annType": ann["annType"],
-    }
+    item: Dict[str, Any] = {"id": ann["remarkId"], "text": ann["text"]}
+    if with_tags:
+        item["kind"] = ann["kind"]
+    else:
+        # Вход compute_page_sha: заморожен в прежних именах, см. render_page.
+        item["annType"] = legacy_kind(ann["kind"])
     if ann["coordX"] is not None and ann["coordY"] is not None:
         item["coords"] = [ann["coordX"], ann["coordY"]]
     if not with_tags:
@@ -65,30 +77,35 @@ def _render_item(ann: Dict[str, Any], draft: bool = False, with_tags: bool = Tru
 
 
 def render_page(doc_id: str, page_num: str) -> List[Dict[str, Any]]:
-    """Bare array of published annotations for a page, in the legacy format:
+    """Bare array of published remarks for a page, in the legacy format:
     {id, text, annType[, coords]} -- no tags, no drafts.
 
     This is deliberately frozen: compute_page_sha() runs on it, and that hash is
     the editor's optimistic lock (main._current_page_sha). Adding fields here
     would 409 every editor session open across a deploy, and make draft/tag
     edits collide with unrelated ones. The file on disk comes from
-    render_page_static() instead."""
+    render_page_static() instead.
+
+    Отсюда же и легаси-имена `annType`/`main`/`comment`: они намеренно пережили
+    переименование сущности в «замечание». Сменить их — значит сдвинуть хеш и
+    выдать 409 всем открытым сессиям редактора разом, ничего не дав взамен:
+    наружу этот массив не отдаётся, его видит только блокировка."""
     return [
         _render_item(ann, with_tags=False)
-        for ann in db.list_page_annotations(doc_id, page_num, include_deleted=False)
+        for ann in db.list_page_remarks(doc_id, page_num, include_deleted=False)
     ]
 
 
 def render_page_static(doc_id: str, page_num: str) -> List[Dict[str, Any]]:
     """What actually gets written to page_<NNN>.json: published AND draft
-    annotations in one array, each carrying its tags. Drafts additionally get
+    remarks in one array, each carrying its tags. Drafts additionally get
     "draft": true (kept for older viewers) and a leading "draft" tag.
 
     The viewer hides drafts by default and reveals them per URL parameter; see
     getTagFilter() in templates/js/main.js."""
     rendered = [
         _render_item(ann, draft=False)
-        for ann in db.list_page_annotations(doc_id, page_num, include_deleted=False)
+        for ann in db.list_page_remarks(doc_id, page_num, include_deleted=False)
     ]
     rendered += [_render_item(ann, draft=True) for ann in db.list_page_drafts(doc_id, page_num)]
     return rendered
@@ -99,12 +116,14 @@ def compute_page_sha(rendered: List[Dict[str, Any]]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _page_file_path(doc_id: str, page_num: str) -> str:
-    return os.path.join(config.PUBLISH_DIR, doc_id, "annotations", f"page_{page_num}.json")
+def _page_file_path(doc_id: str, page_num: str, dirname: str = "remarks") -> str:
+    return os.path.join(config.PUBLISH_DIR, doc_id, dirname, f"page_{page_num}.json")
 
 
-def _drafts_file_path(doc_id: str, page_num: str) -> str:
-    return os.path.join(config.PUBLISH_DIR, doc_id, "annotations", f"page_{page_num}.drafts.json")
+#: Каталог, куда замечания писались до переименования. Дублирующая запись живёт,
+#: пока в ходу старые адреса и уже розданные офлайн-копии; снимается в фазе 6
+#: (тогда же включается 301 в nginx и каталог удаляется с тома).
+LEGACY_PAGE_DIRNAME = "annotations"
 
 
 def _atomic_write_json(target: str, rendered: List[Dict[str, Any]]) -> None:
@@ -174,15 +193,10 @@ def publish_page(doc_id: str, page_num: str) -> bool:
         return False
 
     try:
-        _atomic_write_json(_page_file_path(doc_id, page_num), render_page_static(doc_id, page_num))
-
-        # Drafts used to live in a sibling page_<NNN>.drafts.json; they are now
-        # part of the file above. Removing the leftovers here means publish_all()
-        # on the next restart cleans the volume by itself. Drop this branch (and
-        # _drafts_file_path) a release after the merged format is everywhere.
-        drafts_target = _drafts_file_path(doc_id, page_num)
-        if os.path.exists(drafts_target):
-            os.remove(drafts_target)
+        rendered = render_page_static(doc_id, page_num)
+        _atomic_write_json(_page_file_path(doc_id, page_num), rendered)
+        _atomic_write_json(
+            _page_file_path(doc_id, page_num, LEGACY_PAGE_DIRNAME), rendered)
 
         # HTML рисуется после JSON и намеренно не влияет на возвращаемое
         # значение: JSON — канон публикации, а страница читателя может
@@ -196,7 +210,7 @@ def publish_page(doc_id: str, page_num: str) -> bool:
 
 
 def publish_all() -> Dict[str, int]:
-    """Republish every page that has at least one annotation row. Used by the
+    """Republish every page that has at least one remark row. Used by the
     admin endpoint and on startup to self-heal the volume."""
     pages = db.list_pages()
     failed = 0

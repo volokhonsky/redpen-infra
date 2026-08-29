@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Run annotation positioning tests for RedPen
+# Run remark positioning tests for RedPen
 
 # Change to the project root directory
 cd "$(dirname "$0")/.."
 
-echo "=== RedPen Annotation Positioning Tests ==="
+echo "=== RedPen Remark Positioning Tests ==="
 echo ""
 
 # Check if Python is installed
@@ -45,10 +45,10 @@ done
 # Run the tests
 if [ "$UPDATE_BASELINE" = true ]; then
     echo "Running tests and updating baseline positions..."
-    python3 tests/annotation_position_tests.py --update-baseline
+    python3 tests/remark_position_tests.py --update-baseline
 else
     echo "Running tests against existing baseline positions..."
-    python3 tests/annotation_position_tests.py
+    python3 tests/remark_position_tests.py
 fi
 
 echo ""

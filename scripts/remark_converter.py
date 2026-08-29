@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-annotation_converter.py
+remark_converter.py
 
-A utility script for converting between JSON and Markdown annotation formats.
+A utility script for converting between JSON and Markdown remark formats.
 
 Usage:
-    python annotation_converter.py json_to_md [path/to/json_dir] [path/to/md_dir]
-    python annotation_converter.py md_to_json [path/to/md_dir] [path/to/json_dir]
+    python remark_converter.py json_to_md [path/to/json_dir] [path/to/md_dir]
+    python remark_converter.py md_to_json [path/to/md_dir] [path/to/json_dir]
 
 Example:
-    python annotation_converter.py json_to_md redpen-publish/annotations/ redpen-content/annotations/
-    python annotation_converter.py md_to_json redpen-content/annotations/ redpen-publish/annotations/
+    python remark_converter.py json_to_md redpen-publish/remarks/ redpen-content/remarks/
+    python remark_converter.py md_to_json redpen-content/remarks/ redpen-publish/remarks/
 """
 
 import sys
@@ -19,9 +19,12 @@ import json
 import glob
 import re
 
+#: Прежние значения вида замечания (до 2026-08-29).
+LEGACY_KINDS = {"main": "major", "comment": "minor"}
+
 def convert_json_to_md(json_file_path):
     """
-    Convert a JSON annotation file to Markdown format according to the specification.
+    Convert a JSON remark file to Markdown format according to the specification.
 
     Args:
         json_file_path: Path to the JSON file
@@ -30,29 +33,31 @@ def convert_json_to_md(json_file_path):
         Markdown content as a string
     """
     with open(json_file_path, 'r', encoding='utf-8') as f:
-        annotations = json.load(f)
+        remarks = json.load(f)
 
     md_content = ""
 
-    for i, annotation in enumerate(annotations):
+    for i, remark in enumerate(remarks):
         # Extract data from JSON
-        annotation_id = annotation.get('id', '')
-        target_block = annotation.get('targetBlock', '')
-        text = annotation.get('text', '')
-        ann_type = annotation.get('annType', '')
-        coords = annotation.get('coords', [])
+        remark_id = remark.get('id', '')
+        target_block = remark.get('targetBlock', '')
+        text = remark.get('text', '')
+        remark_kind = remark.get('kind', '')
+        coords = remark.get('coords', [])
 
-        # Start annotation with meta block
+        # Start remark with meta block
         md_content += "~~~meta\n"
 
-        # Add type field (mapping annType to type)
-        md_content += f"type: {ann_type}\n"
+        # Вид замечания. Ключ `kind`, значения major/minor — с переименования
+        # сущности 2026-08-29; прежние `type: main|comment` читаются, но больше
+        # не пишутся.
+        md_content += f"kind: {LEGACY_KINDS.get(remark_kind, remark_kind)}\n"
 
         # Add id field if it exists
-        if annotation_id:
-            md_content += f"id: {annotation_id}\n"
+        if remark_id:
+            md_content += f"id: {remark_id}\n"
 
-        # Add target field based on the available data. Every annotation has an
+        # Add target field based on the available data. Every remark has an
         # anchor now -- the type without one ("general") is retired.
         if coords:
             # If coords exist, use them as target
@@ -62,17 +67,17 @@ def convert_json_to_md(json_file_path):
             md_content += f"target: {target_block}\n"
 
         # Tags round-trip too, so json -> md -> json doesn't lose them
-        category = annotation.get('category')
+        category = remark.get('category')
         if category and category != 'other':
             md_content += f"category: {category}\n"
-        tags = annotation.get('tags') or []
+        tags = remark.get('tags') or []
         if tags:
             md_content += f"tags: [{', '.join(tags)}]\n"
 
         # End metadata section with separator
         md_content += "~~~\n\n"
 
-        # Add the annotation text
+        # Add the remark text
         md_content += f"{text}\n\n"
 
     return md_content
@@ -94,15 +99,15 @@ def parse_tags_field(raw):
     return tags
 
 
-def parse_markdown_annotation(md_content):
+def parse_markdown_remark(md_content):
     """
-    Parse a markdown annotation file and extract annotations.
+    Parse a markdown remark file and extract remarks.
 
     Args:
         md_content (str): Content of the markdown file
 
     Returns:
-        list: List of annotation dictionaries
+        list: List of remark dictionaries
     """
     # Split the content by the meta block delimiter (supporting both old and new formats)
     # Хвостовые пробелы на строке-разделителе встречаются в черновиках; без
@@ -113,7 +118,7 @@ def parse_markdown_annotation(md_content):
     # Remove empty sections
     sections = [s.strip() for s in sections if s.strip()]
 
-    annotations = []
+    remarks = []
 
     # Process sections in pairs (metadata + content)
     # With the new format, we expect sections to alternate between metadata and content
@@ -134,23 +139,25 @@ def parse_markdown_annotation(md_content):
             key, value = line.split(':', 1)
             metadata_dict[key.strip()] = value.strip()
 
-        # Get annotation type
-        ann_type = metadata_dict.get('type', '')
-        if ann_type == 'general':
-            # Retired: an annotation without an anchor on the scan has nowhere
+        # Вид замечания: новый ключ `kind`, прежний `type` — для черновиков,
+        # написанных до переименования. Значения нормализуются туда же.
+        remark_kind = metadata_dict.get('kind') or metadata_dict.get('type', '')
+        remark_kind = LEGACY_KINDS.get(remark_kind, remark_kind)
+        if remark_kind == 'general':
+            # Retired: an remark without an anchor on the scan has nowhere
             # to live now that every page is its own address. Converting it
-            # silently would produce a marker-less annotation that the viewer
+            # silently would produce a marker-less remark that the viewer
             # cannot show at all, so fail loudly instead.
             raise ValueError(
                 f"type: general больше не поддерживается (id={metadata_dict.get('id', '?')!r}). "
-                "Проставьте target: [x, y] и type: main|comment — см. docs/general-migration-map.json"
+                "Проставьте target: [x, y] и kind: major|minor — см. docs/general-migration-map.json"
             )
 
-        # Create annotation object
-        annotation = {
+        # Create remark object
+        remark = {
             "id": metadata_dict.get('id', ''),
             "text": content.strip(),
-            "annType": ann_type
+            "kind": remark_kind
         }
 
         # Категория — своё поле (ровно одно, по умолчанию «Прочее»), а не тег.
@@ -158,7 +165,7 @@ def parse_markdown_annotation(md_content):
         # отсутствующая означает «приём не назначен».
         category = (metadata_dict.get('category') or '').strip().lower()
         if category:
-            annotation["category"] = category
+            remark["category"] = category
 
         tags = parse_tags_field(metadata_dict.get('tags'))
         confidence = (metadata_dict.get('confidence') or '').strip().lower()
@@ -167,7 +174,7 @@ def parse_markdown_annotation(md_content):
             # needs no column of its own (scripts/api/db.py, normalize_tag).
             tags.append('confidence:' + confidence)
         if tags:
-            annotation["tags"] = tags
+            remark["tags"] = tags
 
         # Process target field if present
         if 'target' in metadata_dict:
@@ -178,22 +185,22 @@ def parse_markdown_annotation(md_content):
             if coords_match:
                 # If target contains coordinates, extract them
                 x, y = map(int, coords_match.groups())
-                annotation["coords"] = [x, y]
+                remark["coords"] = [x, y]
             else:
                 # Otherwise, use it as targetBlock
-                annotation["targetBlock"] = target_value
+                remark["targetBlock"] = target_value
 
-        annotations.append(annotation)
+        remarks.append(remark)
 
-    return annotations
+    return remarks
 
 def json_to_md(json_dir, md_dir):
     """
-    Convert JSON annotation files to Markdown format.
+    Convert JSON remark files to Markdown format.
 
     Args:
-        json_dir (str): Directory containing JSON annotation files
-        md_dir (str): Directory to save the Markdown annotation files
+        json_dir (str): Directory containing JSON remark files
+        md_dir (str): Directory to save the Markdown remark files
     """
     os.makedirs(md_dir, exist_ok=True)
 
@@ -216,11 +223,11 @@ def json_to_md(json_dir, md_dir):
 
 def md_to_json(md_dir, json_dir):
     """
-    Convert Markdown annotation files to JSON format.
+    Convert Markdown remark files to JSON format.
 
     Args:
-        md_dir (str): Directory containing Markdown annotation files
-        json_dir (str): Directory to save the JSON annotation files
+        md_dir (str): Directory containing Markdown remark files
+        json_dir (str): Directory to save the JSON remark files
     """
     os.makedirs(json_dir, exist_ok=True)
 
@@ -236,12 +243,12 @@ def md_to_json(md_dir, json_dir):
         with open(md_file, "r", encoding="utf-8") as f:
             md_content = f.read()
 
-        # Parse annotations
-        annotations = parse_markdown_annotation(md_content)
+        # Parse remarks
+        remarks = parse_markdown_remark(md_content)
 
         # Save as JSON
         with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(annotations, f, ensure_ascii=False, indent=2)
+            json.dump(remarks, f, ensure_ascii=False, indent=2)
 
         print(f"[+] Converted {md_file} to {json_path}")
 
@@ -258,11 +265,11 @@ def main():
 
     # Default directories
     if direction == "json_to_md":
-        source_dir = "redpen-publish/annotations"
-        target_dir = "redpen-content/annotations"
+        source_dir = "redpen-publish/remarks"
+        target_dir = "redpen-content/remarks"
     elif direction == "md_to_json":
-        source_dir = "redpen-content/annotations"
-        target_dir = "redpen-publish/annotations"
+        source_dir = "redpen-content/remarks"
+        target_dir = "redpen-publish/remarks"
     else:
         print(f"Error: Unknown conversion direction '{direction}'.")
         print(__doc__)

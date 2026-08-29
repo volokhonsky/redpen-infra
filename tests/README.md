@@ -18,16 +18,16 @@ pytest            # из корня репозитория; конфиг в pyte
 
 | Файл | Что покрывает |
 |---|---|
-| `test_annotation_converter.py` | Конвертация Markdown ↔ JSON (`scripts/annotation_converter.py`), round-trip |
+| `test_remark_converter.py` | Конвертация Markdown ↔ JSON (`scripts/remark_converter.py`), round-trip |
 | `test_sanitize_bucket.py` | Санитизация bucket/pageId (`scripts/api/storage.py`) |
 | `test_db.py` | Users/sessions/allowlist в SQLite (`scripts/api/db.py`, стадия 1) |
-| `test_annotations_db.py` | Таблицы `annotations`/`annotation_history` в SQLite (`scripts/api/db.py`, стадия 2) |
+| `test_remarks_db.py` | Таблицы `remarks`/`remark_history` в SQLite (`scripts/api/db.py`, стадия 2) |
 | `test_publisher.py` | Рендер БД → голый массив, sha, запись `page_NNN.json` (`scripts/api/publisher.py`) |
-| `test_import_annotations.py` | CLI-импорт файлов в БД (`scripts/api/import_annotations.py`) |
-| `test_export_annotations.py` | CLI-экспорт БД в файлы (`scripts/api/export_annotations.py`) |
+| `test_import_remarks.py` | CLI-импорт файлов в БД (`scripts/api/import_remarks.py`) |
+| `test_export_remarks.py` | CLI-экспорт БД в файлы (`scripts/api/export_remarks.py`) |
 | `test_api.py` | Эндпоинты FastAPI через `TestClient`: health, store, store-raw, editor GET/POST/PUT/DELETE, publish-all, auth |
 | `test_auth.py` | Google-вход, роли, allowlist, publish-all (стадии 1–2) |
-| `test_build_website.py` | Сборка сайта (`scripts/build_website.py`): per-document раскладка, `--annotations-from-md`, индексная страница |
+| `test_build_website.py` | Сборка сайта (`scripts/build_website.py`): per-document раскладка, `--remarks-from-md`, индексная страница |
 
 `test_build_website.py` строит сайт из синтетического мини-контента во временном
 каталоге (реальный `redpen-content` не нужен), поэтому проходит за доли секунды.
@@ -42,13 +42,13 @@ pytest            # из корня репозитория; конфиг в pyte
 pip install -r tests/requirements.txt
 python -m playwright install chromium
 
-python tests/annotation_position_tests.py         # позиционирование кружков
-python tests/annotation_position_tests.py --update-baseline
+python tests/remark_position_tests.py         # позиционирование кружков
+python tests/remark_position_tests.py --update-baseline
 python tests/editor_mode_tests.py                 # режим редактора (?editor=1)
 python tests/simple_test.py                        # смоук рендера страницы
 ```
 
-- `annotation_position_tests.py` — измеряет позиции элементов `.circle` при
+- `remark_position_tests.py` — измеряет позиции элементов `.circle` при
   ширине 1280px / 800px и при ресайзе, сравнивает с `baseline_positions.json`.
   Использует синтетический `document_index.html`, а не реальное приложение —
   это скорее проверка окружения, чем логики.

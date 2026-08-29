@@ -201,14 +201,16 @@ def publish_from_parent(parent: Path, public_dir: Path, staging_dir: Path, api_b
     if staging_dir.exists():
         subprocess.call(["rm", "-rf", str(staging_dir)])
     staging_dir.mkdir(parents=True, exist_ok=True)
-    # */annotations/ is owned by the API (stage 2: SQLite is canonical, the
+    # */remarks/ is owned by the API (stage 2: SQLite is canonical, the
     # API's publisher.py writes page_NNN.json straight into public_dir). Without
     # --delete-excluded, excluding it from --delete also protects it from being
-    # wiped by this sync -- only the API and import_annotations.py write there.
-    run(["rsync", "-a", "--delete", "--exclude", ".git", "--exclude", "/*/annotations/", f"{src}/", f"{staging_dir}/"])
+    # wiped by this sync -- only the API and import_remarks.py write there.
+    # */annotations/ is the pre-rename name of the same directory and stays
+    # excluded while the publisher double-writes there.
+    run(["rsync", "-a", "--delete", "--exclude", ".git", "--exclude", "/*/annotations/", "--exclude", "/*/remarks/", f"{src}/", f"{staging_dir}/"])
     mutate_staging(staging_dir, api_base_url)
-    run(["rsync", "-a", "--delete", "--exclude", "/*/annotations/", f"{staging_dir}/", f"{public_dir}/"])
-    _ensure_annotations_dirs_owned_by_api(public_dir)
+    run(["rsync", "-a", "--delete", "--exclude", "/*/annotations/", "--exclude", "/*/remarks/", f"{staging_dir}/", f"{public_dir}/"])
+    _ensure_api_owned_dirs(public_dir)
     try:
         (public_dir / ".published_by_sync").write_text(str(int(time.time())), encoding="utf-8")
     except Exception as e:
@@ -219,15 +221,17 @@ def publish_from_parent(parent: Path, public_dir: Path, staging_dir: Path, api_b
 #: и после каждого rsync владелец возвращается к root — поэтому владение
 #: восстанавливается здесь, после публикации.
 #:
-#: `annotations` — канон публикации, его владелец API с этапа 2.
+#: `remarks` — канон публикации, его владелец API с этапа 2.
+#: `annotations` — прежнее имя того же каталога; остаётся в списке, пока
+#: publisher дублирует запись туда.
 #: `pages` — HTML читателя. У него два писателя: сборка (через git и rsync) и
 #: API, который перерисовывает затронутую страницу на каждую правку. Просмотрщик
 #: читает аннотации не из JSON, а из инлайнового блока внутри этого HTML, так что
 #: без права записи сюда правка через редактор до читателя не доезжает.
-_API_OWNED_DIRS = ("annotations", "pages")
+_API_OWNED_DIRS = ("annotations", "remarks", "pages")
 
 
-def _ensure_annotations_dirs_owned_by_api(public_dir: Path) -> None:
+def _ensure_api_owned_dirs(public_dir: Path) -> None:
     """Create the API-owned directories for any new docId and fix ownership on
     existing ones. content-sync runs as root, but the API container writes as
     uid 10001 -- without this, a fresh docId directory (or one still owned by

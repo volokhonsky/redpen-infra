@@ -8,7 +8,7 @@
 Два источника решений:
 
   --from-file FILE   решения классифицирующего агента: JSON вида
-                     [{"docId": "...", "pageNum": "006", "annId": "ann-p006-1",
+                     [{"docId": "...", "pageNum": "006", "remarkId": "ann-p006-1",
                        "category": "omission", "why": "..."}]
                      Это основной путь — см. docs/category-agent-prompt.md.
 
@@ -45,22 +45,22 @@ import publisher  # noqa: E402
 
 
 def _load_rows(conn: sqlite3.Connection, doc_id: Optional[str]) -> List[sqlite3.Row]:
-    sql = ("SELECT rowid_pk, doc_id, page_num, ann_id, category, category_source "
-           "FROM annotations")
+    sql = ("SELECT rowid_pk, doc_id, page_num, remark_id, category, category_source "
+           "FROM remarks")
     params: List[Any] = []
     if doc_id:
         sql += " WHERE doc_id = ?"
         params.append(doc_id)
-    sql += " ORDER BY doc_id, page_num, ann_id"
+    sql += " ORDER BY doc_id, page_num, remark_id"
     return list(conn.execute(sql, params))
 
 
 def _decisions_from_tags(conn: sqlite3.Connection, rows: List[sqlite3.Row]) -> Dict[int, str]:
     tags_by_pk: Dict[int, List[str]] = collections.defaultdict(list)
     for row in conn.execute(
-        "SELECT annotation_pk, tag FROM annotation_tags ORDER BY annotation_pk, tag"
+        "SELECT remark_pk, tag FROM remark_tags ORDER BY remark_pk, tag"
     ):
-        tags_by_pk[row["annotation_pk"]].append(row["tag"])
+        tags_by_pk[row["remark_pk"]].append(row["tag"])
     return {
         row["rowid_pk"]: ac.category_for_tags(tags_by_pk.get(row["rowid_pk"], []))
         for row in rows
@@ -73,11 +73,11 @@ def _decisions_from_file(path: str, rows: List[sqlite3.Row]) -> Dict[int, str]:
     if not isinstance(payload, list):
         raise SystemExit(f"{path}: ожидался JSON-массив решений")
 
-    by_key = {(r["doc_id"], r["page_num"], r["ann_id"]): r["rowid_pk"] for r in rows}
+    by_key = {(r["doc_id"], r["page_num"], r["remark_id"]): r["rowid_pk"] for r in rows}
     decisions: Dict[int, str] = {}
     missing: List[str] = []
     for item in payload:
-        key = (item.get("docId"), str(item.get("pageNum")), item.get("annId"))
+        key = (item.get("docId"), str(item.get("pageNum")), item.get("remarkId"))
         pk = by_key.get(key)
         if pk is None:
             missing.append("/".join(str(part) for part in key))
@@ -173,7 +173,7 @@ def main() -> int:
     with db._lock:  # noqa: SLF001 — тот же приём, что в backfill_tags.py
         for row, new in changes:
             conn.execute(
-                "UPDATE annotations SET category = ?, category_source = ? "
+                "UPDATE remarks SET category = ?, category_source = ? "
                 "WHERE rowid_pk = ?",
                 (new, source, row["rowid_pk"]),
             )

@@ -2,7 +2,7 @@
 
 /* Палитра категорий аннотаций — шесть приёмов пропаганды + «Прочее».
    Обоснование и проверка контраста: docs/annotation-classification-2026-08.md.
-   Значения продублированы в scripts/annotation_categories.py и
+   Значения продублированы в scripts/remark_categories.py и
    templates/js/redpen-categories.js — маркеры на скане красятся из JS. */
 :root {
   --cat-omission:  #1B4F9C;  /* 1. Умолчание */
@@ -79,7 +79,7 @@ nav a {
   height: auto;
 }
 
-#comments-content {
+#remarks-content {
   width: 300px;
   padding: 1rem;
   background: #fff;

@@ -1,0 +1,26 @@
+[
+  {
+    "id": "ann-test-1",
+    "text": "This is a minor remark anchored by coordinates.",
+    "kind": "minor",
+    "coords": [
+      120,
+      640
+    ]
+  },
+  {
+    "id": "ann-test-2",
+    "text": "This is a major remark with a target block.",
+    "kind": "major",
+    "targetBlock": "test_block_1"
+  },
+  {
+    "id": "ann-test-3",
+    "text": "This is a minor remark with coordinates.",
+    "kind": "minor",
+    "coords": [
+      350,
+      220
+    ]
+  }
+]

@@ -1,7 +1,7 @@
 # Репозиторий инфраструктуры RedPen
 
 Основной репозиторий проекта RedPen: обрабатывает PDF-учебники и публикует
-статический сайт, показывающий страницы с аннотациями.
+статический сайт, показывающий страницы с замечаниями.
 
 **Названия.** `RedPen` — внутреннее имя движка (репозитории, код, служебные
 идентификаторы вроде `REDPEN_API_BASE`). Публичное название сайта —
@@ -21,11 +21,11 @@
 открываться с любого статического хостинга, с флешки, офлайн, или встраиваться
 как контент в простое приложение. Поэтому:
 
-- **просмотрщик никогда не обращается к API** — изображения, текст и аннотации
+- **просмотрщик никогда не обращается к API** — изображения, текст и замечания
   читаются только из статических файлов;
 - API и любые серверные хранилища обслуживают исключительно редактирование
   (`?editor=1`) и кабинет; результат редактирования всегда материализуется
-  обратно в статические `annotations/*.json`;
+  обратно в статические `remarks/*.json`;
 - любая доработка, добавляющая просмотрщику сетевую зависимость, нарушает
   это ограничение и не должна приниматься.
 
@@ -35,17 +35,17 @@
   - `extract_images.py` — извлекает изображения страниц из PDF
   - `extract_text.py` — извлекает текст из PDF в JSON (`page_NNN.json` с блоками)
   - `process_pdf.py` — оркестрирует пайплайн: изображения → текст → пустые
-    шаблоны аннотаций → публикация. (Шаг генерации шаблонов встроен в сам
-    скрипт; отдельного `generate_annotations.py` больше нет.)
-  - `annotation_converter.py` — конвертация аннотаций Markdown ↔ JSON
-  - `build_website.py` — собирает и публикует сайт (конвертация аннотаций,
+    шаблоны замечаний → публикация. (Шаг генерации шаблонов встроен в сам
+    скрипт; отдельного `generate_remarks.py` больше нет.)
+  - `remark_converter.py` — конвертация замечаний Markdown ↔ JSON
+  - `build_website.py` — собирает и публикует сайт (конвертация замечаний,
     копирование данных/шаблонов, генерация индексной страницы, опциональные
     тесты и push)
   - `blog.py` — статический блог: рендерит `content/blog/*.md` в `blog/index.html`
     и `blog/<slug>/index.html`, отдаёт секцию с последней записью титульной
     (вызывается из `build_website.py`; собственный минимальный markdown, без
     зависимостей и без обращений к сети в рантайме)
-  - `publish_data.py` — копирует изображения/текст/аннотации в целевой каталог
+  - `publish_data.py` — копирует изображения/текст/замечания в целевой каталог
   - `api/` — FastAPI-сервис (см. `scripts/api/README.md`)
   - `requirements.txt` — зависимости для обработки PDF
 - `templates/` — шаблоны статического сайта
@@ -63,14 +63,14 @@
 Скрипты используют два каталога рядом с этим репозиторием (или внутри дерева):
 
 - `redpen-content/` — исходники. Раскладка **по документам**:
-  `redpen-content/<docId>/{annotations/*.md, annotations_draft/*.md,
+  `redpen-content/<docId>/{remarks/*.md, remarks_draft/*.md,
   images/*.png, images_with_grid/*.png, text/*.json, illustrations/,
   paragraphs_list.txt, meta.json}` (например, `redpen-content/medinsky11klass/…`).
-  `annotations_draft/` наполняет агент-аннотатор (промпт и регламент —
-  `docs/annotation-agent-prompt.md`); детальная раскладка —
+  `remarks_draft/` наполняет агент-аннотатор (промпт и регламент —
+  `docs/remark-agent-prompt.md`); детальная раскладка —
   `docs/PROJECT_STRUCTURE.md`.
 - `redpen-publish/` — собранный статический сайт:
-  `redpen-publish/<docId>/{annotations/*.json, images/, text/, index.html,
+  `redpen-publish/<docId>/{remarks/*.json, images/, text/, index.html,
   metadata.json}` плюс общие `css/`, `js/`, `cabinet/`, `favicon.svg`,
   `index.html` в корне.
 
@@ -79,10 +79,10 @@
 ## Функции
 
 - Извлечение изображений и текста из PDF
-- Конвертация аннотаций Markdown ↔ JSON
-- Публикация статического сайта с аннотациями и адаптивной вёрсткой
-- Режим редактора аннотаций (`?editor=1`) поверх опубликованного сайта
-- API для приёма данных и редактирования аннотаций
+- Конвертация замечаний Markdown ↔ JSON
+- Публикация статического сайта с замечаниями и адаптивной вёрсткой
+- Режим редактора замечаний (`?editor=1`) поверх опубликованного сайта
+- API для приёма данных и редактирования замечаний
 
 ## Настройка
 
@@ -105,11 +105,11 @@ python scripts/process_pdf.py path/to/textbook.pdf \
     --zoom 2 --output-dir ./output --artifacts-repo ../redpen-publish
 ```
 
-### Конвертация аннотаций
+### Конвертация замечаний
 
 ```bash
-python scripts/annotation_converter.py md_to_json \
-    redpen-content/medinsky11klass/annotations redpen-publish/medinsky11klass/annotations
+python scripts/remark_converter.py md_to_json \
+    redpen-content/medinsky11klass/remarks redpen-publish/medinsky11klass/remarks
 ```
 
 ### Сборка сайта
@@ -135,16 +135,16 @@ pytest                       # быстрый набор без браузера
 
 1. PDF обрабатывается скриптами (`process_pdf.py` → изображения/текст/шаблоны;
    `make_grid_images.py` — картинки с сеткой для аннотатора).
-2. Аннотации пишет агент-аннотатор (`docs/annotation-agent-prompt.md`; один
-   запуск = один параграф) в `annotations_draft/`, либо люди — через
+2. Замечания пишет агент-аннотатор (`docs/remark-agent-prompt.md`; один
+   запуск = один параграф) в `remarks_draft/`, либо люди — через
    веб-редактор (`?editor=1`) и кабинет (`/cabinet/`).
-3. Канон аннотаций — SQLite на сервере: черновики импортируются
-   `scripts/api/import_annotations.py` (аддитивно), правки редактора пишутся
+3. Канон замечаний — SQLite на сервере: черновики импортируются
+   `scripts/api/import_remarks.py` (аддитивно), правки редактора пишутся
    напрямую; каждая мутация сразу рендерится в статические
-   `annotations/page_NNN.json` (`scripts/api/publisher.py`).
+   `remarks/page_NNN.json` (`scripts/api/publisher.py`).
 4. `build_website.py` собирает всё остальное (шаблоны, картинки, текст, манифест
-   страниц, кабинет) в `redpen-publish`; конвертация md→JSON аннотаций — только
-   по флагу `--annotations-from-md`.
+   страниц, кабинет) в `redpen-publish`; конвертация md→JSON замечаний — только
+   по флагу `--remarks-from-md`.
 5. Просмотрщик работает только на статике; API обслуживает исключительно
    редактор и кабинет. Быстрый вход в проект для агентов — корневой `CLAUDE.md`.
 
@@ -159,6 +159,6 @@ Compose (сервис `api`) за прокси Caddy. Полное описан�
   `LOG_DIR`, `LOG_LEVEL`, `CORS_ALLOW_ORIGINS`, `DB_PATH`, `PUBLISH_DIR`.
 - `GET /api/health` → `{"status":"ok"}`
 - `POST /api/store` / `POST /api/store-raw` — приём JSON в `${STORAGE_DIR}/inbox/…`
-- `GET|POST|PUT|DELETE /api/editor/{docId}/{pageNum}[/{annId}]` — редактор
-  аннотаций; канон — SQLite (`db.py`), каждая запись публикуется в
+- `GET|POST|PUT|DELETE /api/editor/{docId}/{pageNum}[/{remarkId}]` — редактор
+  замечаний; канон — SQLite (`db.py`), каждая запись публикуется в
   `PUBLISH_DIR` немедленно (`publisher.py`)

@@ -8,7 +8,7 @@ make_offline_bundle.py
 
 Что делает сборщик, чего не делает обычная публикация:
 
-1. пишет ``offline-data.js`` — все ``metadata.json``/``annotations/*.json``/
+1. пишет ``offline-data.js`` — все ``metadata.json``/``remarks/*.json``/
    ``text/*.json`` одним файлом, потому что под ``file://`` fetch к соседним
    файлам запрещён (подменой занимается ``js/redpen-offline.js``);
 2. вырезает из index.html книги всё, что умеет ходить в сеть: скрипты с
@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
-# Хосты, которых в html/js офлайн-копии быть не должно. Тела аннотаций
+# Хосты, которых в html/js офлайн-копии быть не должно. Тела замечаний
 # (offline-data.js) не проверяем: там живут ссылки на источники, это нормально.
 FORBIDDEN_HOSTS = ('api.medinsky.net', 'cdn.jsdelivr.net', 'accounts.google.com')
 
@@ -58,7 +58,7 @@ def _read_json(path):
 
 
 def collect_page_data(doc_dir, subdir):
-    """{page_id: <разобранный json>} для annotations/ или text/.
+    """{page_id: <разобранный json>} для remarks/ или text/.
 
     Легаси-компаньоны ``*.drafts.json`` пропускаем: черновики давно лежат в
     основном ``page_NNN.json`` под тегом draft.
@@ -78,20 +78,20 @@ def collect_page_data(doc_dir, subdir):
     return out
 
 
-def build_offline_data_js(metadata, annotations, text):
+def build_offline_data_js(metadata, remarks, text):
     """``window.REDPEN_OFFLINE = JSON.parse("...")``.
 
     Именно JSON.parse из строкового литерала, а не объектный литерал: движок
     разбирает такой мегабайтный payload заметно быстрее.
     """
-    payload = {'metadata': metadata, 'annotations': annotations, 'text': text}
+    payload = {'metadata': metadata, 'remarks': remarks, 'text': text}
     raw = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
     # Экранируем как JS-строку: json.dumps даёт корректный литерал в двойных
     # кавычках, включая \u2028/\u2029 (ensure_ascii=False их бы оставил живыми,
     # а в JS они ломают строку).
     literal = json.dumps(raw, ensure_ascii=False).replace('\u2028', '\\u2028').replace('\u2029', '\\u2029')
     return (
-        '// Данные офлайн-копии: подменяют fetch(metadata/annotations/text).\n'
+        '// Данные офлайн-копии: подменяют fetch(metadata/remarks/text).\n'
         '// Сгенерировано scripts/make_offline_bundle.py — не править руками.\n'
         'window.REDPEN_OFFLINE = JSON.parse(%s);\n' % literal
     )
@@ -182,7 +182,7 @@ def render_root_index(doc_id, metadata, built_at):
     <a class="btn" href="{doc}/index.html">Открыть разбор</a>
   </section>
   <div class="note">
-    Это полная копия сайта medinsky.net: страницы, текст и аннотации лежат
+    Это полная копия сайта medinsky.net: страницы, текст и замечания лежат
     файлами рядом. Ничего никуда не отправляется — в копии нет кода, способного
     обратиться к сети. Редактирование здесь не работает: разбор правится только
     на сайте.
@@ -209,13 +209,13 @@ def render_entry_redirect(doc_id):
 """
 
 
-def render_readme(doc_id, metadata, built_at, pages, annotations_count):
+def render_readme(doc_id, metadata, built_at, pages, remarks_count):
     return """Красной ручкой — офлайн-копия разбора
 =====================================
 
 Книга: {title}
 Страниц: {pages}
-Аннотаций: {anns}
+Замечаний: {anns}
 Собрано: {built_at}
 Источник: https://medinsky.net
 
@@ -228,7 +228,7 @@ def render_readme(doc_id, metadata, built_at, pages, annotations_count):
 Что внутри
 ----------
   index.html         — начальный экран
-  {doc}/     — сам разбор: страницы, текст, аннотации
+  {doc}/     — сам разбор: страницы, текст, замечания
   css/, js/          — оформление и скрипты просмотрщика
 
 Чего здесь нет
@@ -240,7 +240,7 @@ def render_readme(doc_id, metadata, built_at, pages, annotations_count):
 Адреса страниц
 --------------
 Работают так же, как на сайте: index.html?p=17 откроет страницу 17.
-""".format(title=metadata.get('title') or doc_id, pages=pages, anns=annotations_count,
+""".format(title=metadata.get('title') or doc_id, pages=pages, anns=remarks_count,
            built_at=built_at, doc=doc_id)
 
 
@@ -288,10 +288,10 @@ def stage_bundle(site_dir, doc_id, stage_root, bundle_name):
 
     # 3. данные для file://
     metadata = _read_json(os.path.join(doc_src, 'metadata.json'))
-    annotations = collect_page_data(doc_src, 'annotations')
+    remarks = collect_page_data(doc_src, 'remarks')
     text = collect_page_data(doc_src, 'text')
     with open(os.path.join(doc_dst, 'offline-data.js'), 'w', encoding='utf-8') as f:
-        f.write(build_offline_data_js(metadata, annotations, text))
+        f.write(build_offline_data_js(metadata, remarks, text))
 
     # 4. index.html книги без сетевых зависимостей
     has_vendored_marked = os.path.exists(os.path.join(root, 'js', 'vendor', 'marked.min.js'))
@@ -302,8 +302,8 @@ def stage_bundle(site_dir, doc_id, stage_root, bundle_name):
 
     # 5. корневые файлы
     built_at = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    pages = len(metadata.get('pages') or []) or len(text) or len(annotations)
-    ann_count = sum(len(v) for v in annotations.values() if isinstance(v, list))
+    pages = len(metadata.get('pages') or []) or len(text) or len(remarks)
+    ann_count = sum(len(v) for v in remarks.values() if isinstance(v, list))
     with open(os.path.join(root, 'index.html'), 'w', encoding='utf-8') as f:
         f.write(render_root_index(doc_id, metadata, built_at))
     with open(os.path.join(root, 'ЧИТАТЬ.html'), 'w', encoding='utf-8') as f:
@@ -314,7 +314,7 @@ def stage_bundle(site_dir, doc_id, stage_root, bundle_name):
     stats = {
         'doc': doc_id,
         'pages': pages,
-        'annotations': ann_count,
+        'remarks': ann_count,
         'builtAt': built_at,
         'vendoredMarked': has_vendored_marked,
     }
@@ -328,7 +328,7 @@ def check_no_network_refs(root):
         for name in filenames:
             if not name.endswith(('.html', '.js')):
                 continue
-            if name == 'offline-data.js':  # тела аннотаций, ссылки на источники — норма
+            if name == 'offline-data.js':  # тела замечаний, ссылки на источники — норма
                 continue
             path = os.path.join(dirpath, name)
             with open(path, 'r', encoding='utf-8', errors='replace') as f:
@@ -385,10 +385,10 @@ def main(argv=None):
     print('=== Сборка офлайн-архива: %s ===' % args.doc)
     root, stats = stage_bundle(args.site_dir, args.doc, stage_dir, bundle_name)
     print('[+] дерево собрано: %s' % root)
-    print('    страниц: %(pages)s, аннотаций: %(annotations)s' % stats)
+    print('    страниц: %(pages)s, замечаний: %(remarks)s' % stats)
     if not stats['vendoredMarked']:
-        print('[!] js/vendor/marked.min.js нет — разметка аннотаций офлайн будет'
-              ' упрощённой (fallback в comment-content.js)')
+        print('[!] js/vendor/marked.min.js нет — разметка замечаний офлайн будет'
+              ' упрощённой (fallback в remark-content.js)')
 
     problems = check_no_network_refs(root)
     if problems:

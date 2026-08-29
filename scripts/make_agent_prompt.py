@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Собрать задание для агента-аннотатора по номеру параграфа.
 
-Задание генерируется из шаблона docs/annotation-agent-run-prompt.template.md:
+Задание генерируется из шаблона docs/remark-agent-run-prompt.template.md:
 номер, название и диапазон страниц берутся из paragraphs_list.txt, пути
 подставляются контейнерные (/work). Правила живут в
-docs/annotation-agent-prompt.md и в задание не копируются — рукописные задания
+docs/remark-agent-prompt.md и в задание не копируются — рукописные задания
 расходятся с документом и теряют правила (см. §20, 2026-08-08).
 
 Примеры:
@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-TEMPLATE = REPO_ROOT / "docs" / "annotation-agent-run-prompt.template.md"
+TEMPLATE = REPO_ROOT / "docs" / "remark-agent-run-prompt.template.md"
 
 
 def parse_paragraphs_list(path):

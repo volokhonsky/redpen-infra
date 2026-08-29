@@ -18,7 +18,7 @@ function updateLayout() {
   const layout = document.getElementById('layout');
   const imageContainer = document.getElementById('image-container');
   const contentWrapper = document.getElementById('content-wrapper');
-  const globalCommentContainer = document.getElementById('global-comment-container');
+  const globalCommentContainer = document.getElementById('remark-sidebar');
 
   // Always ensure image container is visible
   imageContainer.style.display = 'flex';

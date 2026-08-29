@@ -151,7 +151,7 @@ function closeMobileOverlay() {
   document.removeEventListener('click', handleDocumentClick);
 
   // Ensure global comment container is visible after closing overlay
-  const globalCommentContainer = document.getElementById('global-comment-container');
+  const globalCommentContainer = document.getElementById('remark-sidebar');
   globalCommentContainer.style.display = 'block';
   globalCommentContainer.style.visibility = 'visible';
   globalCommentContainer.style.opacity = '1';
@@ -163,7 +163,7 @@ function closeMobileOverlay() {
  */
 function handleDocumentClick(event) {
   const mobileOverlay = document.getElementById('mobile-overlay');
-  const mobileContent = document.getElementById('mobile-comment-content');
+  const mobileContent = document.getElementById('mobile-remark-body');
   const closeButton = document.querySelector('.mobile-overlay-close');
 
   // If overlay is visible and click is outside the content
@@ -196,11 +196,11 @@ function handleOverlayClick(event) {
  */
 function showMobileComment(index, text) {
   const mobileOverlay = document.getElementById('mobile-overlay');
-  const mobileContent = document.getElementById('mobile-comment-content');
-  const globalCommentContainer = document.getElementById('global-comment-container');
+  const mobileContent = document.getElementById('mobile-remark-body');
+  const globalCommentContainer = document.getElementById('remark-sidebar');
 
-  // Use the renderMobileCommentContent function from comment-content.js
-  mobileContent.innerHTML = renderMobileCommentContent(index, text);
+  // Use the renderMobileRemarkContent function from remark-content.js
+  mobileContent.innerHTML = renderMobileRemarkContent(index, text);
 
   // Prevent clicks on the content from closing the overlay
   mobileContent.addEventListener('click', function(event) {

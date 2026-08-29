@@ -8,6 +8,7 @@ a lock) is enough since the API runs as a single uvicorn worker.
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -26,6 +27,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import annotation_categories  # noqa: E402
 
 SESSION_TTL_SECONDS = 30 * 86400  # 30 days, matches the auth cookie max_age
+
+logger = logging.getLogger("redpen.api")
 
 _lock = threading.Lock()
 _conn: Optional[sqlite3.Connection] = None
@@ -50,6 +53,10 @@ def init_db() -> None:
     _conn.row_factory = sqlite3.Row
     with _lock:
         _conn.execute("PRAGMA journal_mode=WAL")
+        # Строго до executescript: DDL ниже содержит CREATE TABLE IF NOT EXISTS
+        # remarks, и на старой базе он создал бы пустышку, после чего
+        # ALTER TABLE annotations RENAME TO remarks упал бы, а API не поднялся.
+        _rename_legacy_to_remarks(_conn)
         _conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -123,7 +130,7 @@ def init_db() -> None:
             -- Параграф учебника. Источник — manifest metadata.json
             -- (chapters[].sections[]), заливается scripts/api/import_sections.py:
             -- API не читает контент-файлы, а работа ведётся именно параграфами,
-            -- поэтому диапазоны страниц лежат рядом с аннотациями.
+            -- поэтому диапазоны страниц лежат рядом с замечаниями.
             CREATE TABLE IF NOT EXISTS sections (
               doc_id TEXT NOT NULL,
               section_id TEXT NOT NULL,
@@ -137,12 +144,12 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_sections_range
               ON sections(doc_id, page_start, page_end);
-            CREATE TABLE IF NOT EXISTS annotations (
+            CREATE TABLE IF NOT EXISTS remarks (
               rowid_pk INTEGER PRIMARY KEY AUTOINCREMENT,
-              ann_id TEXT NOT NULL,
+              remark_id TEXT NOT NULL,
               doc_id TEXT NOT NULL,
               page_num TEXT NOT NULL,
-              ann_type TEXT NOT NULL,
+              kind TEXT NOT NULL,
               text TEXT NOT NULL,
               coord_x INTEGER,
               coord_y INTEGER,
@@ -153,22 +160,22 @@ def init_db() -> None:
               author_id INTEGER REFERENCES users(id),
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
-              UNIQUE(doc_id, page_num, ann_id)
+              UNIQUE(doc_id, page_num, remark_id)
             );
-            CREATE INDEX IF NOT EXISTS idx_annotations_page ON annotations(doc_id, page_num);
-            CREATE TABLE IF NOT EXISTS annotation_tags (
-              annotation_pk INTEGER NOT NULL REFERENCES annotations(rowid_pk) ON DELETE CASCADE,
+            CREATE INDEX IF NOT EXISTS idx_remarks_page ON remarks(doc_id, page_num);
+            CREATE TABLE IF NOT EXISTS remark_tags (
+              remark_pk INTEGER NOT NULL REFERENCES remarks(rowid_pk) ON DELETE CASCADE,
               tag TEXT NOT NULL,
-              UNIQUE(annotation_pk, tag)
+              UNIQUE(remark_pk, tag)
             );
-            CREATE INDEX IF NOT EXISTS idx_annotation_tags_tag ON annotation_tags(tag);
-            -- Журнал ревизий. Строка в annotations — это материализованная
+            CREATE INDEX IF NOT EXISTS idx_remark_tags_tag ON remark_tags(tag);
+            -- Журнал ревизий. Строка в remarks — это материализованная
             -- «голова» последней ревизии; вся история правок живёт здесь.
-            CREATE TABLE IF NOT EXISTS annotation_history (
+            CREATE TABLE IF NOT EXISTS remark_history (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               doc_id TEXT NOT NULL,
               page_num TEXT NOT NULL,
-              ann_id TEXT NOT NULL,
+              remark_id TEXT NOT NULL,
               action TEXT NOT NULL,
               snapshot TEXT NOT NULL,
               author_id INTEGER,
@@ -178,28 +185,104 @@ def init_db() -> None:
               agent_run_id INTEGER,
               summary TEXT
             );
-            -- TODO(2026-08-21): таблица не используется ни одним кодом --
-            -- ревью-подсистему удалили как неподключённую. DDL оставлен, пока
-            -- не проверено, что на проде она пуста; после проверки удалить.
-            CREATE TABLE IF NOT EXISTS annotation_reviews (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              doc_id TEXT NOT NULL,
-              page_num TEXT NOT NULL,
-              ann_id TEXT NOT NULL,
-              reviewer_id INTEGER NOT NULL REFERENCES users(id),
-              verdict TEXT NOT NULL,
-              note TEXT,
-              created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL,
-              UNIQUE(doc_id, page_num, ann_id, reviewer_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_reviews_ann
-              ON annotation_reviews(doc_id, page_num, ann_id);
             """
         )
         _migrate_schema(_conn)
         _conn.commit()
     ensure_bootstrap_invite()
+
+
+
+#: Значения вида замечания до переименования сущности (2026-08-29).
+LEGACY_KINDS = {"main": "major", "comment": "minor"}
+
+
+def _rename_legacy_to_remarks(conn: sqlite3.Connection) -> None:
+    """Переименовать annotations/* в remarks/* на базе, созданной до 2026-08-29.
+
+    Одна транзакция: падение посреди откатывает всё, и API просто не поднимется
+    на полупереименованной базе. Идемпотентна — на уже мигрированной (или
+    пустой) базе выходит сразу.
+
+    Индексы с новыми именами создаст штатный DDL и _migrate_schema(); здесь
+    важно снять старые, иначе они переживут переименование таблицы и останутся
+    висеть под прежними именами.
+    """
+    tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if "annotations" not in tables:
+        return
+
+    # Ревью-подсистему удалили как неподключённую (TODO от 2026-08-21). Таблицу
+    # сносим только если она действительно пуста; иначе переименовываем и
+    # оставляем разбираться человеку.
+    reviews_rows = 0
+    if "annotation_reviews" in tables:
+        reviews_rows = conn.execute(
+            "SELECT COUNT(*) FROM annotation_reviews").fetchone()[0]
+
+    conn.execute("PRAGMA foreign_keys=off")
+    # Чтобы RENAME TO переписал ссылку FK в remark_tags, а не оставил её
+    # указывать на исчезнувшее имя.
+    conn.execute("PRAGMA legacy_alter_table=off")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("ALTER TABLE annotations RENAME TO remarks")
+        conn.execute("ALTER TABLE remarks RENAME COLUMN ann_id TO remark_id")
+        conn.execute("ALTER TABLE remarks RENAME COLUMN ann_type TO kind")
+        conn.execute("ALTER TABLE annotation_tags RENAME TO remark_tags")
+        conn.execute("ALTER TABLE remark_tags RENAME COLUMN annotation_pk TO remark_pk")
+        conn.execute("ALTER TABLE annotation_history RENAME TO remark_history")
+        conn.execute("ALTER TABLE remark_history RENAME COLUMN ann_id TO remark_id")
+        for legacy, current in LEGACY_KINDS.items():
+            conn.execute("UPDATE remarks SET kind = ? WHERE kind = ?", (current, legacy))
+        for index in (
+            "idx_annotations_page",
+            "idx_annotation_tags_tag",
+            "idx_annotations_category",
+            "idx_annotations_category_source",
+            "idx_history_ann",
+            "idx_history_actor",
+            "idx_history_run",
+            "idx_reviews_ann",
+        ):
+            conn.execute(f"DROP INDEX IF EXISTS {index}")
+        if "annotation_reviews" in tables:
+            if reviews_rows:
+                conn.execute("ALTER TABLE annotation_reviews RENAME TO remark_reviews")
+                conn.execute("ALTER TABLE remark_reviews RENAME COLUMN ann_id TO remark_id")
+            else:
+                conn.execute("DROP TABLE annotation_reviews")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=on")
+    logger.info(
+        "schema: annotations -> remarks (reviews rows=%s)", reviews_rows
+    )
+
+
+def normalize_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    """Привести снапшот ревизии к текущим именам полей.
+
+    Журнал ревизий — аудит, и переписывать его миграцией нельзя: это превратило
+    бы запись о прошлом в реконструкцию. Поэтому старые снапшоты (ключи annId /
+    annType, значения main / comment) нормализуются на чтении. Бессрочно:
+    строки, записанные до переименования, останутся в базе навсегда.
+    """
+    if not isinstance(snapshot, dict):
+        return snapshot
+    out = dict(snapshot)
+    if "remarkId" not in out and "annId" in out:
+        out["remarkId"] = out["annId"]
+    kind = out.get("kind") or out.get("annType")
+    if kind is not None:
+        # Упразднённый general показываем как обычное замечание: тип без якоря
+        # на скане больше не существует, см. docs/general-migration-map.json.
+        out["kind"] = LEGACY_KINDS.get(kind, "minor" if kind == "general" else kind)
+    return out
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
@@ -209,25 +292,25 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     поэтому новые колонки заводим здесь. Дефолт 'other' («Прочее») означает,
     что старые строки не ломаются: категория у них просто не проставлена.
     """
-    columns = {row["name"] for row in conn.execute("PRAGMA table_info(annotations)")}
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(remarks)")}
     if "category" not in columns:
         conn.execute(
-            "ALTER TABLE annotations ADD COLUMN category TEXT NOT NULL DEFAULT 'other'"
+            "ALTER TABLE remarks ADD COLUMN category TEXT NOT NULL DEFAULT 'other'"
         )
     if "category_source" not in columns:
         conn.execute(
-            "ALTER TABLE annotations ADD COLUMN category_source TEXT NOT NULL DEFAULT 'default'"
+            "ALTER TABLE remarks ADD COLUMN category_source TEXT NOT NULL DEFAULT 'default'"
         )
     if "category_set_by" not in columns:
         conn.execute(
-            "ALTER TABLE annotations ADD COLUMN category_set_by INTEGER REFERENCES users(id)"
+            "ALTER TABLE remarks ADD COLUMN category_set_by INTEGER REFERENCES users(id)"
         )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_annotations_category ON annotations(category)"
+        "CREATE INDEX IF NOT EXISTS idx_remarks_category ON remarks(category)"
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_annotations_category_source "
-        "ON annotations(doc_id, category_source)"
+        "CREATE INDEX IF NOT EXISTS idx_remarks_category_source "
+        "ON remarks(doc_id, category_source)"
     )
 
     users = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
@@ -242,7 +325,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     if "display_name" not in users:
         conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT")
 
-    hist = {row["name"] for row in conn.execute("PRAGMA table_info(annotation_history)")}
+    hist = {row["name"] for row in conn.execute("PRAGMA table_info(remark_history)")}
     for column, ddl in (
         ("rev_no", "rev_no INTEGER"),
         ("parent_rev_id", "parent_rev_id INTEGER"),
@@ -250,20 +333,20 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         ("summary", "summary TEXT"),
     ):
         if column not in hist:
-            conn.execute(f"ALTER TABLE annotation_history ADD COLUMN {ddl}")
-    # На annotation_history не было ни одного индекса, а на неё завязаны история
-    # комментария, «мои правки» и лента изменений — три главных экрана редактора.
+            conn.execute(f"ALTER TABLE remark_history ADD COLUMN {ddl}")
+    # На remark_history не было ни одного индекса, а на неё завязаны история
+    # замечания, «мои правки» и лента изменений — три главных экрана редактора.
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_history_ann "
-        "ON annotation_history(doc_id, page_num, ann_id, id)"
+        "CREATE INDEX IF NOT EXISTS idx_remark_history_target "
+        "ON remark_history(doc_id, page_num, remark_id, id)"
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_history_actor "
-        "ON annotation_history(author_id, id)"
+        "CREATE INDEX IF NOT EXISTS idx_remark_history_actor "
+        "ON remark_history(author_id, id)"
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_history_run "
-        "ON annotation_history(agent_run_id, id)"
+        "CREATE INDEX IF NOT EXISTS idx_remark_history_run "
+        "ON remark_history(agent_run_id, id)"
     )
     _backfill_revision_numbers(conn)
 
@@ -271,31 +354,31 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
 def _backfill_revision_numbers(conn: sqlite3.Connection) -> None:
     """Проставить rev_no/parent_rev_id ревизиям, записанным до их появления.
 
-    Нумерация выводится из порядка id внутри (doc_id, page_num, ann_id): id —
+    Нумерация выводится из порядка id внутри (doc_id, page_num, remark_id): id —
     автоинкремент, то есть порядок записи, и он надёжнее created_at (метки
     времени огрубляются, а у импорта они и вовсе одинаковые в пределах пакета).
     Идемпотентно: трогает только строки с NULL."""
     if conn.execute(
-        "SELECT 1 FROM annotation_history WHERE rev_no IS NULL LIMIT 1"
+        "SELECT 1 FROM remark_history WHERE rev_no IS NULL LIMIT 1"
     ).fetchone() is None:
         return
     rows = conn.execute(
-        "SELECT id, doc_id, page_num, ann_id FROM annotation_history "
-        "ORDER BY doc_id, page_num, ann_id, id"
+        "SELECT id, doc_id, page_num, remark_id FROM remark_history "
+        "ORDER BY doc_id, page_num, remark_id, id"
     ).fetchall()
     updates = []
     key = None
     rev_no = 0
     parent = None
     for row in rows:
-        row_key = (row["doc_id"], row["page_num"], row["ann_id"])
+        row_key = (row["doc_id"], row["page_num"], row["remark_id"])
         if row_key != key:
             key, rev_no, parent = row_key, 0, None
         rev_no += 1
         updates.append((rev_no, parent, row["id"]))
         parent = row["id"]
     conn.executemany(
-        "UPDATE annotation_history SET rev_no = ?, parent_rev_id = ? WHERE id = ?",
+        "UPDATE remark_history SET rev_no = ?, parent_rev_id = ? WHERE id = ?",
         updates,
     )
 
@@ -637,7 +720,7 @@ def set_session_csrf(session_id: str, token: str) -> None:
 # `status` stays the canonical draft/published/deleted flag; the matching tags
 # are *derived* at render time (publisher.render_page_static), never stored, so
 # there is no second source of truth to drift. Storing them is therefore an
-# error, wherever the write comes from -- the API, import_annotations.py or the
+# error, wherever the write comes from -- the API, import_remarks.py or the
 # backfill script -- hence the check lives here rather than in main.py.
 RESERVED_TAGS = frozenset({"draft", "published", "deleted"})
 
@@ -720,48 +803,48 @@ def normalize_tags(raw: Any) -> List[str]:
     return seen
 
 
-def _set_tags(conn: sqlite3.Connection, annotation_pk: int, tags: List[str]) -> None:
-    """Replace the tag set of one annotation. Caller holds _lock and commits."""
-    conn.execute("DELETE FROM annotation_tags WHERE annotation_pk = ?", (annotation_pk,))
+def _set_tags(conn: sqlite3.Connection, remark_pk: int, tags: List[str]) -> None:
+    """Replace the tag set of one remark. Caller holds _lock and commits."""
+    conn.execute("DELETE FROM remark_tags WHERE remark_pk = ?", (remark_pk,))
     if tags:
         conn.executemany(
-            "INSERT INTO annotation_tags (annotation_pk, tag) VALUES (?, ?)",
-            [(annotation_pk, tag) for tag in tags],
+            "INSERT INTO remark_tags (remark_pk, tag) VALUES (?, ?)",
+            [(remark_pk, tag) for tag in tags],
         )
 
 
-def _read_tags(conn: sqlite3.Connection, annotation_pk: int) -> List[str]:
+def _read_tags(conn: sqlite3.Connection, remark_pk: int) -> List[str]:
     rows = conn.execute(
-        "SELECT tag FROM annotation_tags WHERE annotation_pk = ? ORDER BY tag", (annotation_pk,)
+        "SELECT tag FROM remark_tags WHERE remark_pk = ? ORDER BY tag", (remark_pk,)
     ).fetchall()
     return [row["tag"] for row in rows]
 
 
 def _read_tags_batch(conn: sqlite3.Connection, pks: List[int]) -> Dict[int, List[str]]:
-    """Tags for many annotations in one query -- the page renderer would
-    otherwise do one SELECT per annotation."""
+    """Tags for many remarks in one query -- the page renderer would
+    otherwise do one SELECT per remark."""
     if not pks:
         return {}
     placeholders = ",".join("?" for _ in pks)
     rows = conn.execute(
-        f"SELECT annotation_pk, tag FROM annotation_tags "
-        f"WHERE annotation_pk IN ({placeholders}) ORDER BY annotation_pk, tag",
+        f"SELECT remark_pk, tag FROM remark_tags "
+        f"WHERE remark_pk IN ({placeholders}) ORDER BY remark_pk, tag",
         pks,
     ).fetchall()
     out: Dict[int, List[str]] = {}
     for row in rows:
-        out.setdefault(row["annotation_pk"], []).append(row["tag"])
+        out.setdefault(row["remark_pk"], []).append(row["tag"])
     return out
 
 
-def get_annotation_tags(annotation_pk: int) -> List[str]:
+def get_remark_tags(remark_pk: int) -> List[str]:
     conn = get_connection()
     with _lock:
-        return _read_tags(conn, annotation_pk)
+        return _read_tags(conn, remark_pk)
 
 
 def list_all_tags(doc_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """[{tag, count}] over non-deleted annotations, most used first."""
+    """[{tag, count}] over non-deleted remarks, most used first."""
     conn = get_connection()
     params: List[Any] = []
     where = "a.status != 'deleted'"
@@ -772,8 +855,8 @@ def list_all_tags(doc_id: Optional[str] = None) -> List[Dict[str, Any]]:
         rows = conn.execute(
             f"""
             SELECT t.tag AS tag, COUNT(*) AS n
-            FROM annotation_tags t
-            JOIN annotations a ON a.rowid_pk = t.annotation_pk
+            FROM remark_tags t
+            JOIN remarks a ON a.rowid_pk = t.remark_pk
             WHERE {where}
             GROUP BY t.tag
             ORDER BY n DESC, t.tag
@@ -870,7 +953,7 @@ def list_agent_runs(actor_id: Optional[int] = None, doc_id: Optional[str] = None
     with _lock:
         rows = conn.execute(
             f"""
-            SELECT r.*, (SELECT COUNT(*) FROM annotation_history h
+            SELECT r.*, (SELECT COUNT(*) FROM remark_history h
                           WHERE h.agent_run_id = r.id) AS n_revisions
             FROM agent_runs r {where}
             ORDER BY r.id DESC LIMIT ? OFFSET ?
@@ -890,13 +973,13 @@ def list_run_revisions(run_id: int) -> List[Dict[str, Any]]:
     conn = get_connection()
     with _lock:
         rows = conn.execute(
-            "SELECT doc_id, page_num, ann_id, id, rev_no, action, summary "
-            "FROM annotation_history WHERE agent_run_id = ? ORDER BY id",
+            "SELECT doc_id, page_num, remark_id, id, rev_no, action, summary "
+            "FROM remark_history WHERE agent_run_id = ? ORDER BY id",
             (run_id,),
         ).fetchall()
     return [
         {"id": r["id"], "docId": r["doc_id"], "pageNum": r["page_num"],
-         "annId": r["ann_id"], "revNo": r["rev_no"], "action": r["action"],
+         "remarkId": r["remark_id"], "revNo": r["rev_no"], "action": r["action"],
          "summary": r["summary"]}
         for r in rows
     ]
@@ -905,34 +988,34 @@ def list_run_revisions(run_id: int) -> List[Dict[str, Any]]:
 def plan_agent_run_revert(run_id: int) -> List[Dict[str, Any]]:
     """Что нужно сделать, чтобы отменить прогон целиком.
 
-    Для каждой затронутой аннотации ищем ревизию, предшествующую первой ревизии
+    Для каждого затронутого замечания ищем ревизию, предшествующую первой ревизии
     этого прогона, и возвращаем её как целевое состояние. Если такой ревизии нет,
-    аннотацию создал сам прогон — её нужно удалить (мягко: ничего не стирается).
+    замечание создал сам прогон — его нужно удалить (мягко: ничего не стирается).
 
     Возвращается план, а не результат: откат прогона — операция на сотни строк,
     и человек должен увидеть её объём до, а не после."""
     conn = get_connection()
     with _lock:
         touched = conn.execute(
-            "SELECT doc_id, page_num, ann_id, MIN(id) AS first_id "
-            "FROM annotation_history WHERE agent_run_id = ? "
-            "GROUP BY doc_id, page_num, ann_id ORDER BY doc_id, page_num, ann_id",
+            "SELECT doc_id, page_num, remark_id, MIN(id) AS first_id "
+            "FROM remark_history WHERE agent_run_id = ? "
+            "GROUP BY doc_id, page_num, remark_id ORDER BY doc_id, page_num, remark_id",
             (run_id,),
         ).fetchall()
         plan: List[Dict[str, Any]] = []
         for row in touched:
             before = conn.execute(
                 """
-                SELECT id, rev_no, snapshot FROM annotation_history
-                WHERE doc_id = ? AND page_num = ? AND ann_id = ? AND id < ?
+                SELECT id, rev_no, snapshot FROM remark_history
+                WHERE doc_id = ? AND page_num = ? AND remark_id = ? AND id < ?
                 ORDER BY id DESC LIMIT 1
                 """,
-                (row["doc_id"], row["page_num"], row["ann_id"], row["first_id"]),
+                (row["doc_id"], row["page_num"], row["remark_id"], row["first_id"]),
             ).fetchone()
             item = {
                 "docId": row["doc_id"],
                 "pageNum": row["page_num"],
-                "annId": row["ann_id"],
+                "remarkId": row["remark_id"],
             }
             if before is None:
                 item["action"] = "delete"
@@ -943,7 +1026,7 @@ def plan_agent_run_revert(run_id: int) -> List[Dict[str, Any]]:
                 item["targetRevId"] = before["id"]
                 item["targetRevNo"] = before["rev_no"]
                 try:
-                    item["snapshot"] = json.loads(before["snapshot"])
+                    item["snapshot"] = normalize_snapshot(json.loads(before["snapshot"]))
                 except (TypeError, ValueError):
                     item["snapshot"] = None
             plan.append(item)
@@ -1000,7 +1083,7 @@ _PAGE_IN_SECTION = (
 
 
 def list_sections(doc_id: str) -> List[Dict[str, Any]]:
-    """Параграфы документа со сводкой по аннотациям.
+    """Параграфы документа со сводкой по замечаниям.
 
     Сводка — это доска работ: сколько всего, сколько опубликовано, сколько
     черновиков и сколько ещё не разобрано по категориям (category_source =
@@ -1010,20 +1093,20 @@ def list_sections(doc_id: str) -> List[Dict[str, Any]]:
         rows = conn.execute(
             f"""
             SELECT s.*,
-              (SELECT COUNT(*) FROM annotations a
+              (SELECT COUNT(*) FROM remarks a
                 WHERE a.doc_id = s.doc_id AND a.status != 'deleted'
                   AND {_PAGE_IN_SECTION}) AS n_total,
-              (SELECT COUNT(*) FROM annotations a
+              (SELECT COUNT(*) FROM remarks a
                 WHERE a.doc_id = s.doc_id AND a.status = 'published'
                   AND {_PAGE_IN_SECTION}) AS n_published,
-              (SELECT COUNT(*) FROM annotations a
+              (SELECT COUNT(*) FROM remarks a
                 WHERE a.doc_id = s.doc_id AND a.status = 'draft'
                   AND {_PAGE_IN_SECTION}) AS n_draft,
-              (SELECT COUNT(*) FROM annotations a
+              (SELECT COUNT(*) FROM remarks a
                 WHERE a.doc_id = s.doc_id AND a.status != 'deleted'
                   AND a.category_source = 'default'
                   AND {_PAGE_IN_SECTION}) AS n_unclassified,
-              (SELECT MAX(a.updated_at) FROM annotations a
+              (SELECT MAX(a.updated_at) FROM remarks a
                 WHERE a.doc_id = s.doc_id AND {_PAGE_IN_SECTION}) AS last_activity
             FROM sections s
             WHERE s.doc_id = ?
@@ -1070,13 +1153,13 @@ def find_section_for_page(doc_id: str, page_num: str) -> Optional[Dict[str, Any]
 # ===== Annotations (stage 2: SQLite is the canonical store) =====
 
 
-def _annotation_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+def _remark_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
     return {
         "rowidPk": row["rowid_pk"],
-        "annId": row["ann_id"],
+        "remarkId": row["remark_id"],
         "docId": row["doc_id"],
         "pageNum": row["page_num"],
-        "annType": row["ann_type"],
+        "kind": row["kind"],
         "text": row["text"],
         "coordX": row["coord_x"],
         "coordY": row["coord_y"],
@@ -1091,7 +1174,7 @@ def _annotation_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
 
 
 def _attach_tags(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Add a "tags" list to each annotation dict, in one query. Caller holds _lock."""
+    """Add a "tags" list to each remark dict, in one query. Caller holds _lock."""
     by_pk = _read_tags_batch(conn, [item["rowidPk"] for item in items])
     for item in items:
         item["tags"] = by_pk.get(item["rowidPk"], [])
@@ -1102,7 +1185,7 @@ def _insert_history(
     conn: sqlite3.Connection,
     doc_id: str,
     page_num: str,
-    ann_id: str,
+    remark_id: str,
     action: str,
     snapshot: Dict[str, Any],
     author_id: Optional[int],
@@ -1112,24 +1195,24 @@ def _insert_history(
     """Записать ревизию. Вызывается внутри той же транзакции, что и правка.
 
     `rev_no` и `parent_rev_id` считаются здесь, а не триггером: нумерация ведётся
-    в пределах одной аннотации, а не всей таблицы, и должна быть непрерывной,
+    в пределах одного замечания, а не всей таблицы, и должна быть непрерывной,
     чтобы «версия 3» в ссылке означала то же самое завтра."""
     prev = conn.execute(
         """
-        SELECT id, rev_no FROM annotation_history
-        WHERE doc_id = ? AND page_num = ? AND ann_id = ?
+        SELECT id, rev_no FROM remark_history
+        WHERE doc_id = ? AND page_num = ? AND remark_id = ?
         ORDER BY id DESC LIMIT 1
         """,
-        (doc_id, page_num, ann_id),
+        (doc_id, page_num, remark_id),
     ).fetchone()
     conn.execute(
         """
-        INSERT INTO annotation_history
-          (doc_id, page_num, ann_id, action, snapshot, author_id, created_at,
+        INSERT INTO remark_history
+          (doc_id, page_num, remark_id, action, snapshot, author_id, created_at,
            rev_no, parent_rev_id, agent_run_id, summary)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (doc_id, page_num, ann_id, action, json.dumps(snapshot, ensure_ascii=False),
+        (doc_id, page_num, remark_id, action, json.dumps(snapshot, ensure_ascii=False),
          author_id, _now_iso(),
          (prev["rev_no"] or 0) + 1 if prev else 1,
          prev["id"] if prev else None,
@@ -1140,64 +1223,64 @@ def _insert_history(
 def add_history(
     doc_id: str,
     page_num: str,
-    ann_id: str,
+    remark_id: str,
     action: str,
     snapshot: Dict[str, Any],
     author_id: Optional[int] = None,
 ) -> None:
     conn = get_connection()
     with _lock:
-        _insert_history(conn, doc_id, page_num, ann_id, action, snapshot, author_id)
+        _insert_history(conn, doc_id, page_num, remark_id, action, snapshot, author_id)
         conn.commit()
 
 
-def list_page_annotations(doc_id: str, page_num: str, include_deleted: bool = False) -> List[Dict[str, Any]]:
+def list_page_remarks(doc_id: str, page_num: str, include_deleted: bool = False) -> List[Dict[str, Any]]:
     conn = get_connection()
     with _lock:
         if include_deleted:
             rows = conn.execute(
-                "SELECT * FROM annotations WHERE doc_id = ? AND page_num = ? ORDER BY rowid_pk",
+                "SELECT * FROM remarks WHERE doc_id = ? AND page_num = ? ORDER BY rowid_pk",
                 (doc_id, page_num),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM annotations WHERE doc_id = ? AND page_num = ? AND status = 'published' ORDER BY rowid_pk",
+                "SELECT * FROM remarks WHERE doc_id = ? AND page_num = ? AND status = 'published' ORDER BY rowid_pk",
                 (doc_id, page_num),
             ).fetchall()
-        return _attach_tags(conn, [_annotation_row_to_dict(row) for row in rows])
+        return _attach_tags(conn, [_remark_row_to_dict(row) for row in rows])
 
 
 def list_page_drafts(doc_id: str, page_num: str) -> List[Dict[str, Any]]:
-    """Draft (status='draft') annotations for a page, in insertion order. The
+    """Draft (status='draft') remarks for a page, in insertion order. The
     publisher renders them into the same page_<NNN>.json as the published ones,
     each carrying the derived "draft" tag; the viewer filters them out unless
     the URL asks for them (?showDrafts=1 / ?tags=draft)."""
     conn = get_connection()
     with _lock:
         rows = conn.execute(
-            "SELECT * FROM annotations WHERE doc_id = ? AND page_num = ? AND status = 'draft' ORDER BY rowid_pk",
+            "SELECT * FROM remarks WHERE doc_id = ? AND page_num = ? AND status = 'draft' ORDER BY rowid_pk",
             (doc_id, page_num),
         ).fetchall()
-        return _attach_tags(conn, [_annotation_row_to_dict(row) for row in rows])
+        return _attach_tags(conn, [_remark_row_to_dict(row) for row in rows])
 
 
-def get_annotation(doc_id: str, page_num: str, ann_id: str) -> Optional[Dict[str, Any]]:
+def get_remark(doc_id: str, page_num: str, remark_id: str) -> Optional[Dict[str, Any]]:
     conn = get_connection()
     with _lock:
         row = conn.execute(
-            "SELECT * FROM annotations WHERE doc_id = ? AND page_num = ? AND ann_id = ?",
-            (doc_id, page_num, ann_id),
+            "SELECT * FROM remarks WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
+            (doc_id, page_num, remark_id),
         ).fetchone()
         if row is None:
             return None
-        return _attach_tags(conn, [_annotation_row_to_dict(row)])[0]
+        return _attach_tags(conn, [_remark_row_to_dict(row)])[0]
 
 
-def upsert_annotation_db(
+def upsert_remark_db(
     doc_id: str,
     page_num: str,
-    ann_id: str,
-    ann_type: str,
+    remark_id: str,
+    kind: str,
     text: str,
     coord_x: Optional[int] = None,
     coord_y: Optional[int] = None,
@@ -1210,23 +1293,29 @@ def upsert_annotation_db(
     summary: Optional[str] = None,
     agent_run_id: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Insert or update an annotation by (doc_id, page_num, ann_id) and record
-    the resulting state in annotation_history, in the same transaction.
+    """Insert or update a remark by (doc_id, page_num, remark_id) and record
+    the resulting state in remark_history, in the same transaction.
+
+    `kind` принимается и в прежних именах (main/comment): импорт старых
+    выгрузок и бэкапов идёт сюда напрямую, и нормализация здесь — гарантия, что
+    после переименования в таблице не заведётся ни одной старой строки, чей бы
+    вызов её ни принёс.
 
     `tags` is deliberately outside the column upsert: None means "leave the tag
     set alone", [] means "clear it". That way callers that predate tags
-    (import_annotations.py, the editor's PUT, history revert) cannot wipe them
+    (import_remarks.py, the editor's PUT, history revert) cannot wipe them
     just by not mentioning them.
 
     `category` follows the same rule for the same reason: None means "leave it
     alone", so a caller that predates categories cannot silently reset an
-    annotation to 'other'. A brand-new row gets the column default ('other')
+    remark to 'other'. A brand-new row gets the column default ('other')
     when the caller says nothing.
 
     `category_source` moves only together with an explicit `category`: leaving the
     category alone must not silently promote a guess to 'human'. Passing a
     category without a source means a human set it (that is the editor's path);
     CLI backfills name 'tags-backfill' or 'agent' for themselves."""
+    kind = LEGACY_KINDS.get(kind, kind)
     conn = get_connection()
     now = _now_iso()
     if tags is not None:
@@ -1240,30 +1329,30 @@ def upsert_annotation_db(
     with _lock:
         conn.execute(
             """
-            INSERT INTO annotations
-              (ann_id, doc_id, page_num, ann_type, text, coord_x, coord_y, status, category,
+            INSERT INTO remarks
+              (remark_id, doc_id, page_num, kind, text, coord_x, coord_y, status, category,
                category_source, category_set_by, author_id, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(doc_id, page_num, ann_id) DO UPDATE SET
-              ann_type = excluded.ann_type,
+            ON CONFLICT(doc_id, page_num, remark_id) DO UPDATE SET
+              kind = excluded.kind,
               text = excluded.text,
               coord_x = excluded.coord_x,
               coord_y = excluded.coord_y,
               status = excluded.status,
               -- NULL в параметре означает «не трогать»: COALESCE оставляет то,
               -- что уже стоит в строке.
-              category = COALESCE(?, annotations.category),
+              category = COALESCE(?, remarks.category),
               -- Источник и «кто назначил» едут только вместе с явной категорией:
               -- обычное сохранение текста не должно превращать догадку в решение
               -- человека.
-              category_source = CASE WHEN ? IS NULL THEN annotations.category_source
+              category_source = CASE WHEN ? IS NULL THEN remarks.category_source
                                      ELSE excluded.category_source END,
-              category_set_by = CASE WHEN ? IS NULL THEN annotations.category_set_by
+              category_set_by = CASE WHEN ? IS NULL THEN remarks.category_set_by
                                      ELSE excluded.category_set_by END,
               author_id = excluded.author_id,
               updated_at = excluded.updated_at
             """,
-            (ann_id, doc_id, page_num, ann_type, text, coord_x, coord_y, status,
+            (remark_id, doc_id, page_num, kind, text, coord_x, coord_y, status,
              category or annotation_categories.DEFAULT_CATEGORY,
              category_source or DEFAULT_CATEGORY_SOURCE,
              author_id if category is not None else None,
@@ -1271,62 +1360,62 @@ def upsert_annotation_db(
              category, category, category),
         )
         row = conn.execute(
-            "SELECT * FROM annotations WHERE doc_id = ? AND page_num = ? AND ann_id = ?",
-            (doc_id, page_num, ann_id),
+            "SELECT * FROM remarks WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
+            (doc_id, page_num, remark_id),
         ).fetchone()
-        ann = _annotation_row_to_dict(row)
+        ann = _remark_row_to_dict(row)
         if tags is not None:
             _set_tags(conn, ann["rowidPk"], tags)
         ann["tags"] = _read_tags(conn, ann["rowidPk"])
-        _insert_history(conn, doc_id, page_num, ann_id, action, ann, author_id,
+        _insert_history(conn, doc_id, page_num, remark_id, action, ann, author_id,
                         summary=summary, agent_run_id=agent_run_id)
         conn.commit()
     return ann
 
 
-def soft_delete_annotation(doc_id: str, page_num: str, ann_id: str,
+def soft_delete_remark(doc_id: str, page_num: str, remark_id: str,
                            author_id: Optional[int] = None,
                            summary: Optional[str] = None) -> bool:
-    """Mark a published annotation as deleted and record history. Returns False
-    if the annotation doesn't exist or is already deleted."""
+    """Mark a published remark as deleted and record history. Returns False
+    if the remark doesn't exist or is already deleted."""
     conn = get_connection()
     now = _now_iso()
     with _lock:
         row = conn.execute(
-            "SELECT * FROM annotations WHERE doc_id = ? AND page_num = ? AND ann_id = ?",
-            (doc_id, page_num, ann_id),
+            "SELECT * FROM remarks WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
+            (doc_id, page_num, remark_id),
         ).fetchone()
         if row is None or row["status"] == "deleted":
             return False
         conn.execute(
-            "UPDATE annotations SET status = 'deleted', updated_at = ? WHERE doc_id = ? AND page_num = ? AND ann_id = ?",
-            (now, doc_id, page_num, ann_id),
+            "UPDATE remarks SET status = 'deleted', updated_at = ? WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
+            (now, doc_id, page_num, remark_id),
         )
         row = conn.execute(
-            "SELECT * FROM annotations WHERE doc_id = ? AND page_num = ? AND ann_id = ?",
-            (doc_id, page_num, ann_id),
+            "SELECT * FROM remarks WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
+            (doc_id, page_num, remark_id),
         ).fetchone()
-        ann = _annotation_row_to_dict(row)
+        ann = _remark_row_to_dict(row)
         ann["tags"] = _read_tags(conn, ann["rowidPk"])
-        _insert_history(conn, doc_id, page_num, ann_id, "delete", ann, author_id,
+        _insert_history(conn, doc_id, page_num, remark_id, "delete", ann, author_id,
                         summary=summary)
         conn.commit()
     return True
 
 
 def list_pages(doc_id: Optional[str] = None) -> List[Tuple[str, str]]:
-    """Distinct (doc_id, page_num) pairs that have at least one annotation row
+    """Distinct (doc_id, page_num) pairs that have at least one remark row
     (any status)."""
     conn = get_connection()
     with _lock:
         if doc_id:
             rows = conn.execute(
-                "SELECT DISTINCT doc_id, page_num FROM annotations WHERE doc_id = ? ORDER BY doc_id, page_num",
+                "SELECT DISTINCT doc_id, page_num FROM remarks WHERE doc_id = ? ORDER BY doc_id, page_num",
                 (doc_id,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT DISTINCT doc_id, page_num FROM annotations ORDER BY doc_id, page_num"
+                "SELECT DISTINCT doc_id, page_num FROM remarks ORDER BY doc_id, page_num"
             ).fetchall()
     return [(row["doc_id"], row["page_num"]) for row in rows]
 
@@ -1334,7 +1423,7 @@ def list_pages(doc_id: Optional[str] = None) -> List[Tuple[str, str]]:
 def list_doc_ids() -> List[str]:
     conn = get_connection()
     with _lock:
-        rows = conn.execute("SELECT DISTINCT doc_id FROM annotations ORDER BY doc_id").fetchall()
+        rows = conn.execute("SELECT DISTINCT doc_id FROM remarks ORDER BY doc_id").fetchall()
     return [row["doc_id"] for row in rows]
 
 
@@ -1345,10 +1434,10 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def _annotation_filters(
+def _remark_filters(
     doc_id: Optional[str],
     page_num: Optional[str],
-    ann_type: Optional[str],
+    kind: Optional[str],
     status: Optional[str],
     author_id: Optional[int],
     q: Optional[str],
@@ -1365,9 +1454,9 @@ def _annotation_filters(
     if page_num is not None:
         clauses.append("a.page_num = ?")
         params.append(page_num)
-    if ann_type is not None:
-        clauses.append("a.ann_type = ?")
-        params.append(ann_type)
+    if kind is not None:
+        clauses.append("a.kind = ?")
+        params.append(kind)
     if status is not None:
         clauses.append("a.status = ?")
         params.append(status)
@@ -1384,7 +1473,7 @@ def _annotation_filters(
         clauses.append("a.category_source = ?")
         params.append(normalize_category_source(category_source))
     if section_id is not None:
-        # Параграф — это диапазон страниц, отдельной колонки у аннотации нет:
+        # Параграф — это диапазон страниц, отдельной колонки у замечания нет:
         # связь выводится, а не хранится, иначе её пришлось бы чинить при
         # каждой правке манифеста.
         clauses.append(
@@ -1393,19 +1482,19 @@ def _annotation_filters(
         )
         params.append(section_id)
     if tag:
-        # EXISTS rather than a JOIN, so count_annotations needs no DISTINCT.
+        # EXISTS rather than a JOIN, so count_remarks needs no DISTINCT.
         clauses.append(
-            "EXISTS (SELECT 1 FROM annotation_tags t WHERE t.annotation_pk = a.rowid_pk AND t.tag = ?)"
+            "EXISTS (SELECT 1 FROM remark_tags t WHERE t.remark_pk = a.rowid_pk AND t.tag = ?)"
         )
         params.append(tag.strip().lower())
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     return where, params
 
 
-def list_annotations(
+def list_remarks(
     doc_id: Optional[str] = None,
     page_num: Optional[str] = None,
-    ann_type: Optional[str] = None,
+    kind: Optional[str] = None,
     status: Optional[str] = None,
     author_id: Optional[int] = None,
     q: Optional[str] = None,
@@ -1416,14 +1505,14 @@ def list_annotations(
     category_source: Optional[str] = None,
     section_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    where, params = _annotation_filters(doc_id, page_num, ann_type, status, author_id, q,
+    where, params = _remark_filters(doc_id, page_num, kind, status, author_id, q,
                                         tag, category, category_source, section_id)
     conn = get_connection()
     with _lock:
         rows = conn.execute(
             f"""
             SELECT a.*, u.display_name AS author_name
-            FROM annotations a
+            FROM remarks a
             LEFT JOIN users u ON u.id = a.author_id
             {where}
             ORDER BY a.updated_at DESC, a.rowid_pk DESC
@@ -1433,7 +1522,7 @@ def list_annotations(
         ).fetchall()
         result = []
         for row in rows:
-            item = _annotation_row_to_dict(row)
+            item = _remark_row_to_dict(row)
             item["authorName"] = row["author_name"]
             # authorEmail не отдаётся: email в системе больше нет
             # (docs/anonymity-model.md).
@@ -1441,10 +1530,10 @@ def list_annotations(
         return _attach_tags(conn, result)
 
 
-def count_annotations(
+def count_remarks(
     doc_id: Optional[str] = None,
     page_num: Optional[str] = None,
-    ann_type: Optional[str] = None,
+    kind: Optional[str] = None,
     status: Optional[str] = None,
     author_id: Optional[int] = None,
     q: Optional[str] = None,
@@ -1453,12 +1542,12 @@ def count_annotations(
     category_source: Optional[str] = None,
     section_id: Optional[str] = None,
 ) -> int:
-    where, params = _annotation_filters(doc_id, page_num, ann_type, status, author_id, q,
+    where, params = _remark_filters(doc_id, page_num, kind, status, author_id, q,
                                         tag, category, category_source, section_id)
     conn = get_connection()
     with _lock:
         row = conn.execute(
-            f"SELECT COUNT(*) AS n FROM annotations a {where}", params
+            f"SELECT COUNT(*) AS n FROM remarks a {where}", params
         ).fetchone()
     return row["n"]
 
@@ -1466,7 +1555,7 @@ def count_annotations(
 def list_history(
     doc_id: Optional[str] = None,
     page_num: Optional[str] = None,
-    ann_id: Optional[str] = None,
+    remark_id: Optional[str] = None,
     author_id: Optional[int] = None,
     action: Optional[str] = None,
     limit: int = 50,
@@ -1480,9 +1569,9 @@ def list_history(
     if page_num is not None:
         clauses.append("h.page_num = ?")
         params.append(page_num)
-    if ann_id is not None:
-        clauses.append("h.ann_id = ?")
-        params.append(ann_id)
+    if remark_id is not None:
+        clauses.append("h.remark_id = ?")
+        params.append(remark_id)
     if author_id is not None:
         clauses.append("h.author_id = ?")
         params.append(author_id)
@@ -1496,7 +1585,7 @@ def list_history(
         rows = conn.execute(
             f"""
             SELECT h.*, u.display_name AS author_name
-            FROM annotation_history h
+            FROM remark_history h
             LEFT JOIN users u ON u.id = h.author_id
             {where}
             ORDER BY h.id DESC
@@ -1507,7 +1596,7 @@ def list_history(
     result = []
     for row in rows:
         try:
-            snapshot = json.loads(row["snapshot"])
+            snapshot = normalize_snapshot(json.loads(row["snapshot"]))
         except (TypeError, ValueError):
             snapshot = None
         result.append(
@@ -1515,7 +1604,7 @@ def list_history(
                 "id": row["id"],
                 "docId": row["doc_id"],
                 "pageNum": row["page_num"],
-                "annId": row["ann_id"],
+                "remarkId": row["remark_id"],
                 "action": row["action"],
                 "snapshot": snapshot,
                 "authorId": row["author_id"],
@@ -1536,7 +1625,7 @@ def get_history_record(hist_id: int) -> Optional[Dict[str, Any]]:
         row = conn.execute(
             """
             SELECT h.*, u.display_name AS author_name
-            FROM annotation_history h
+            FROM remark_history h
             LEFT JOIN users u ON u.id = h.author_id
             WHERE h.id = ?
             """,
@@ -1545,14 +1634,14 @@ def get_history_record(hist_id: int) -> Optional[Dict[str, Any]]:
     if row is None:
         return None
     try:
-        snapshot = json.loads(row["snapshot"])
+        snapshot = normalize_snapshot(json.loads(row["snapshot"]))
     except (TypeError, ValueError):
         snapshot = None
     return {
         "id": row["id"],
         "docId": row["doc_id"],
         "pageNum": row["page_num"],
-        "annId": row["ann_id"],
+        "remarkId": row["remark_id"],
         "action": row["action"],
         "snapshot": snapshot,
         "authorId": row["author_id"],
@@ -1563,7 +1652,7 @@ def get_history_record(hist_id: int) -> Optional[Dict[str, Any]]:
 
 # Ревью-подсистема (кворум рецензентов) была отсюда удалена 2026-08-21:
 # код существовал с этапа 3, но не был подключён ни к API, ни к кабинету,
-# ни к тестам. Таблица annotation_reviews в init_db оставлена намеренно
+# ни к тестам. Таблица remark_reviews в init_db оставлена намеренно
 # (см. TODO там). Восстановить можно из git: scripts/api/db.py до этой даты.
 
 def get_stats() -> Dict[str, Any]:
@@ -1572,14 +1661,14 @@ def get_stats() -> Dict[str, Any]:
         rows = conn.execute(
             """
             SELECT doc_id, status, COUNT(*) AS n
-            FROM annotations
+            FROM remarks
             GROUP BY doc_id, status
             """
         ).fetchall()
         recent_rows = conn.execute(
             """
-            SELECT h.doc_id, h.page_num, h.ann_id, h.action, h.created_at, u.display_name AS author_name
-            FROM annotation_history h
+            SELECT h.doc_id, h.page_num, h.remark_id, h.action, h.created_at, u.display_name AS author_name
+            FROM remark_history h
             LEFT JOIN users u ON u.id = h.author_id
             ORDER BY h.id DESC
             LIMIT 10
@@ -1598,7 +1687,7 @@ def get_stats() -> Dict[str, Any]:
         {
             "docId": row["doc_id"],
             "pageNum": row["page_num"],
-            "annId": row["ann_id"],
+            "remarkId": row["remark_id"],
             "action": row["action"],
             "authorName": row["author_name"],
             "createdAt": row["created_at"],

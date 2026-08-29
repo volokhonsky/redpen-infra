@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Automated tests for annotation positioning at different screen widths.
+Automated tests for remark positioning at different screen widths.
 
-This script tests the positioning of annotation circles on page 7 at different
+This script tests the positioning of remark circles on page 7 at different
 screen widths (1280px and 800px) and verifies that the positioning remains
 correct when the screen size changes.
 
 Usage:
-    python tests/annotation_position_tests.py
+    python tests/remark_position_tests.py
 
 The tests will:
 1. Measure circle positions at desktop width (1280px)
@@ -53,7 +53,7 @@ id: ann-page7-1
 target: page_007_line003
 ~~~
 
-This is a test annotation for positioning tests.
+This is a test remark for positioning tests.
 
 ~~~meta
 type: general
@@ -66,25 +66,25 @@ type: comment
 target: [400, 600]
 ~~~
 
-This is a comment annotation for testing.
+This is a comment remark for testing.
 """
 
 DEFAULT_ANNOTATION_JSON = """[
   {
     "id": "ann-page7-1",
-    "text": "This is a test annotation for positioning tests.",
-    "annType": "main",
+    "text": "This is a test remark for positioning tests.",
+    "kind": "major",
     "targetBlock": "page_007_line003"
   },
   {
     "id": "",
     "text": "This is a general comment for testing.",
-    "annType": "general"
+    "kind": "general"
   },
   {
     "id": "",
-    "text": "This is a comment annotation for testing.",
-    "annType": "comment",
+    "text": "This is a comment remark for testing.",
+    "kind": "minor",
     "coords": [
       400,
       600
@@ -199,12 +199,12 @@ def setup_test_content():
     temp_content_dir = tempfile.mkdtemp(prefix="redpen_test_content_")
 
     # Create the necessary directory structure
-    os.makedirs(os.path.join(temp_content_dir, 'annotations'), exist_ok=True)
+    os.makedirs(os.path.join(temp_content_dir, 'remarks'), exist_ok=True)
     os.makedirs(os.path.join(temp_content_dir, 'images'), exist_ok=True)
     os.makedirs(os.path.join(temp_content_dir, 'text'), exist_ok=True)
 
-    # Create a test annotation file
-    with open(os.path.join(temp_content_dir, 'annotations', 'page_007.md'), 'w') as f:
+    # Create a test remark file
+    with open(os.path.join(temp_content_dir, 'remarks', 'page_007.md'), 'w') as f:
         f.write(DEFAULT_ANNOTATION_MD)
 
     # Copy a test image from the project
@@ -297,8 +297,8 @@ def create_test_files(output_dir):
       <div id="comments-content">
         <h2>Комментарии</h2>
         <ul id="comment-list">
-          <li>This is a test annotation for positioning tests.</li>
-          <li>This is a comment annotation for testing.</li>
+          <li>This is a test remark for positioning tests.</li>
+          <li>This is a comment remark for testing.</li>
         </ul>
       </div>
     </div>
@@ -353,8 +353,8 @@ def build_test_website(content_dir):
         os.environ['REDPEN_CONTENT_DIR'] = content_dir
 
         # Run the build steps with our temporary directories
-        print(f"Converting annotations from {content_dir} to {temp_output_dir}...")
-        build_website.convert_annotations(temp_output_dir)
+        print(f"Converting remarks from {content_dir} to {temp_output_dir}...")
+        build_website.convert_remarks(temp_output_dir)
 
         print(f"Publishing website data to {temp_output_dir}...")
         build_website.publish_website_data(temp_output_dir)
@@ -368,7 +368,7 @@ def build_test_website(content_dir):
         os.chdir(original_dir)
 
 def run_tests(update_baseline=False):
-    """Run all annotation positioning tests"""
+    """Run all remark positioning tests"""
     # Create results directory
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -458,7 +458,7 @@ def run_tests(update_baseline=False):
             print(f"Warning: Failed to clean up publish directory: {e}")
 
 def test_desktop_width(p, port):
-    """Test annotation positioning at desktop width (1280px)"""
+    """Test remark positioning at desktop width (1280px)"""
     print("Starting test_desktop_width...")
     browser = p.chromium.launch(headless=True)
     context = browser.new_context(
@@ -509,8 +509,8 @@ def test_desktop_width(p, port):
     except Exception as e:
         print(f"Error loading page 7: {e}")
 
-    # Wait for annotations to load and position
-    print("Waiting for annotations to load...")
+    # Wait for remarks to load and position
+    print("Waiting for remarks to load...")
     time.sleep(2)
 
     # Wait for circles to be created
@@ -554,7 +554,7 @@ def test_desktop_width(p, port):
     return circles
 
 def test_mobile_width(p, port):
-    """Test annotation positioning at mobile width (800px)"""
+    """Test remark positioning at mobile width (800px)"""
     print("Starting test_mobile_width...")
     browser = p.chromium.launch(headless=True)
     context = browser.new_context(
@@ -581,8 +581,8 @@ def test_mobile_width(p, port):
     except Exception as e:
         print(f"Error loading page 7: {e}")
 
-    # Wait for annotations to load and position
-    print("Waiting for annotations to load...")
+    # Wait for remarks to load and position
+    print("Waiting for remarks to load...")
     time.sleep(2)
 
     # Wait for circles to be created
@@ -626,7 +626,7 @@ def test_mobile_width(p, port):
     return circles
 
 def test_resize_desktop_to_mobile(p, port):
-    """Test annotation positioning when resizing from desktop to mobile"""
+    """Test remark positioning when resizing from desktop to mobile"""
     print("Starting test_resize_desktop_to_mobile...")
     browser = p.chromium.launch(headless=True)
     context = browser.new_context(
@@ -653,8 +653,8 @@ def test_resize_desktop_to_mobile(p, port):
     except Exception as e:
         print(f"Error loading page 7: {e}")
 
-    # Wait for annotations to load and position
-    print("Waiting for annotations to load...")
+    # Wait for remarks to load and position
+    print("Waiting for remarks to load...")
     time.sleep(2)
 
     # Wait for circles to be created
@@ -708,7 +708,7 @@ def test_resize_desktop_to_mobile(p, port):
     return circles
 
 def test_resize_mobile_to_desktop(p, port):
-    """Test annotation positioning when resizing from mobile to desktop"""
+    """Test remark positioning when resizing from mobile to desktop"""
     print("Starting test_resize_mobile_to_desktop...")
     browser = p.chromium.launch(headless=True)
     context = browser.new_context(
@@ -735,8 +735,8 @@ def test_resize_mobile_to_desktop(p, port):
     except Exception as e:
         print(f"Error loading page 7: {e}")
 
-    # Wait for annotations to load and position
-    print("Waiting for annotations to load...")
+    # Wait for remarks to load and position
+    print("Waiting for remarks to load...")
     time.sleep(2)
 
     # Wait for circles to be created
@@ -838,7 +838,7 @@ def run_single_test():
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Run annotation positioning tests")
+    parser = argparse.ArgumentParser(description="Run remark positioning tests")
     parser.add_argument("--update-baseline", action="store_true", help="Update baseline positions")
     parser.add_argument("--debug", action="store_true", help="Run single test for debugging")
 

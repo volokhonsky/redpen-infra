@@ -1,3 +1,11 @@
+/*
+ * ВНИМАНИЕ (переименование сущности, 2026-08-29). Этот файл — клиент API, и он
+ * ещё говорит прежними именами: путь `/api/annotations`, поля `annId`/`annType`
+ * со значениями `main`/`comment`. Так и задумано: статика выкладывается раньше
+ * API, а на новые имена клиенты редактора переводятся отдельной выкладкой —
+ * уже после того, как API начнёт их понимать (он принимает и отдаёт оба
+ * набора). Читательская часть переведена сразу, см. page-view.js.
+ */
 (function () {
   'use strict';
 
@@ -406,7 +414,7 @@
         '<td><a href="' + href + '">' + escapeHtml((a.text || '').slice(0, 120)) + '</a></td>' +
         '<td class="app-nowrap">' + escapeHtml(formatDay(a.updatedAt)) + '</td>' +
       '</tr>';
-    }).join('') || '<tr><td colspan="5">В этом параграфе комментариев нет.</td></tr>';
+    }).join('') || '<tr><td colspan="5">В этом параграфе замечаний нет.</td></tr>';
 
     var section = (await apiGet('/api/sections?docId=' + encodeURIComponent(ref.docId))).sections
       .filter(function (s) { return s.sectionId === ref.sectionId; })[0];
@@ -548,7 +556,7 @@
   async function queueReject() {
     var item = state.queue.items[state.queue.index];
     if (!item) return;
-    if (!window.confirm('Отклонить комментарий ' + item.annId + '? Он будет удалён (мягко).')) return;
+    if (!window.confirm('Отклонить замечание ' + item.annId + '? Оно будет удалено (мягко).')) return;
     await apiMutate('DELETE', '/api/editor/' + encodeURIComponent(item.docId) + '/' +
                     encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.annId));
     setStatus('Отклонён: ' + item.annId, false);
@@ -601,7 +609,7 @@
     var ref = state.ref;
     if (!ref) return;
     var body = collectForm();
-    if (!body.text.trim()) { setStatus('Текст комментария пуст.', true); return; }
+    if (!body.text.trim()) { setStatus('Текст замечания пуст.', true); return; }
     await apiMutate('PUT', '/api/editor/' + encodeURIComponent(ref.docId) + '/' +
                     encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.annId), body);
     setStatus('Сохранено.', false);

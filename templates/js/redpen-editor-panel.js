@@ -1,3 +1,11 @@
+/*
+ * ВНИМАНИЕ (переименование сущности, 2026-08-29). Этот файл — клиент API, и он
+ * ещё говорит прежними именами: путь `/api/annotations`, поля `annId`/`annType`
+ * со значениями `main`/`comment`. Так и задумано: статика выкладывается раньше
+ * API, а на новые имена клиенты редактора переводятся отдельной выкладкой —
+ * уже после того, как API начнёт их понимать (он принимает и отдаёт оба
+ * набора). Читательская часть переведена сразу, см. page-view.js.
+ */
 (function(){
   // Expose a simple panel renderer for the RedPen editor
   function mount(container){
@@ -10,9 +18,9 @@
     // Panel markup
     editor.innerHTML = ''+
       '<div id="redpen-auth-status" style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:13px;"></div>'+
-      '<h2>Редактор аннотаций</h2>'+
+      '<h2>Редактор замечаний</h2>'+
       '<div class="redpen-editor-row">'+
-        '<label for="redpen-type" style="display:block;margin-bottom:4px;">Тип аннотации</label>'+
+        '<label for="redpen-type" style="display:block;margin-bottom:4px;">Вид замечания</label>'+
         '<select id="redpen-type">'+
           '<option value="main" selected>main</option>'+
           '<option value="comment">comment</option>'+
@@ -216,7 +224,7 @@
   function validate(draft){
     var errors = {};
     var typeOk = (draft.annType === 'main' || draft.annType === 'comment');
-    if (!typeOk) errors.type = 'Неверный тип аннотации';
+    if (!typeOk) errors.type = 'Неверный вид замечания';
     var contentOk = (typeof draft.content === 'string') && (draft.content.trim().length > 0);
     if (!contentOk) errors.content = 'Текст обязателен';
     var coordsOk = Array.isArray(draft.coords) && draft.coords.length === 2 && Number.isInteger(draft.coords[0]) && Number.isInteger(draft.coords[1]);

@@ -112,10 +112,10 @@ def test_front_matter_belongs_to_no_section():
 
 def test_counts_are_scoped_to_the_page_range():
     _seed_sections()
-    db.upsert_annotation_db("doc1", "006", "a1", "main", "t", action="create")
-    db.upsert_annotation_db("doc1", "020", "a2", "main", "t", action="create",
+    db.upsert_remark_db("doc1", "006", "a1", "major", "t", action="create")
+    db.upsert_remark_db("doc1", "020", "a2", "major", "t", action="create",
                             status="draft")
-    db.upsert_annotation_db("doc1", "021", "a3", "main", "t", action="create")
+    db.upsert_remark_db("doc1", "021", "a3", "major", "t", action="create")
 
     by_id = {s["sectionId"]: s for s in db.list_sections("doc1")}
     assert by_id["1"]["counts"]["total"] == 2
@@ -127,8 +127,8 @@ def test_counts_are_scoped_to_the_page_range():
 
 def test_unclassified_count_drives_the_work_board():
     _seed_sections()
-    db.upsert_annotation_db("doc1", "006", "a1", "main", "t", action="create")
-    db.upsert_annotation_db("doc1", "007", "a2", "main", "t", action="create",
+    db.upsert_remark_db("doc1", "006", "a1", "major", "t", action="create")
+    db.upsert_remark_db("doc1", "007", "a2", "major", "t", action="create",
                             category="other", author_id=1)
     by_id = {s["sectionId"]: s for s in db.list_sections("doc1")}
     # Обе аннотации в категории 'other', но разобрана только одна.
@@ -136,10 +136,10 @@ def test_unclassified_count_drives_the_work_board():
     assert by_id["1"]["counts"]["unclassified"] == 1
 
 
-def test_deleted_annotations_are_out_of_the_counts():
+def test_deleted_remarks_are_out_of_the_counts():
     _seed_sections()
-    db.upsert_annotation_db("doc1", "006", "a1", "main", "t", action="create")
-    db.soft_delete_annotation("doc1", "006", "a1")
+    db.upsert_remark_db("doc1", "006", "a1", "major", "t", action="create")
+    db.soft_delete_remark("doc1", "006", "a1")
     by_id = {s["sectionId"]: s for s in db.list_sections("doc1")}
     assert by_id["1"]["counts"]["total"] == 0
 
@@ -147,30 +147,30 @@ def test_deleted_annotations_are_out_of_the_counts():
 # --- выборка комментариев параграфа -------------------------------------
 
 
-def test_annotations_can_be_filtered_by_section():
+def test_remarks_can_be_filtered_by_section():
     """Параграф — диапазон страниц, а не колонка: связь выводится, а не хранится."""
     _seed_sections()
-    db.upsert_annotation_db("doc1", "006", "a1", "main", "в §1", action="create")
-    db.upsert_annotation_db("doc1", "020", "a2", "main", "тоже §1", action="create")
-    db.upsert_annotation_db("doc1", "021", "b1", "main", "уже §2", action="create")
-    db.upsert_annotation_db("doc1", "000", "c1", "main", "обложка", action="create")
+    db.upsert_remark_db("doc1", "006", "a1", "major", "в §1", action="create")
+    db.upsert_remark_db("doc1", "020", "a2", "major", "тоже §1", action="create")
+    db.upsert_remark_db("doc1", "021", "b1", "major", "уже §2", action="create")
+    db.upsert_remark_db("doc1", "000", "c1", "major", "обложка", action="create")
 
-    ids = [a["annId"] for a in db.list_annotations(doc_id="doc1", section_id="1")]
+    ids = [a["remarkId"] for a in db.list_remarks(doc_id="doc1", section_id="1")]
     assert sorted(ids) == ["a1", "a2"]
-    assert db.count_annotations(doc_id="doc1", section_id="1") == 2
-    assert [a["annId"] for a in db.list_annotations(doc_id="doc1", section_id="2")] == ["b1"]
+    assert db.count_remarks(doc_id="doc1", section_id="1") == 2
+    assert [a["remarkId"] for a in db.list_remarks(doc_id="doc1", section_id="2")] == ["b1"]
 
 
 def test_section_filter_combines_with_other_filters():
     _seed_sections()
-    db.upsert_annotation_db("doc1", "006", "a1", "main", "черновик", action="create",
+    db.upsert_remark_db("doc1", "006", "a1", "major", "черновик", action="create",
                             status="draft")
-    db.upsert_annotation_db("doc1", "007", "a2", "main", "опубликован", action="create")
-    items = db.list_annotations(doc_id="doc1", section_id="1", status="draft")
-    assert [a["annId"] for a in items] == ["a1"]
+    db.upsert_remark_db("doc1", "007", "a2", "major", "опубликован", action="create")
+    items = db.list_remarks(doc_id="doc1", section_id="1", status="draft")
+    assert [a["remarkId"] for a in items] == ["a1"]
 
 
 def test_unknown_section_gives_nothing():
     _seed_sections()
-    db.upsert_annotation_db("doc1", "006", "a1", "main", "текст", action="create")
-    assert db.list_annotations(doc_id="doc1", section_id="нет-такого") == []
+    db.upsert_remark_db("doc1", "006", "a1", "major", "текст", action="create")
+    assert db.list_remarks(doc_id="doc1", section_id="нет-такого") == []

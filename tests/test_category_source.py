@@ -27,13 +27,13 @@ def _fresh_db(tmp_path, monkeypatch):
 
 
 def _upsert(**kwargs):
-    base = dict(doc_id="doc1", page_num="006", ann_id="ann-1",
-                ann_type="comment", text="hello")
+    base = dict(doc_id="doc1", page_num="006", remark_id="ann-1",
+                kind="minor", text="hello")
     base.update(kwargs)
-    return db.upsert_annotation_db(**base)
+    return db.upsert_remark_db(**base)
 
 
-def test_new_annotation_without_category_is_unclassified():
+def test_new_remark_without_category_is_unclassified():
     ann = _upsert(action="create")
     assert ann["category"] == "other"
     assert ann["categorySource"] == "default"
@@ -94,7 +94,7 @@ def test_unknown_source_is_refused():
 
 def test_history_snapshot_carries_the_source():
     _upsert(action="create", category="today", category_source="agent", author_id=42)
-    items = db.list_history(doc_id="doc1", ann_id="ann-1")
+    items = db.list_history(doc_id="doc1", remark_id="ann-1")
     assert items[0]["snapshot"]["categorySource"] == "agent"
 
 

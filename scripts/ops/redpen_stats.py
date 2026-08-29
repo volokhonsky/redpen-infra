@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS hits (
   kind TEXT NOT NULL,
   doc_id TEXT,
   page_label TEXT,
-  ann_id TEXT,
+  remark_id TEXT,
   legacy_param TEXT,
   tag_filter INTEGER NOT NULL DEFAULT 0,
   path TEXT NOT NULL,
@@ -83,7 +83,20 @@ def open_db(path: str) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    _rename_legacy_column(conn)
     return conn
+
+
+def _rename_legacy_column(conn: sqlite3.Connection) -> None:
+    """`hits.ann_id` -> `hits.remark_id` на базе, заведённой до переименования.
+
+    CREATE TABLE IF NOT EXISTS не трогает существующую таблицу, поэтому без
+    этого шага INSERT ушёл бы в несуществующую колонку. База счётчиков
+    восстановима из логов, но переливать её ради имени колонки незачем."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(hits)")}
+    if "ann_id" in columns and "remark_id" not in columns:
+        conn.execute("ALTER TABLE hits RENAME COLUMN ann_id TO remark_id")
+        conn.commit()
 
 
 # --------------------------------------------------------------------------
@@ -153,10 +166,10 @@ def ingest(conn: sqlite3.Connection, log_dir: str,
                 batch.append(hit)
 
         conn.executemany(
-            """INSERT INTO hits (ts, day, kind, doc_id, page_label, ann_id,
+            """INSERT INTO hits (ts, day, kind, doc_id, page_label, remark_id,
                                  legacy_param, tag_filter, path, status,
                                  referer_source, ua_class)
-               VALUES (:ts, :day, :kind, :doc_id, :page_label, :ann_id,
+               VALUES (:ts, :day, :kind, :doc_id, :page_label, :remark_id,
                        :legacy_param, :tag_filter, :path, :status,
                        :referer_source, :ua_class)""",
             batch,
@@ -191,9 +204,15 @@ def load_coverage(content_db: str) -> Dict[Tuple[str, str], Dict[str, int]]:
         return {}
     try:
         conn = sqlite3.connect(f"file:{content_db}?mode=ro", uri=True)
+        # `annotations` — имя таблицы до переименования сущности. Аналитика
+        # ходит в канон снаружи и может застать его до рестарта API, который и
+        # проводит миграцию; молча пустой раздел отчёта хуже лишней ветки.
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        table = "remarks" if "remarks" in tables else "annotations"
         rows = conn.execute(
-            "SELECT doc_id, page_num, status, COUNT(*) c "
-            "FROM annotations GROUP BY doc_id, page_num, status").fetchall()
+            f"SELECT doc_id, page_num, status, COUNT(*) c "
+            f"FROM {table} GROUP BY doc_id, page_num, status").fetchall()
         conn.close()
     except sqlite3.Error:
         return {}
@@ -288,12 +307,12 @@ def report(conn: sqlite3.Connection, days: int, site_dir: str,
     add("")
 
     # --- расшаренные комментарии
-    add("== Комментарии по прямой ссылке (?only=) ==")
+    add("== Замечания по прямой ссылке (?only=) ==")
     rows = conn.execute(
-        f"""SELECT doc_id, page_label, ann_id, COUNT(*) n
-            FROM hits WHERE ts >= ? AND ann_id IS NOT NULL{human}
-            GROUP BY doc_id, page_label, ann_id ORDER BY n DESC""", (since,)).fetchall()
-    add(_table([(r["doc_id"], r["page_label"], r["ann_id"], r["n"]) for r in rows],
+        f"""SELECT doc_id, page_label, remark_id, COUNT(*) n
+            FROM hits WHERE ts >= ? AND remark_id IS NOT NULL{human}
+            GROUP BY doc_id, page_label, remark_id ORDER BY n DESC""", (since,)).fetchall()
+    add(_table([(r["doc_id"], r["page_label"], r["remark_id"], r["n"]) for r in rows],
                ("книга", "стр.", "комментарий", "открытий"), limit=top))
     add("")
 

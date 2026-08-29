@@ -8,7 +8,7 @@ content-sync раскатает старые страницы поверх пр�
 убирает ловушку — к утру клон всегда совпадает с базой.
 
 Что делает:
-  1. пишет `<doc>/annotations/page_NNN.json` из БД (тот же рендер, что у
+  1. пишет `<doc>/remarks/page_NNN.json` из БД (тот же рендер, что у
      живого публикатора — `publisher.render_page_static`);
   2. перерисовывает `<doc>/pages/<label>/index.html` и оглавление, потому что
      просмотрщик читает не JSON, а инлайновый блок внутри HTML;
@@ -51,7 +51,7 @@ def _run(args: List[str], cwd: str) -> Tuple[int, str]:
     return proc.returncode, proc.stdout.strip()
 
 
-def export_annotations(repo: str, doc_id: Optional[str]) -> List[str]:
+def export_remarks(repo: str, doc_id: Optional[str]) -> List[str]:
     """Записать JSON страниц из БД. Возвращает список изменившихся файлов."""
     import db
     import publisher
@@ -61,10 +61,10 @@ def export_annotations(repo: str, doc_id: Optional[str]) -> List[str]:
         if doc_id and doc != doc_id:
             continue
         rendered = publisher.render_page_static(doc, page_num)
-        out_dir = os.path.join(repo, doc, "annotations")
+        out_dir = os.path.join(repo, doc, "remarks")
         os.makedirs(out_dir, exist_ok=True)
         path = os.path.join(out_dir, f"page_{page_num}.json")
-        # Байт в байт как у живого публикатора и export_annotations.py:
+        # Байт в байт как у живого публикатора и export_remarks.py:
         # иначе файлы дёргались бы туда-обратно в зависимости от того, кто
         # писал последним.
         payload = publisher.json.dumps(rendered, ensure_ascii=False, indent=2)
@@ -106,23 +106,23 @@ def copy_tree(src_dir: str, out_dir: str, repo: str, suffix: str = "") -> List[s
     return changed
 
 
-def copy_annotations(src: str, repo: str, doc_id: Optional[str]) -> List[str]:
+def copy_remarks(src: str, repo: str, doc_id: Optional[str]) -> List[str]:
     """Взять готовые JSON из каталога вместо БД. Возвращает изменившиеся файлы.
 
     Нужно там, где база и git-клон не видны одному процессу — а на проде это
     именно так: база смонтирована только в контейнер API (uid 10001), клон
     лежит на хосте и принадлежит root. Контейнер выгружает JSON туда, куда уже
-    имеет право писать (`export_annotations.py --to /var/redpen-data`), а хост
+    имеет право писать (`export_remarks.py --to /var/redpen-data`), а хост
     забирает их отсюда. Ни новых монтирований, ни смены владельца, ни ключа с
     правом записи внутри контейнера, который смотрит в интернет."""
     changed = []
     for doc in sorted(os.listdir(src)):
         if doc_id and doc != doc_id:
             continue
-        src_dir = os.path.join(src, doc, "annotations")
+        src_dir = os.path.join(src, doc, "remarks")
         if not os.path.isdir(src_dir):
             continue
-        changed += copy_tree(src_dir, os.path.join(repo, doc, "annotations"), repo,
+        changed += copy_tree(src_dir, os.path.join(repo, doc, "remarks"), repo,
                              suffix=".json")
     return changed
 
@@ -244,13 +244,13 @@ def main() -> int:
         return 0
 
     if args.source:
-        changed_json = copy_annotations(args.source, args.repo, args.doc)
+        changed_json = copy_remarks(args.source, args.repo, args.doc)
         # Источник уже содержит отрисованные страницы — пересобирать нечем и
         # незачем, достаточно забрать их как есть.
         changed_pages = [] if args.no_pages else copy_pages(args.source, args.repo, args.doc)
         print(f"[+] обновлено JSON: {len(changed_json)}; страниц: {len(changed_pages)}")
     else:
-        changed_json = export_annotations(args.repo, args.doc)
+        changed_json = export_remarks(args.repo, args.doc)
         docs = 0 if args.no_pages else rebuild_pages(args.repo, args.doc)
         print(f"[+] обновлено JSON: {len(changed_json)}; документов пересобрано: {docs}")
 

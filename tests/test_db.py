@@ -142,7 +142,7 @@ def test_display_name_is_chosen_by_the_participant():
 def test_retire_unlinks_the_account_but_keeps_history_coherent():
     code = db.create_invite(role="editor")[0]
     user = db.login_with_google_sub("leaving", invite_code=code)
-    db.upsert_annotation_db("doc1", "006", "a1", "main", "текст",
+    db.upsert_remark_db("doc1", "006", "a1", "major", "текст",
                             action="create", author_id=user["id"])
     session_id = db.create_session(user["id"])
 
@@ -153,7 +153,7 @@ def test_retire_unlinks_the_account_but_keeps_history_coherent():
     # Аккаунт отвязан: вход по прежнему `sub` больше не узнаёт этого участника.
     assert db.login_with_google_sub("leaving") is None
     # Но ревизия осталась на месте и по-прежнему указывает на того же актора.
-    assert db.list_history(doc_id="doc1", ann_id="a1")[0]["authorId"] == user["id"]
+    assert db.list_history(doc_id="doc1", remark_id="a1")[0]["authorId"] == user["id"]
 
 
 # --- акторы-агенты ------------------------------------------------------

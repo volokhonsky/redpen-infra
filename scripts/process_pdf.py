@@ -5,7 +5,7 @@ process_pdf.py
 Main script that orchestrates the entire workflow:
 1. Extract images from PDF
 2. Extract text from PDF
-3. Generate annotation templates
+3. Generate remark templates
 4. Publish data to the artifacts repository
 
 Usage:
@@ -27,22 +27,22 @@ from extract_text import extract_text
 from publish_data import publish_data
 
 
-def generate_annotation_templates(text_dir, annotations_dir):
+def generate_remark_templates(text_dir, remarks_dir):
     """
-    Create an empty annotation template (``[]``) for every extracted text page.
+    Create an empty remark template (``[]``) for every extracted text page.
 
-    The former standalone ``generate_annotations`` module was removed when
-    annotations moved to hand-authored Markdown (see ``annotation_converter.py``
+    The former standalone ``generate_remarks`` module was removed when
+    remarks moved to hand-authored Markdown (see ``remark_converter.py``
     and ``build_website.py``). This inline helper keeps ``process_pdf`` working
     end to end by emitting one empty JSON array per page, ready to be filled in.
     """
-    os.makedirs(annotations_dir, exist_ok=True)
+    os.makedirs(remarks_dir, exist_ok=True)
     for text_file in sorted(glob.glob(os.path.join(text_dir, "page_*.json"))):
         name = os.path.basename(text_file)
-        out_path = os.path.join(annotations_dir, name)
+        out_path = os.path.join(remarks_dir, name)
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump([], f, ensure_ascii=False, indent=2)
-        print(f"[+] Wrote empty annotation template {out_path}")
+        print(f"[+] Wrote empty remark template {out_path}")
 
 def process_pdf(pdf_path, zoom=2, output_dir=None, artifacts_repo=None):
     """
@@ -66,11 +66,11 @@ def process_pdf(pdf_path, zoom=2, output_dir=None, artifacts_repo=None):
         # Create subdirectories
         images_dir = os.path.join(output_dir, "images")
         text_dir = os.path.join(output_dir, "text")
-        annotations_dir = os.path.join(output_dir, "annotations")
+        remarks_dir = os.path.join(output_dir, "remarks")
         
         os.makedirs(images_dir, exist_ok=True)
         os.makedirs(text_dir, exist_ok=True)
-        os.makedirs(annotations_dir, exist_ok=True)
+        os.makedirs(remarks_dir, exist_ok=True)
         
         # Step 1: Extract images
         print("\n=== Extracting images ===")
@@ -80,14 +80,14 @@ def process_pdf(pdf_path, zoom=2, output_dir=None, artifacts_repo=None):
         print("\n=== Extracting text ===")
         extract_text(pdf_path, text_dir)
         
-        # Step 3: Generate annotation templates
-        print("\n=== Generating annotation templates ===")
-        generate_annotation_templates(text_dir, annotations_dir)
+        # Step 3: Generate remark templates
+        print("\n=== Generating remark templates ===")
+        generate_remark_templates(text_dir, remarks_dir)
         
         # Step 4: Publish data to artifacts repository
         if artifacts_repo:
             print("\n=== Publishing data to artifacts repository ===")
-            publish_data(images_dir, text_dir, annotations_dir, artifacts_repo)
+            publish_data(images_dir, text_dir, remarks_dir, artifacts_repo)
         
         print(f"\n=== Processing complete ===")
         print(f"Output directory: {output_dir}")

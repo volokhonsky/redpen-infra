@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Браузерная приёмка офлайн-архива (playwright, не собирается pytest'ом — как и
-annotation_position_tests.py / editor_mode_tests.py).
+remark_position_tests.py / editor_mode_tests.py).
 
 Проверяет распакованный архив по адресам file://, то есть ровно тот сценарий,
 который обещан читателю: скачал, распаковал, открыл двойным щелчком, интернета

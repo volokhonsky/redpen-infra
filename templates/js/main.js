@@ -58,7 +58,7 @@ function isEditorMode() {
 }
 
 /**
- * Read-only preview mode that reveals draft annotations. Kept as the legacy
+ * Read-only preview mode that reveals draft remarks. Kept as the legacy
  * spelling of ?tags=draft: enabled by ?showDrafts=1 (query or hash), it just
  * lifts the default "draft" exclusion in getTagFilter().
  * Intentionally independent of editor mode: the editor pulls its own live,
@@ -76,12 +76,12 @@ function parseTagList(value) {
 }
 
 /**
- * URL-driven annotation filtering. Every annotation carries a `tags` array in
+ * URL-driven remark filtering. Every remark carries a `tags` array in
  * the published JSON, and the API's `status` is mirrored there as a `draft`
  * tag -- so drafts are just an ordinary tag, not a separate file.
  *
- *   ?tags=a,b     keep only annotations carrying at least one of a, b
- *   ?notags=a,b   drop annotations carrying any of a, b
+ *   ?tags=a,b     keep only remarks carrying at least one of a, b
+ *   ?notags=a,b   drop remarks carrying any of a, b
  *
  * Exclusion always wins. Drafts are hidden unless the URL mentions `draft`
  * explicitly (in either list) or ?showDrafts=1 is on.
@@ -102,9 +102,31 @@ function draftsRequested() {
   return getTagFilter().exclude.indexOf('draft') === -1;
 }
 
-/** Normalize one annotation to a lowercase `tags` array. `draft: true` from
+/** Вид замечания: major (крупный маркер) или minor. Читает и новый ключ
+ * `kind`, и старый `annType` со старыми значениями — файлы и страницы
+ * переезжают не одномоментно. Легаси-ветка снимается в фазе 6. */
+function remarkKind(a) {
+  const k = (a && (a.kind || a.annType)) || 'minor';
+  if (k === 'main') return 'major';
+  if (k === 'comment') return 'minor';
+  return k;
+}
+
+/** Первый адрес из списка, который ответил разбираемым JSON. Нужен, пока
+ * замечания лежат и в remarks/, и в remarks/ (и в офлайн-копиях). */
+async function fetchFirst(urls, fallback) {
+  for (const url of urls) {
+    try {
+      const res = await fetch(url);
+      if (res && res.ok) return await res.json();
+    } catch (e) { /* пробуем следующий */ }
+  }
+  return fallback;
+}
+
+/** Normalize one remark to a lowercase `tags` array. `draft: true` from
  * the publisher (and from older files that predate tags) becomes the tag. */
-function annotationTags(a) {
+function remarkTags(a) {
   const tags = Array.isArray(a.tags) ? a.tags.map(t => String(t).toLowerCase()) : [];
   if (a.draft && tags.indexOf('draft') === -1) tags.unshift('draft');
   return tags;
@@ -116,7 +138,7 @@ function applyTagFilter(anns) {
   if (isEditorMode()) return anns;
   const filter = getTagFilter();
   return anns.filter(a => {
-    const tags = annotationTags(a);
+    const tags = remarkTags(a);
     if (filter.exclude.some(t => tags.indexOf(t) !== -1)) return false;
     if (!filter.include.length) return true;
     return filter.include.some(t => tags.indexOf(t) !== -1);
@@ -292,7 +314,7 @@ async function init() {
 
     clearTimeout(resizeTimeout);
     resizeTimeout = setTimeout(() => {
-      repositionAnnotations();
+      repositionRemarks();
     }, 250);
   });
 
@@ -359,11 +381,11 @@ async function loadPage(pageNum) {
   isMobile = checkMobile();
   closeMobileOverlay();
 
-  document.querySelectorAll('.comment-popup').forEach(popup => popup.remove());
+  document.querySelectorAll('.remark-popup').forEach(popup => popup.remove());
   document.querySelectorAll('.circle').forEach(circle => circle.remove());
 
   document.getElementById('image-container').style.display = 'flex';
-  document.getElementById('global-comment-container').style.display = 'block';
+  document.getElementById('remark-sidebar').style.display = 'block';
 
   // ✅ УСТАНОВИТЬ currentPageNum перед вычислением
   currentPageNum = pageNum;
@@ -407,11 +429,13 @@ async function loadPage(pageNum) {
   updateLayout();
   setTimeout(updateLayout, 100);
 
-  try {
-    allAnns = await fetch('annotations/' + currentPageId + '.json').then(r => r.json());
-  } catch (e) {
-    allAnns = [];
-  }
+  // Каталог переименован в remarks/; remarks/ — прежнее имя, под которым
+  // страница может лежать в уже розданной офлайн-копии. Фолбэк снимается,
+  // когда publisher перестанет дублировать запись (фаза 6).
+  allAnns = await fetchFirst([
+    'remarks/' + currentPageId + '.json',
+    'remarks/' + currentPageId + '.json'
+  ], []);
 
   // Transitional: drafts used to live in a sibling page_<NNN>.drafts.json and
   // are now part of the file above. An offline copy can still hold both, so
@@ -419,8 +443,10 @@ async function loadPage(pageNum) {
   // every draft would render twice. Remove once no such copies are in use.
   if (draftsRequested()) {
     try {
-      const drafts = await fetch('annotations/' + currentPageId + '.drafts.json')
-        .then(r => (r.ok ? r.json() : []));
+      const drafts = await fetchFirst([
+        'remarks/' + currentPageId + '.drafts.json',
+        'remarks/' + currentPageId + '.drafts.json'
+      ], []);
       if (Array.isArray(drafts) && drafts.length) {
         const seen = new Set(allAnns.map(a => a.id));
         allAnns = allAnns.concat(
@@ -432,31 +458,31 @@ async function loadPage(pageNum) {
 
   allAnns = applyTagFilter(allAnns);
 
-  const globalContainer = document.getElementById('global-comment-container');
-  const globalDiv = document.getElementById('global-comment');
-  const generalAnns = allAnns.filter(a => a.annType === 'general');
-  const mainAnns = allAnns.filter(a => a.annType === 'main');
+  const globalContainer = document.getElementById('remark-sidebar');
+  const globalDiv = document.getElementById('remark-body');
+  const generalAnns = allAnns.filter(a => remarkKind(a) === 'general');
+  const mainAnns = allAnns.filter(a => remarkKind(a) === 'major');
 
   globalContainer.style.display = 'block';
   globalContainer.style.border = '3px solid #DC143C';
 
   // In draft preview, tag draft entries so they're distinguishable from
-  // published text in the shared global-comment block.
+  // published text in the shared remark-body block.
   const draftTag = a => (a.draft ? '<em class="draft-tag">[черновик]</em> ' : '');
   let globalContent = '';
   if (generalAnns.length) {
-    globalContent += generalAnns.map(a => `<p class="${a.draft ? 'is-draft' : ''}">${draftTag(a)}${formatCommentText(a.text)}</p>`).join('');
+    globalContent += generalAnns.map(a => `<p class="${a.draft ? 'is-draft' : ''}">${draftTag(a)}${formatRemarkText(a.text)}</p>`).join('');
   }
   if (mainAnns.length) {
-    globalContent += mainAnns.map((a,i) => `<p class="${a.draft ? 'is-draft' : ''}"><strong>${i+1}.</strong> ${draftTag(a)}${formatCommentText(a.text)}</p>`).join('');
+    globalContent += mainAnns.map((a,i) => `<p class="${a.draft ? 'is-draft' : ''}"><strong>${i+1}.</strong> ${draftTag(a)}${formatRemarkText(a.text)}</p>`).join('');
   }
-  globalDiv.innerHTML = globalContent || 'Нет общего комментария.';
+  globalDiv.innerHTML = globalContent || 'Нет общего замечания.';
 
-  // Notify editor (if present) about loaded annotations for this page
-  try { if (window.RedPenEditor && typeof window.RedPenEditor.onAnnotationsLoaded === 'function') { window.RedPenEditor.onAnnotationsLoaded(allAnns || []); } } catch(e) { /* noop */ }
+  // Notify editor (if present) about loaded remarks for this page
+  try { if (window.RedPenEditor && typeof window.RedPenEditor.onRemarksLoaded === 'function') { window.RedPenEditor.onRemarksLoaded(allAnns || []); } } catch(e) { /* noop */ }
 
-  document.getElementById('comment-list').innerHTML = '';
-  repositionAnnotations();
+  document.getElementById('remark-list').innerHTML = '';
+  repositionRemarks();
 
   // Update pagination
   updatePagination(pageNum);
