@@ -12,44 +12,15 @@
  *
  * Намеренно не переиспользует main.js/remarks.js: те написаны под
  * SPA-переключение страниц, которого здесь больше нет — навигация это обычные
- * ссылки.
+ * ссылки. Геометрия и цвет маркеров — общие с редактором, они в
+ * redpen-markers.js (тоже без единого сетевого вызова).
  */
 (function () {
   'use strict';
 
-  var MARKER_SIZES = { major: 90, minor: 50, small: 25 };
-  // Размер по-прежнему задаётся видом замечания (major/minor), а цвет —
-  // категорией приёма (redpen-categories.js). Раньше цвет тоже шёл от вида,
-  // поэтому
-  // привычка «красный = главное» на этих страницах больше не действует;
-  // легенда на титульной переписана под категории.
-  var CATEGORY_FALLBACK_COLOR = '#546E7A';
-
-  /**
-   * Вид замечания: major (крупный маркер) или minor (обычный).
-   *
-   * Читает и новый ключ `kind`, и старый `annType` со старыми значениями:
-   * страницы перерисовываются по одной, поэтому в момент выкладки этот JS
-   * встречает и то и другое. Легаси-ветка снимается в фазе 6 переименования.
-   * Упразднённый `general` показываем как обычное замечание.
-   */
-  function remarkKind(ann) {
-    var k = (ann && (ann.kind || ann.annType)) || 'minor';
-    if (k === 'main') return 'major';
-    if (k === 'comment' || k === 'general') return 'minor';
-    return k;
-  }
-
-  function markerColor(ann) {
-    var cats = window.RedPenCategories;
-    if (!cats) return CATEGORY_FALLBACK_COLOR;
-    return cats.COLORS[cats.categoryFor(ann)] || CATEGORY_FALLBACK_COLOR;
-  }
-
-  function categorySlug(ann) {
-    var cats = window.RedPenCategories;
-    return cats ? cats.categoryFor(ann) : 'other';
-  }
+  var markers = window.RedPenMarkers;
+  var remarkKind = markers.kindOf;
+  var categorySlug = markers.categoryOf;
 
   var data = [];
   var visible = [];
@@ -492,13 +463,8 @@
 
   function drawMarkersInner() {
 
-    var scaleX = image.width / image.naturalWidth;
-    var scaleY = image.height / image.naturalHeight;
-
-    overlay.style.width = image.width + 'px';
-    overlay.style.height = image.height + 'px';
-    overlay.style.top = image.offsetTop + 'px';
-    overlay.style.left = image.offsetLeft + 'px';
+    var scale = markers.scaleOf(image);
+    markers.fitOverlay(overlay, image);
     // Поп-апы пересоздаются вместе с маркерами, а их распорки лежат в body —
     // без явной уборки они накапливались бы при каждом resize.
     Array.prototype.forEach.call(document.querySelectorAll('[id^="popup-spacer-"]'), function (el) {
@@ -507,29 +473,13 @@
     overlay.innerHTML = '';
 
     visible.forEach(function (ann, index) {
-      if (!Array.isArray(ann.coords) || ann.coords.length !== 2) return;
+      if (!markers.hasCoords(ann)) return;
 
-      var type = remarkKind(ann);
-      // Диаметр задан в координатах исходной страницы и масштабируется вместе
-      // с картинкой — иначе на телефоне диск занимает весь экран.
-      var diameter = (MARKER_SIZES[type] || MARKER_SIZES.minor) * (scaleX || 1);
-      var cx = ann.coords[0] * scaleX;
-      var cy = ann.coords[1] * scaleY;
-      var color = markerColor(ann);
-
-      var circle = document.createElement('div');
-      circle.className = 'circle circle--cat-' + categorySlug(ann) + (ann.draft ? ' is-draft' : '');
-      circle.id = 'circle-' + ann.id;
-      circle.setAttribute('data-ann-id', ann.id);
-      circle.style.width = diameter + 'px';
-      circle.style.height = diameter + 'px';
-      circle.style.left = cx + 'px';
-      circle.style.top = (cy - diameter / 2) + 'px';
-      circle.style.fontSize = (diameter * 0.6) + 'px';
-      circle.style.background = 'radial-gradient(circle, ' + color + '80 0%, ' + color + '40 50%, ' + color + '00 100%)';
-      circle.style.transform = 'translateX(-50%)';
-      if (ann.draft) circle.style.outline = '2px dashed #888';
-      circle.textContent = String(index + 1);
+      var g = markers.geometry(ann, scale);
+      var diameter = g.diameter;
+      var cx = g.cx;
+      var cy = g.cy;
+      var circle = markers.createCircle(ann, index + 1, scale);
 
       circle.addEventListener('mouseenter', function () { highlight(ann.id, false); });
       circle.addEventListener('mouseleave', function () { if (pinnedId !== ann.id) clearHighlight(); });

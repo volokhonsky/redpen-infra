@@ -1,12 +1,3 @@
-/*
- * ВНИМАНИЕ (переименование сущности, 2026-08-29). Этот файл — клиент API, и он
- * ещё говорит прежними именами: путь `/api/annotations`, поля `annId`/`annType`
- * со значениями `main`/`comment`. Так и задумано: статика выкладывается раньше
- * API, а на новые имена клиенты редактора переводятся отдельной выкладкой —
- * уже после того, как API начнёт их понимать (он принимает и отдаёт оба
- * набора). Читательская часть переведена сразу, см. page-view.js.
- */
-
 (function(){
   var CABINET_VERSION = '1.0.0';
   console.log('[RedPen Cabinet] v' + CABINET_VERSION + ' loading');
@@ -159,10 +150,9 @@
   //
   // Раньше здесь строился адрес `<doc>/?p=<label>&editor=1&ann=<id>` — то есть
   // оглавление, где редакторских скриптов нет вовсе, и кнопка просто не
-  // работала. Режим редактирования живёт только в старом SPA
-  // (`document_index.html`) и переезжает в отдельное приложение; пока переезд
-  // не сделан, честнее вести на рабочий просмотр, чем на сломанную правку.
-  function annotationLink(docId, pageNum, annId){
+  // работала. Правка теперь живёт в /app/ (см. editorLink ниже), а эта ссылка
+  // ведёт туда, где видно результат: на страницу читателя.
+  function annotationLink(docId, pageNum, remarkId){
     var map = state.manifestCache[docId];
     var label = map && map['page_' + pageNum];
     if (!label) {
@@ -171,7 +161,14 @@
       label = String(n);
     }
     return '../' + encodeURIComponent(docId) + '/pages/' + encodeURIComponent(label) +
-           '/?only=' + encodeURIComponent(annId);
+           '/?only=' + encodeURIComponent(remarkId);
+  }
+
+  // Ссылка на правку: карточка замечания в редакторе /app/. Ключ страницы там
+  // файловый, как в API, — переводить его в читательскую метку не нужно.
+  function editorLink(docId, pageNum, remarkId){
+    return '../app/#/ann/' + encodeURIComponent(docId) + '/' +
+           encodeURIComponent(pageNum) + '/' + encodeURIComponent(remarkId);
   }
 
   // ===== login / profile =====
@@ -330,17 +327,13 @@
   }
 
   // ===== remarks tab =====
-  // Путь /api/annotations и поля annId/annType — прежние имена. Кабинет
-  // переключается на /api/remarks и remarkId/kind отдельной выкладкой,
-  // уже после деплоя API (до него новых имён ещё нет).
-
   function renderAnnotationsShell(){
     var host = document.getElementById('cab-tab-remarks');
     host.innerHTML =
       '<form id="cab-remark-filters" class="cab-filters">' +
         '<label>Документ<select name="docId">' + docOptionsHtml() + '</select></label>' +
         '<label>Страница<input type="text" name="pageKey" placeholder="напр. 6" /></label>' +
-        '<label>Тип<select name="annType"><option value="">Любой</option><option value="main">main</option><option value="comment">comment</option></select></label>' +
+        '<label>Вид<select name="kind"><option value="">Любой</option><option value="major">major</option><option value="minor">minor</option></select></label>' +
         '<label>Статус<select name="status"><option value="">Любой</option><option value="published">published</option><option value="draft">draft</option><option value="deleted">deleted</option></select></label>' +
         '<label>Автор<select name="authorId" id="cab-remark-author-filter"><option value="">Все авторы</option></select></label>' +
         '<label>Тег<select name="tag" id="cab-remark-tag-filter"><option value="">Любой</option></select></label>' +
@@ -360,7 +353,7 @@
       state.ann.filters = {
         docId: f.get('docId') || undefined,
         pageKey: (f.get('pageKey') || '').trim() || undefined,
-        annType: f.get('annType') || undefined,
+        kind: f.get('kind') || undefined,
         status: f.get('status') || undefined,
         authorId: f.get('authorId') || undefined,
         tag: f.get('tag') || undefined,
@@ -395,7 +388,7 @@
     if (reset) { state.ann.offset = 0; state.ann.items = []; }
     var params = Object.assign({}, state.ann.filters, { limit: state.ann.limit, offset: state.ann.offset });
     var data;
-    try { data = await apiGet('/api/annotations' + qs(params)); }
+    try { data = await apiGet('/api/remarks' + qs(params)); }
     catch (e) { return; }
     state.ann.items = reset ? data.items : state.ann.items.concat(data.items);
     state.ann.total = data.total;
@@ -412,30 +405,32 @@
   function renderAnnotationsRows(){
     var tbody = document.getElementById('cab-remark-tbody');
     tbody.innerHTML = state.ann.items.map(function(a){
-      var link = annotationLink(a.docId, a.pageNum, a.annId);
+      var link = annotationLink(a.docId, a.pageNum, a.remarkId);
       var openBtn = link
         ? '<a href="' + escapeHtml(link) + '" target="_blank" rel="noopener">Открыть</a>'
         : '<span class="cab-muted" title="страница вне легаси-нумерации">Открыть</span>';
+      var editBtn = '<a href="' + escapeHtml(editorLink(a.docId, a.pageNum, a.remarkId)) +
+        '" target="_blank" rel="noopener">Править</a>';
       var toggleLabel = a.status === 'draft' ? 'Опубликовать' : (a.status === 'published' ? 'В черновик' : '');
       var toggleBtn = toggleLabel
-        ? '<button type="button" class="cab-remark-toggle" data-ann="' + escapeHtml(a.annId) + '" data-doc="' + escapeHtml(a.docId) +
+        ? '<button type="button" class="cab-remark-toggle" data-ann="' + escapeHtml(a.remarkId) + '" data-doc="' + escapeHtml(a.docId) +
           '" data-page="' + escapeHtml(a.pageNum) + '" data-newstatus="' + (a.status === 'draft' ? 'published' : 'draft') + '">' + toggleLabel + '</button>'
         : '';
       var delBtn = a.status !== 'deleted'
-        ? '<button type="button" class="cab-btn-secondary cab-remark-delete" data-ann="' + escapeHtml(a.annId) + '" data-doc="' + escapeHtml(a.docId) +
+        ? '<button type="button" class="cab-btn-secondary cab-remark-delete" data-ann="' + escapeHtml(a.remarkId) + '" data-doc="' + escapeHtml(a.docId) +
           '" data-page="' + escapeHtml(a.pageNum) + '">Удалить</button>'
         : '';
-      var histBtn = '<button type="button" class="cab-btn-secondary cab-remark-history" data-ann="' + escapeHtml(a.annId) + '" data-doc="' + escapeHtml(a.docId) + '">История</button>';
+      var histBtn = '<button type="button" class="cab-btn-secondary cab-remark-history" data-ann="' + escapeHtml(a.remarkId) + '" data-doc="' + escapeHtml(a.docId) + '">История</button>';
       var badgeClass = 'cab-badge-' + a.status;
       return '<tr>' +
         '<td>' + escapeHtml(a.docId) + '</td>' +
         '<td>' + escapeHtml(pageDisplay(a.docId, a.pageNum)) + '</td>' +
-        '<td>' + escapeHtml(a.annType) + '</td>' +
+        '<td>' + escapeHtml(a.kind) + '</td>' +
         '<td><span class="cab-badge ' + badgeClass + '">' + escapeHtml(a.status) + '</span></td>' +
         '<td>' + escapeHtml(a.authorName || '—') + '</td>' +
         '<td>' + escapeHtml(formatDate(a.updatedAt)) + '</td>' +
         '<td>' + escapeHtml((a.text || '').slice(0, 80)) + '</td>' +
-        '<td class="cab-row-actions">' + openBtn + toggleBtn + delBtn + histBtn + '</td>' +
+        '<td class="cab-row-actions">' + openBtn + editBtn + toggleBtn + delBtn + histBtn + '</td>' +
       '</tr>';
     }).join('');
 
@@ -452,7 +447,7 @@
     });
     Array.prototype.forEach.call(tbody.querySelectorAll('.cab-remark-history'), function(btn){
       btn.addEventListener('click', function(){
-        state.hist.filters = { docId: btn.dataset.doc, annId: btn.dataset.ann };
+        state.hist.filters = { docId: btn.dataset.doc, remarkId: btn.dataset.ann };
         switchTab('history');
         var docSel = document.querySelector('#cab-hist-filters select[name="docId"]');
         if (docSel) docSel.value = btn.dataset.doc;
@@ -463,22 +458,22 @@
     });
   }
 
-  async function toggleAnnotationStatus(docId, pageKey, annId, newStatus){
-    var item = state.ann.items.find(function(a){ return a.docId === docId && a.pageNum === pageKey && a.annId === annId; });
+  async function toggleAnnotationStatus(docId, pageKey, remarkId, newStatus){
+    var item = state.ann.items.find(function(a){ return a.docId === docId && a.pageNum === pageKey && a.remarkId === remarkId; });
     if (!item) return;
-    var body = { annType: item.annType, text: item.text, status: newStatus };
+    var body = { kind: item.kind, text: item.text, status: newStatus };
     if (item.coordX != null && item.coordY != null) body.coords = [item.coordX, item.coordY];
     try {
-      await apiMutate('PUT', '/api/editor/' + encodeURIComponent(docId) + '/' + encodeURIComponent(pageKey) + '/' + encodeURIComponent(annId), body);
+      await apiMutate('PUT', '/api/editor/' + encodeURIComponent(docId) + '/' + encodeURIComponent(pageKey) + '/' + encodeURIComponent(remarkId), body);
       setStatus('Статус обновлён', false);
       loadAnnotations(true);
     } catch (e) { /* status already shown */ }
   }
 
-  async function deleteAnnotation(docId, pageKey, annId){
+  async function deleteAnnotation(docId, pageKey, remarkId){
     if (!window.confirm('Удалить замечание?')) return;
     try {
-      await apiMutate('DELETE', '/api/editor/' + encodeURIComponent(docId) + '/' + encodeURIComponent(pageKey) + '/' + encodeURIComponent(annId));
+      await apiMutate('DELETE', '/api/editor/' + encodeURIComponent(docId) + '/' + encodeURIComponent(pageKey) + '/' + encodeURIComponent(remarkId));
       setStatus('Замечание удалено', false);
       loadAnnotations(true);
     } catch (e) { /* status already shown */ }
@@ -492,7 +487,7 @@
       '<form id="cab-hist-filters" class="cab-filters">' +
         '<label>Документ<select name="docId">' + docOptionsHtml() + '</select></label>' +
         '<label>Автор<select name="authorId" id="cab-hist-author-filter"><option value="">Все авторы</option></select></label>' +
-        '<label>Действие<select name="action"><option value="">Любое</option><option value="create">create</option><option value="update">update</option><option value="delete">delete</option><option value="revert">revert</option></select></label>' +
+        '<label>Что изменилось<select name="changed">' + CHANGED_OPTIONS + '</select></label>' +
         '<button type="submit">Применить</button>' +
         '<button type="button" class="cab-btn-secondary" id="cab-hist-reset">Сбросить</button>' +
       '</form>' +
@@ -507,7 +502,9 @@
       state.hist.filters = {
         docId: f.get('docId') || undefined,
         authorId: f.get('authorId') || undefined,
-        action: f.get('action') || undefined
+        // Фильтр по составу изменения, а не по происхождению записи: «покажи
+        // только правки текста» — вопрос про changed, не про action.
+        changed: f.get('changed') || undefined
       };
       loadHistory(true);
     });
@@ -537,13 +534,29 @@
     renderHistoryList();
   }
 
-  var ACTION_LABELS = { create: 'создание', update: 'изменение', delete: 'удаление', revert: 'откат' };
+  //: Словарь действий живёт на сервере (scripts/api/remark_actions.py), оттуда
+  //: же приходит готовый ярлык каждой ревизии — здесь только значения фильтра.
+  var CHANGED_OPTIONS = [
+    ['', 'Любое'],
+    ['text', 'правка текста'],
+    ['coords', 'перенос маркера'],
+    ['kind', 'смена вида'],
+    ['publish', 'публикация'],
+    ['unpublish', 'возврат в черновики'],
+    ['delete', 'удаление'],
+    ['restore', 'восстановление'],
+    ['category', 'смена категории'],
+    ['tags', 'правка тегов'],
+    ['revert', 'откат']
+  ].map(function(pair){
+    return '<option value="' + pair[0] + '">' + pair[1] + '</option>';
+  }).join('');
 
   function renderHistoryList(){
     var note = document.getElementById('cab-hist-remark-filter-note');
-    if (state.hist.filters.annId) {
+    if (state.hist.filters.remarkId) {
       note.style.display = '';
-      note.innerHTML = 'Фильтр по замечанию ' + escapeHtml(state.hist.filters.annId) +
+      note.innerHTML = 'Фильтр по замечанию ' + escapeHtml(state.hist.filters.remarkId) +
         ' в документе ' + escapeHtml(state.hist.filters.docId || '') +
         ' <button type="button" class="cab-btn-secondary" id="cab-hist-clear-remark">Сбросить фильтр</button>';
       document.getElementById('cab-hist-clear-remark').addEventListener('click', function(){
@@ -559,8 +572,8 @@
       var snap = h.snapshot || {};
       return '<div class="cab-history-item">' +
         '<div class="cab-history-meta">' + escapeHtml(formatDate(h.createdAt)) + ' · ' + escapeHtml(h.authorName || '—') + ' · ' +
-          escapeHtml(ACTION_LABELS[h.action] || h.action) + ' · ' + escapeHtml(h.docId) + ' / ' +
-          escapeHtml(pageDisplay(h.docId, h.pageNum)) + ' / ' + escapeHtml(h.annId) +
+          escapeHtml(h.actionLabel || h.action) + ' · ' + escapeHtml(h.docId) + ' / ' +
+          escapeHtml(pageDisplay(h.docId, h.pageNum)) + ' / ' + escapeHtml(h.remarkId) +
         '</div>' +
         '<div class="cab-history-text">' + escapeHtml((snap.text || '').slice(0, 200)) + '</div>' +
         '<button type="button" class="cab-hist-revert" data-hist="' + h.id + '">Откатить к этому состоянию</button>' +

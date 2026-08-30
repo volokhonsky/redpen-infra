@@ -39,28 +39,24 @@ publish_from_repo() {
   # */remarks/ is owned by the API (stage 2: SQLite is canonical, the API's
   # publisher.py writes page_NNN.json straight into /srv/public). Excluding it
   # here (without --delete-excluded) also protects it from --delete below.
-  # */annotations/ is the pre-rename name of the same directory: it stays
-  # excluded while the publisher still double-writes there (see the rename
-  # plan, phase 6). Dropping either exclude wipes live data.
-  rsync -a --delete --exclude ".git" --exclude "/*/annotations/" --exclude "/*/remarks/" /srv/repo/ /srv/staging/
+  # Исключение для */annotations/ снято в фазе 6 переименования (2026-08-30):
+  # publisher туда больше не пишет, и первый же прогон после выкладки уносит
+  # каталог с тома — это и есть уборка. Адреса из него переадресует nginx.
+  # Исключение для */remarks/ снимать нельзя: там живые данные.
+  rsync -a --delete --exclude ".git" --exclude "/*/remarks/" /srv/repo/ /srv/staging/
 
-  # Generate app-config.js into staging
-  if [ -n "${API_BASE_URL}" ]; then
-    printf 'window.APP_CONFIG={apiBaseUrl:%q};' "${API_BASE_URL}" > /srv/staging/app-config.js
-  fi
-
-  # Ensure app-config.js is referenced by HTML files and patch bootstrap js
+  # Правки статики на месте развёртывания. Подстановка адреса API отсюда ушла
+  # вместе со старым SPA (2026-08-30): её единственным потребителем был
+  # redpen-editor-bootstrap.js, а кабинет и /app/ знают адрес сами.
   /usr/bin/env python3 /app/content_sync.py --mutate-only --staging /srv/staging || true
 
   # Sync to public (shared volume)
-  rsync -a --delete --exclude "/*/annotations/" --exclude "/*/remarks/" /srv/staging/ /srv/public/
+  rsync -a --delete --exclude "/*/remarks/" /srv/staging/ /srv/public/
 
   # Каталоги, куда пишет API (uid 10001): этот процесс работает от root, и после
   # rsync владельцем снова становится root.
   #
   #   remarks     — канон публикации, владелец API с этапа 2;
-  #   annotations — прежнее имя того же каталога, живо, пока publisher
-  #                 дублирует запись туда;
   #   pages       — HTML читателя. У него два писателя: сборка (через git и этот
   #                 rsync) и API, который перерисовывает затронутую страницу на
   #                 каждую правку. Просмотрщик читает замечания не из JSON, а из
@@ -69,7 +65,7 @@ publish_from_repo() {
   if [ -d /srv/public ]; then
     for doc_dir in /srv/public/*/; do
       [ -d "$doc_dir" ] || continue
-      for owned in annotations remarks pages; do
+      for owned in remarks pages; do
         mkdir -p "${doc_dir}${owned}"
         chown -R 10001:10001 "${doc_dir}${owned}"
       done

@@ -25,6 +25,9 @@ NOINDEX_RE = re.compile(
 
 # Never advertise these: the editor surface, the duplicate kept for tests, and
 # anything under the cabinet (authenticated) or the offline bundle staging.
+#: Имена, которые не попадают в карту сайта. `document_index.html` — старый
+#: SPA, удалённый 2026-08-30; имя оставлено, потому что копии файла остаются
+#: на томе публикации, пока он не будет вычищен вручную.
 SKIP_NAMES = {"document_index.html"}
 SKIP_DIRS = {"cabinet", "app", ".git"}
 

@@ -26,8 +26,6 @@
 """
 
 import argparse
-import gzip
-import hashlib
 import os
 import sqlite3
 import sys
@@ -38,6 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import analytics  # noqa: E402
 import page_sections  # noqa: E402
+from log_files import log_files, open_log, signature  # noqa: E402
 
 DEFAULT_DB = os.getenv("STATS_DB_PATH", "/var/redpen-stats/stats.db")
 DEFAULT_LOG_DIR = os.getenv("ANALYTICS_LOG_DIR", "/var/log/caddy")
@@ -103,45 +102,17 @@ def _rename_legacy_column(conn: sqlite3.Connection) -> None:
 # ingest
 # --------------------------------------------------------------------------
 
-def _open_log(path: str):
-    if path.endswith(".gz"):
-        return gzip.open(path, "rt", encoding="utf-8", errors="replace")
-    return open(path, "r", encoding="utf-8", errors="replace")
-
-
-def _signature(path: str) -> str:
-    # Именно первая строка, а не первые N байт: дописанная в конец строка
-    # меняла бы «первые 512 байт» у короткого файла, и весь лог читался бы
-    # заново — то есть уезжал бы в Matomo дважды.
-    try:
-        with _open_log(path) as f:
-            head = f.readline()
-    except OSError:
-        return ""
-    return hashlib.sha256(head.encode("utf-8", "replace")).hexdigest()[:16]
-
-
-def log_files(log_dir: str) -> List[str]:
-    """Все файлы логов каталога, от старых к свежим."""
-    if not os.path.isdir(log_dir):
-        return []
-    names = [n for n in os.listdir(log_dir)
-             if n.startswith("access") and (n.endswith(".log") or n.endswith(".gz"))]
-    paths = [os.path.join(log_dir, n) for n in names]
-    return sorted(paths, key=lambda p: (os.path.getmtime(p), p))
-
-
 def ingest(conn: sqlite3.Connection, log_dir: str,
            own_hosts: Tuple[str, ...] = (), verbose: bool = False) -> Dict[str, int]:
     stats = {"files": 0, "lines": 0, "hits": 0, "skipped": 0}
 
     for path in log_files(log_dir):
-        signature = _signature(path)
-        if not signature:
+        sig = signature(path)
+        if not sig:
             continue
         row = conn.execute("SELECT * FROM ingest_state WHERE source = ?",
                            (path,)).fetchone()
-        offset = row["offset"] if row and row["signature"] == signature else 0
+        offset = row["offset"] if row and row["signature"] == sig else 0
         stats["files"] += 1
 
         batch: List[Dict[str, Any]] = []
@@ -149,7 +120,7 @@ def ingest(conn: sqlite3.Connection, log_dir: str,
         # бессмысленна, а строк тут немного. Считается по прочитанным строкам,
         # а не по записанным: пропущенную строку второй раз читать незачем.
         consumed = offset
-        with _open_log(path) as f:
+        with open_log(path) as f:
             for lineno, line in enumerate(f):
                 if lineno < offset:
                     continue
@@ -182,7 +153,7 @@ def ingest(conn: sqlite3.Connection, log_dir: str,
                  signature = excluded.signature,
                  offset = excluded.offset,
                  updated_at = excluded.updated_at""",
-            (path, signature, consumed, datetime.now(timezone.utc).isoformat()),
+            (path, sig, consumed, datetime.now(timezone.utc).isoformat()),
         )
         if verbose:
             print(f"  {os.path.basename(path)}: +{len(batch)}")

@@ -31,6 +31,8 @@ import annotation_categories  # noqa: E402
 import config
 import db
 import publisher
+import rating_scales
+import remark_actions
 import ratelimit
 import storage
 
@@ -212,20 +214,18 @@ async def require_csrf(request: Request, user: Dict[str, str] = Depends(require_
 #: тогда, когда основную массу текста стали производить агенты: публикация —
 #: единственное по-настоящему доверенное действие, и его отделяют от «писать».
 EDITOR_ROLES = ("editor", "reviewer", "admin")
-REVIEWER_ROLES = ("reviewer", "admin")
+
+MAX_SUMMARY_LENGTH = 200
+REMARK_STATUSES = ("published", "draft", "deleted")
+# "general" ушёл: см. docs/general-migration-map.json. Строки со status='deleted'
+# могут по-прежнему иметь kind='general' — их никто не читает, кроме истории.
+REMARK_KINDS = ("major", "minor")
 
 
 async def require_editor(user: Dict[str, Any] = Depends(require_csrf)) -> Dict[str, Any]:
     """FastAPI dependency: authenticated + CSRF-checked + editor role or above."""
     if user.get("role") not in EDITOR_ROLES:
         raise HTTPException(status_code=403, detail="editor role required")
-    return user
-
-
-async def require_reviewer(user: Dict[str, Any] = Depends(require_csrf)) -> Dict[str, Any]:
-    """FastAPI dependency: authenticated + CSRF-checked + reviewer role or above."""
-    if user.get("role") not in REVIEWER_ROLES:
-        raise HTTPException(status_code=403, detail="reviewer role required")
     return user
 
 
@@ -264,16 +264,12 @@ def _check_optimistic_lock(body: Dict[str, Any], server_sha: str, docId: str, pa
 def _parse_remark_body(body: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="body must be a JSON object")
-    # `annType` — имя ключа до переименования сущности в «замечание». Клиенты
-    # редактора статические и обновляются отдельной выкладкой, поэтому приём
-    # старого имени и старых значений живёт до фазы 6 переименования.
-    remark_kind = body.get("kind", body.get("annType"))
+    remark_kind = body.get("kind")
     text = body.get("text")
     coords = body.get("coords", None)
 
     if not isinstance(remark_kind, str) or remark_kind.strip() == "":
         raise HTTPException(status_code=400, detail="kind must be a string")
-    remark_kind = db.LEGACY_KINDS.get(remark_kind, remark_kind)
     # "general" (общее замечание к странице) is retired: it had no anchor on
     # the scan, and with per-page addresses every comment needs one. Rejected
     # rather than silently accepted so old clients fail loudly.
@@ -643,6 +639,15 @@ async def admin_publish_all(user: Dict[str, Any] = Depends(require_admin_csrf)):
     return result
 
 
+# ===== Инбокс этапа 0: /api/hello, /api/store-raw, /api/store =====
+#
+# ВНИМАНИЕ: клиентов нет. Ни просмотрщик, ни /app/, ни кабинет, ни content-sync
+# к этим трём эндпоинтам не обращаются — они остались от этапа 0, когда правки
+# складывались в файлы инбокса до появления SQLite-канона. Вместе с ними жив
+# модуль scripts/api/storage.py, существующий только ради них. Оставлены
+# намеренно (решение 2026-08-30), но работающей частью системы не являются.
+
+
 @app.get("/api/hello")
 async def hello():
     # Minimal Hello endpoint for local smoke tests
@@ -872,17 +877,20 @@ async def get_editor_page(docId: str, pageNum: str, user: Optional[Dict[str, Any
         item["category"] = annotation_categories.normalize_category(
             category_by_id.get(item["id"])
         )
-        # render_page() заморожен в легаси-именах: он вход оптимистической
-        # блокировки (см. его docstring). Обогащение идёт уже после подсчёта
-        # sha, поэтому текущее имя вида добавляем здесь.
+        # render_page() заморожен в легаси-именах НАВСЕГДА: он вход
+        # оптимистической блокировки, и сдвиг хеша выдал бы 409 всем открытым
+        # сессиям редактора (см. его docstring). Наружу этот массив не отдаётся,
+        # поэтому здесь, уже после подсчёта sha, вид переводится в текущее имя,
+        # а прежнее из выдачи убирается.
         item["kind"] = db.LEGACY_KINDS.get(item.get("annType"), item.get("annType"))
+        item.pop("annType", None)
         remarks.append(item)
 
     if user is not None and user.get("role") in EDITOR_ROLES:
         for ann in db.list_remarks(doc_id=docId, page_num=page_num_str, status="draft", limit=1000):
             item: Dict[str, Any] = {
                 "id": ann["remarkId"], "text": ann["text"], "kind": ann["kind"],
-                "annType": publisher.legacy_kind(ann["kind"]), "draft": True,
+                "draft": True,
             }
             if ann["coordX"] is not None and ann["coordY"] is not None:
                 item["coords"] = [ann["coordX"], ann["coordY"]]
@@ -896,9 +904,6 @@ async def get_editor_page(docId: str, pageNum: str, user: Optional[Dict[str, Any
         "pageId": f"{docId}_page_{page_num_str}",
         "serverPageSha": sha,
         "remarks": remarks,
-        # Прежнее имя ключа: клиенты редактора переключаются отдельной
-        # выкладкой статики, уже после этого деплоя. Снимается в фазе 6.
-        "annotations": remarks,
     }
 
 
@@ -1021,14 +1026,127 @@ async def delete_editor_remark(docId: str, pageNum: str, remarkId: str, user: Di
     return {"id": remarkId, "serverPageSha": new_sha, "published": published}
 
 
+# ===== УЗКИЕ ДЕЙСТВИЯ НАД ЗАМЕЧАНИЕМ =====
+#
+# Публикация черновика, смена категории и правка тегов ездили в общем PUT
+# вместе с текстом: чтобы опубликовать замечание, очередь приёмки была обязана
+# прислать его целиком. Отдельные операции делают действие явным — и в журнале
+# (состав изменения выходит ровно один), и в логе, и в UI.
+#
+# serverPageSha эти операции не требуют. Оптимистическая блокировка защищает от
+# того, что двое одновременно правят один текст; статус, категория и теги в этом
+# смысле не конфликтуют. Публикация черновика при этом sha страницы всё же
+# сдвигает — черновики не входят в render_page() — и открытая сессия редактора
+# получит 409 на следующем сохранении. Это правильно: страница действительно
+# изменилась.
+
+def _patch_target(docId: str, pageNum: str) -> str:
+    if not _validate_doc_id(docId):
+        raise HTTPException(status_code=400, detail="invalid docId")
+    page_num_str = _validate_page_key(pageNum)
+    if page_num_str is None:
+        raise HTTPException(status_code=400, detail="invalid pageNum")
+    return page_num_str
+
+
+async def _patch_body(request: Request) -> Dict[str, Any]:
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    return body if isinstance(body, dict) else {}
+
+
+def _patch_summary(body: Dict[str, Any]) -> Optional[str]:
+    if "summary" not in body or body["summary"] is None:
+        return None
+    summary = str(body["summary"]).strip()
+    if len(summary) > MAX_SUMMARY_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"summary must be at most {MAX_SUMMARY_LENGTH} characters")
+    return summary or None
+
+
+def _patch_result(docId: str, page_num_str: str, remarkId: str,
+                  ann: Dict[str, Any], operation: str) -> Dict[str, Any]:
+    published = publisher.publish_page(docId, page_num_str)
+    new_sha = _current_page_sha(docId, page_num_str)
+    logger.info(
+        "PATCH %s SUCCESS docId=%s pageKey=%s remarkId=%s status=%s published=%s",
+        operation, docId, page_num_str, remarkId, ann["status"], published,
+    )
+    return {"id": remarkId, "remark": ann, "serverPageSha": new_sha,
+            "published": published}
+
+
+@app.patch("/api/editor/{docId}/{pageNum}/{remarkId}/status")
+async def patch_remark_status(docId: str, pageNum: str, remarkId: str, request: Request,
+                              user: Dict[str, Any] = Depends(require_editor)):
+    """Опубликовать черновик или вернуть замечание в черновики.
+
+    'deleted' сюда не принимается: удаление — отдельная операция с собственным
+    маршрутом (DELETE), и смешивать их значило бы прятать удаление за словом
+    «статус»."""
+    page_num_str = _patch_target(docId, pageNum)
+    body = await _patch_body(request)
+    status = body.get("status")
+    if status not in ("draft", "published"):
+        raise HTTPException(status_code=400, detail="status must be 'draft' or 'published'")
+
+    ann = db.set_status_db(docId, page_num_str, remarkId, status,
+                           author_id=user["userId"], summary=_patch_summary(body))
+    if ann is None:
+        raise HTTPException(status_code=404, detail="remark not found")
+    return _patch_result(docId, page_num_str, remarkId, ann, "status")
+
+
+@app.patch("/api/editor/{docId}/{pageNum}/{remarkId}/category")
+async def patch_remark_category(docId: str, pageNum: str, remarkId: str, request: Request,
+                                user: Dict[str, Any] = Depends(require_editor)):
+    """Сменить категорию. null сбрасывает в «Прочее».
+
+    В отличие от PUT, здесь отсутствие ключа не значит «не трогать»: смена
+    категории — единственное, зачем этот маршрут зовут."""
+    page_num_str = _patch_target(docId, pageNum)
+    body = await _patch_body(request)
+    if "category" not in body:
+        raise HTTPException(status_code=400, detail="category is required")
+    try:
+        category = annotation_categories.normalize_category(body["category"])
+    except annotation_categories.CategoryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    ann = db.set_category_db(docId, page_num_str, remarkId, category,
+                             author_id=user["userId"], summary=_patch_summary(body))
+    if ann is None:
+        raise HTTPException(status_code=404, detail="remark not found")
+    return _patch_result(docId, page_num_str, remarkId, ann, "category")
+
+
+@app.patch("/api/editor/{docId}/{pageNum}/{remarkId}/tags")
+async def patch_remark_tags(docId: str, pageNum: str, remarkId: str, request: Request,
+                            user: Dict[str, Any] = Depends(require_editor)):
+    """Заменить набор тегов целиком. Пустой список очищает теги."""
+    page_num_str = _patch_target(docId, pageNum)
+    body = await _patch_body(request)
+    if "tags" not in body:
+        raise HTTPException(status_code=400, detail="tags is required")
+    try:
+        tags = db.normalize_tags(body["tags"])
+    except db.TagError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    ann = db.set_tags_db(docId, page_num_str, remarkId, tags,
+                         author_id=user["userId"], summary=_patch_summary(body))
+    if ann is None:
+        raise HTTPException(status_code=404, detail="remark not found")
+    return _patch_result(docId, page_num_str, remarkId, ann, "tags")
+
+
 # ===== CABINET (stage 3) =====
 
 #: Резюме правки: одна строка, а не второй текст замечания.
-MAX_SUMMARY_LENGTH = 200
-REMARK_STATUSES = ("published", "draft", "deleted")
-# "general" ушёл: см. docs/general-migration-map.json. Строки со status='deleted'
-# могут по-прежнему иметь kind='general' — их никто не читает, кроме истории.
-REMARK_KINDS = ("major", "minor")
 
 
 async def require_editor_read(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:
@@ -1036,21 +1154,6 @@ async def require_editor_read(user: Dict[str, Any] = Depends(require_user)) -> D
     if user.get("role") not in EDITOR_ROLES:
         raise HTTPException(status_code=403, detail="editor role required")
     return user
-
-
-def _with_legacy_keys(item: Dict[str, Any]) -> Dict[str, Any]:
-    """Продублировать поля замечания прежними именами.
-
-    Кабинет и `/app/` — статика: они переезжают на `remarkId`/`kind` отдельной
-    выкладкой, уже после этого деплоя. Снимается в фазе 6 переименования."""
-    if not isinstance(item, dict):
-        return item
-    out = dict(item)
-    if "remarkId" in out:
-        out["annId"] = out["remarkId"]
-    if "kind" in out:
-        out["annType"] = publisher.legacy_kind(out["kind"])
-    return out
 
 
 def _validate_list_params(
@@ -1067,7 +1170,6 @@ def _validate_list_params(
     if status is not None and status not in REMARK_STATUSES:
         raise HTTPException(status_code=400, detail="invalid status")
     if kind is not None:
-        kind = db.LEGACY_KINDS.get(kind, kind)
         if kind not in REMARK_KINDS:
             raise HTTPException(status_code=400, detail="invalid kind")
     if limit < 1 or limit > 200:
@@ -1079,16 +1181,11 @@ def _validate_list_params(
     return {"pageKey": page_num_str, "kind": kind}
 
 
-# `/api/annotations` — прежний адрес тех же двух ручек. Живёт, пока клиенты
-# редактора (статика) не переехали на новый; снимается в фазе 6.
 @app.get("/api/remarks")
-@app.get("/api/annotations")
 async def list_remarks(
     docId: Optional[str] = None,
     pageKey: Optional[str] = None,
     kind: Optional[str] = None,
-    # Прежнее имя того же параметра: кабинет шлёт его до своей выкладки.
-    annType: Optional[str] = None,
     status: Optional[str] = None,
     authorId: Optional[int] = None,
     q: Optional[str] = None,
@@ -1100,7 +1197,7 @@ async def list_remarks(
     offset: int = 0,
     user: Dict[str, Any] = Depends(require_editor_read),
 ):
-    validated = _validate_list_params(docId, pageKey, kind or annType,
+    validated = _validate_list_params(docId, pageKey, kind,
                                       status, limit, offset, q)
     if tag is not None:
         try:
@@ -1120,11 +1217,11 @@ async def list_remarks(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
     kind = validated["kind"]
-    items = [_with_legacy_keys(item) for item in db.list_remarks(
+    items = db.list_remarks(
         doc_id=docId, page_num=validated["pageKey"], kind=kind, status=status,
         author_id=authorId, q=q, limit=limit, offset=offset, tag=tag,
         category=category, category_source=categorySource, section_id=section,
-    )]
+    )
     total = db.count_remarks(
         doc_id=docId, page_num=validated["pageKey"], kind=kind, status=status,
         author_id=authorId, q=q, tag=tag,
@@ -1134,7 +1231,6 @@ async def list_remarks(
 
 
 @app.get("/api/remarks/{docId}/{pageKey}/{remarkId}")
-@app.get("/api/annotations/{docId}/{pageKey}/{remarkId}")
 async def get_one_remark(docId: str, pageKey: str, remarkId: str,
                              user: Dict[str, Any] = Depends(require_editor_read)):
     """Одно замечание целиком — вход карточки в редакторе.
@@ -1148,8 +1244,230 @@ async def get_one_remark(docId: str, pageKey: str, remarkId: str,
     if ann is None:
         raise HTTPException(status_code=404, detail="remark not found")
     section = db.find_section_for_page(docId, page_num_str)
-    ann = _with_legacy_keys(ann)
-    return {"remark": ann, "annotation": ann, "section": section}
+    return {"remark": ann, "section": section}
+
+
+# ===== ОЦЕНКИ И КОММЕНТАРИИ =====
+#
+# Рабочие данные редактора. Ни один маршрут ниже не вызывает publish_page:
+# оценки и комментарии в статику не попадают — это не «пока не сделано», а
+# условие задачи (главный инвариант проекта, docs/README.md).
+
+
+def _remark_target(docId: str, pageKey: str, remarkId: str) -> str:
+    """Проверить адрес и убедиться, что замечание существует. Возвращает
+    нормализованный ключ страницы."""
+    if not _validate_doc_id(docId):
+        raise HTTPException(status_code=400, detail="invalid docId")
+    page_num_str = _validate_page_key(pageKey)
+    if page_num_str is None:
+        raise HTTPException(status_code=400, detail="invalid pageKey")
+    if db.get_remark(docId, page_num_str, remarkId) is None:
+        raise HTTPException(status_code=404, detail="remark not found")
+    return page_num_str
+
+
+@app.get("/api/rating-scales")
+async def get_rating_scales(user: Dict[str, Any] = Depends(require_editor_read)):
+    """Какие шкалы существуют и как называются — единственный источник для UI."""
+    return {"scales": rating_scales.describe()}
+
+
+@app.get("/api/remarks/{docId}/{pageKey}/{remarkId}/ratings")
+async def get_remark_ratings(docId: str, pageKey: str, remarkId: str,
+                             user: Dict[str, Any] = Depends(require_editor_read)):
+    page_num_str = _remark_target(docId, pageKey, remarkId)
+    return {
+        "summary": db.summarize_ratings(docId, page_num_str, remarkId,
+                                        rater_id=user["userId"]),
+        "items": db.list_ratings(docId, page_num_str, remarkId),
+    }
+
+
+@app.put("/api/remarks/{docId}/{pageKey}/{remarkId}/ratings/{scale}")
+async def put_remark_rating(docId: str, pageKey: str, remarkId: str, scale: str,
+                            request: Request,
+                            user: Dict[str, Any] = Depends(require_editor)):
+    """Поставить или изменить свою оценку по одной шкале.
+
+    Оценка ничего не публикует и ничего не скрывает: кворум удалённой
+    ревью-подсистемы не воскрешаем, публикация остаётся явным действием."""
+    page_num_str = _remark_target(docId, pageKey, remarkId)
+    body = await _patch_body(request)
+    try:
+        scale_name = rating_scales.normalize_scale(scale)
+        value = rating_scales.normalize_value(body.get("value"))
+        note = rating_scales.normalize_note(body.get("note"))
+    except rating_scales.ScaleError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    rating = db.set_rating(docId, page_num_str, remarkId, scale_name, value,
+                           rater_id=user["userId"], note=note)
+    logger.info("rating set docId=%s pageKey=%s remarkId=%s scale=%s by=%s",
+                docId, page_num_str, remarkId, scale_name, user["userId"])
+    return {"rating": rating,
+            "summary": db.summarize_ratings(docId, page_num_str, remarkId,
+                                            rater_id=user["userId"])}
+
+
+@app.delete("/api/remarks/{docId}/{pageKey}/{remarkId}/ratings/{scale}")
+async def delete_remark_rating(docId: str, pageKey: str, remarkId: str, scale: str,
+                               user: Dict[str, Any] = Depends(require_editor)):
+    """Снять свою оценку. Чужие оценки этим маршрутом не трогаются."""
+    page_num_str = _remark_target(docId, pageKey, remarkId)
+    try:
+        scale_name = rating_scales.normalize_scale(scale)
+    except rating_scales.ScaleError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not db.clear_rating(docId, page_num_str, remarkId, scale_name, user["userId"]):
+        raise HTTPException(status_code=404, detail="rating not found")
+    return {"summary": db.summarize_ratings(docId, page_num_str, remarkId,
+                                            rater_id=user["userId"])}
+
+
+@app.get("/api/remarks/{docId}/{pageKey}/{remarkId}/notes")
+async def get_remark_notes(docId: str, pageKey: str, remarkId: str,
+                           user: Dict[str, Any] = Depends(require_editor_read)):
+    page_num_str = _remark_target(docId, pageKey, remarkId)
+    return {"items": db.list_notes(docId, page_num_str, remarkId),
+            "open": db.count_open_notes(docId, page_num_str, remarkId)}
+
+
+@app.post("/api/remarks/{docId}/{pageKey}/{remarkId}/notes")
+async def post_remark_note(docId: str, pageKey: str, remarkId: str, request: Request,
+                           user: Dict[str, Any] = Depends(require_editor)):
+    """Оставить комментарий или ответ на него (`parentId`)."""
+    page_num_str = _remark_target(docId, pageKey, remarkId)
+    body = await _patch_body(request)
+    parent_id = body.get("parentId")
+    if parent_id is not None and not isinstance(parent_id, int):
+        raise HTTPException(status_code=400, detail="parentId must be an integer")
+    try:
+        note = db.add_note(docId, page_num_str, remarkId, user["userId"],
+                           body.get("body"), parent_id=parent_id)
+    except db.NoteError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info("note added docId=%s pageKey=%s remarkId=%s by=%s parent=%s",
+                docId, page_num_str, remarkId, user["userId"], parent_id)
+    return {"note": note}
+
+
+def _own_note_or_403(note_id: int, user: Dict[str, Any]) -> Dict[str, Any]:
+    note = db.get_note(note_id)
+    if note is None or note["deleted"]:
+        raise HTTPException(status_code=404, detail="note not found")
+    if note["authorId"] != user["userId"] and user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="not your note")
+    return note
+
+
+@app.patch("/api/notes/{noteId}")
+async def patch_note(noteId: int, request: Request,
+                     user: Dict[str, Any] = Depends(require_editor)):
+    """Поправить свой комментарий либо пометить тред решённым.
+
+    Закрыть тред может любой редактор, а не только автор: решение — про работу,
+    а не про авторство. Править текст — только автор (или админ).
+    """
+    body = await _patch_body(request)
+    if "resolved" in body:
+        if not isinstance(body["resolved"], bool):
+            raise HTTPException(status_code=400, detail="resolved must be a boolean")
+        try:
+            note = db.resolve_note(noteId, body["resolved"], user["userId"])
+        except db.NoteError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if note is None:
+            raise HTTPException(status_code=404, detail="note not found")
+        return {"note": note}
+
+    if "body" not in body:
+        raise HTTPException(status_code=400, detail="body or resolved is required")
+    _own_note_or_403(noteId, user)
+    try:
+        note = db.edit_note(noteId, body["body"])
+    except db.NoteError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if note is None:
+        raise HTTPException(status_code=404, detail="note not found")
+    return {"note": note}
+
+
+@app.delete("/api/notes/{noteId}")
+async def delete_note(noteId: int, user: Dict[str, Any] = Depends(require_editor)):
+    """Мягко удалить свой комментарий: строка остаётся ради связности треда,
+    тело затирается."""
+    _own_note_or_403(noteId, user)
+    note = db.delete_note(noteId)
+    if note is None:
+        raise HTTPException(status_code=404, detail="note not found")
+    return {"note": note}
+
+
+@app.get("/api/remarks/{docId}/{pageKey}/{remarkId}/timeline")
+async def get_remark_timeline(docId: str, pageKey: str, remarkId: str,
+                              limit: int = 100,
+                              user: Dict[str, Any] = Depends(require_editor_read)):
+    """Всё, что происходило с замечанием, одним списком: ревизии, оценки,
+    комментарии. Новые сверху.
+
+    Слияние здесь, а не в БД: три источника живут в трёх таблицах намеренно
+    (ревизия — снимок состояния, оценка и комментарий состояния не меняют), и
+    сводить их в одну таблицу ради удобства чтения значило бы сломать откат.
+    """
+    page_num_str = _remark_target(docId, pageKey, remarkId)
+    items: List[Dict[str, Any]] = []
+
+    for rev in db.list_history(doc_id=docId, page_num=page_num_str,
+                               remark_id=remarkId, limit=limit):
+        items.append({
+            "kind": "revision",
+            "id": rev["id"],
+            "actions": rev["changes"],
+            "actionLabel": rev["actionLabel"],
+            "actorId": rev["authorId"],
+            "actorName": rev["authorName"],
+            "createdAt": rev["createdAt"],
+            "revNo": rev["revNo"],
+            "agentRunId": rev["agentRunId"],
+            "summary": rev["summary"],
+            "text": (rev["snapshot"] or {}).get("text"),
+        })
+
+    for rating in db.list_ratings(docId, page_num_str, remarkId):
+        items.append({
+            "kind": "rating",
+            "id": rating["id"],
+            "actions": ["rate"],
+            "actionLabel": remark_actions.LABELS["rate"],
+            "actorId": rating["raterId"],
+            "actorName": rating["raterName"],
+            # Оценка перезаписывается, и в ленте она стоит по времени последней
+            # правки: показывать её на месте первой было бы неверно.
+            "createdAt": rating["updatedAt"],
+            "scale": rating["scale"],
+            "value": rating["value"],
+            "note": rating["note"],
+        })
+
+    for note in db.list_notes(docId, page_num_str, remarkId):
+        items.append({
+            "kind": "note",
+            "id": note["id"],
+            "actions": ["note"],
+            "actionLabel": remark_actions.LABELS["note"],
+            "actorId": note["authorId"],
+            "actorName": note["authorName"],
+            "createdAt": note["createdAt"],
+            "body": note["body"],
+            "parentId": note["parentId"],
+            "resolved": note["resolved"],
+        })
+
+    # Метки времени огрублены до дня (docs/anonymity-model.md), поэтому внутри
+    # одного дня порядок задаёт id — он же порядок записи.
+    items.sort(key=lambda item: (item["createdAt"], item["id"]), reverse=True)
+    return {"items": items[:limit]}
 
 
 @app.get("/api/sections")
@@ -1177,19 +1495,24 @@ async def list_history(
     docId: Optional[str] = None,
     pageKey: Optional[str] = None,
     remarkId: Optional[str] = None,
-    # Прежнее имя того же параметра: кабинет шлёт его до своей выкладки.
-    annId: Optional[str] = None,
     authorId: Optional[int] = None,
     action: Optional[str] = None,
+    # Состав изменения: `action` отвечает, кто и чем записал ревизию, `changed`
+    # — что при этом изменилось. Разные вопросы, разные фильтры.
+    changed: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     user: Dict[str, Any] = Depends(require_editor_read),
 ):
     validated = _validate_list_params(docId, pageKey, None, None, limit, offset, None)
+    if changed is not None and not remark_actions.is_known(changed):
+        raise HTTPException(
+            status_code=400,
+            detail=f"changed must be one of: {', '.join(remark_actions.ACTIONS)}")
     items = db.list_history(
-        doc_id=docId, page_num=validated["pageKey"], remark_id=remarkId or annId,
+        doc_id=docId, page_num=validated["pageKey"], remark_id=remarkId,
         author_id=authorId,
-        action=action, limit=limit, offset=offset,
+        action=action, changed=changed, limit=limit, offset=offset,
     )
     return {"items": items, "hasMore": len(items) == limit, "limit": limit, "offset": offset}
 

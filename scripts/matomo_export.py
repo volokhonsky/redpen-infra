@@ -22,8 +22,6 @@ Matomo одни и те же строки дважды (сам импортёр 
 """
 
 import argparse
-import gzip
-import hashlib
 import json
 import os
 import sys
@@ -32,38 +30,11 @@ from typing import Dict, List, Optional, Tuple
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import analytics  # noqa: E402
 import page_sections  # noqa: E402
+from log_files import log_files, open_log, signature  # noqa: E402
 
 DEFAULT_LOG_DIR = os.getenv("ANALYTICS_LOG_DIR", "/var/log/caddy")
 DEFAULT_SITE_DIR = os.getenv("PUBLISH_DIR", "/srv/public")
 DEFAULT_STATE = os.getenv("MATOMO_EXPORT_STATE", "/var/redpen-stats/matomo_export.json")
-
-
-def open_log(path: str):
-    if path.endswith(".gz"):
-        return gzip.open(path, "rt", encoding="utf-8", errors="replace")
-    return open(path, "r", encoding="utf-8", errors="replace")
-
-
-def signature(path: str) -> str:
-    """Отпечаток первой строки: ротация или обрезка меняют его."""
-    # Именно первая строка, а не первые N байт: дописанная в конец строка
-    # меняла бы «первые 512 байт» у короткого файла, и весь лог читался бы
-    # заново — то есть уезжал бы в Matomo дважды.
-    try:
-        with open_log(path) as f:
-            head = f.readline()
-    except OSError:
-        return ""
-    return hashlib.sha256(head.encode("utf-8", "replace")).hexdigest()[:16]
-
-
-def log_files(log_dir: str) -> List[str]:
-    if not os.path.isdir(log_dir):
-        return []
-    names = [n for n in os.listdir(log_dir)
-             if n.startswith("access") and (n.endswith(".log") or n.endswith(".gz"))]
-    paths = [os.path.join(log_dir, n) for n in names]
-    return sorted(paths, key=lambda p: (os.path.getmtime(p), p))
 
 
 def load_state(path: str) -> Dict[str, Dict[str, object]]:

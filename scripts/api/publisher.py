@@ -102,7 +102,7 @@ def render_page_static(doc_id: str, page_num: str) -> List[Dict[str, Any]]:
     "draft": true (kept for older viewers) and a leading "draft" tag.
 
     The viewer hides drafts by default and reveals them per URL parameter; see
-    getTagFilter() in templates/js/main.js."""
+    the tag filter in templates/js/page-view.js."""
     rendered = [
         _render_item(ann, draft=False)
         for ann in db.list_page_remarks(doc_id, page_num, include_deleted=False)
@@ -118,12 +118,6 @@ def compute_page_sha(rendered: List[Dict[str, Any]]) -> str:
 
 def _page_file_path(doc_id: str, page_num: str, dirname: str = "remarks") -> str:
     return os.path.join(config.PUBLISH_DIR, doc_id, dirname, f"page_{page_num}.json")
-
-
-#: Каталог, куда замечания писались до переименования. Дублирующая запись живёт,
-#: пока в ходу старые адреса и уже розданные офлайн-копии; снимается в фазе 6
-#: (тогда же включается 301 в nginx и каталог удаляется с тома).
-LEGACY_PAGE_DIRNAME = "annotations"
 
 
 def _atomic_write_json(target: str, rendered: List[Dict[str, Any]]) -> None:
@@ -195,8 +189,6 @@ def publish_page(doc_id: str, page_num: str) -> bool:
     try:
         rendered = render_page_static(doc_id, page_num)
         _atomic_write_json(_page_file_path(doc_id, page_num), rendered)
-        _atomic_write_json(
-            _page_file_path(doc_id, page_num, LEGACY_PAGE_DIRNAME), rendered)
 
         # HTML рисуется после JSON и намеренно не влияет на возвращаемое
         # значение: JSON — канон публикации, а страница читателя может

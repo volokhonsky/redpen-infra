@@ -19,7 +19,6 @@ This script never publishes -- run publish_all() (or restart the API) after.
 import argparse
 import json
 import os
-import re
 import secrets
 import sys
 from typing import Any, Dict, List, Optional, Tuple
@@ -32,35 +31,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import annotation_categories  # noqa: E402
 import config
 import db
+import page_files
 
-PAGE_FILE_RE = re.compile(r"^page_(-?\d+)\.json$")
-
-
-def _iter_doc_dirs(source_dir: str, doc_id: Optional[str]) -> List[str]:
-    if doc_id:
-        return [doc_id] if os.path.isdir(os.path.join(source_dir, doc_id, "remarks")) else []
-    result = []
-    if not os.path.isdir(source_dir):
-        return result
-    for name in sorted(os.listdir(source_dir)):
-        if os.path.isdir(os.path.join(source_dir, name, "remarks")):
-            result.append(name)
-    return result
+def _iter_doc_dirs(source_dir: str, doc_id):
+    return page_files.iter_doc_dirs(source_dir, doc_id)
 
 
-def _iter_page_files(source_dir: str, doc_id: str) -> List[Tuple[str, str]]:
-    """Return [(page_num, file_path), ...], page_num taken verbatim from the
-    filename (so "000"/"-01" survive as-is), sorted by filename."""
-    ann_dir = os.path.join(source_dir, doc_id, "remarks")
-    if not os.path.isdir(ann_dir):
-        return []
-    out = []
-    for name in sorted(os.listdir(ann_dir)):
-        m = PAGE_FILE_RE.match(name)
-        if not m:
-            continue
-        out.append((m.group(1), os.path.join(ann_dir, name)))
-    return out
+def _iter_page_files(source_dir: str, doc_id: str):
+    """[(page_num, file_path), ...] -- ключ страницы дословно из имени файла."""
+    return page_files.iter_page_files(
+        os.path.join(source_dir, doc_id, "remarks"), page_files.PAGE_JSON_RE)
 
 
 def _extract_remarks(data: Any) -> List[Dict[str, Any]]:

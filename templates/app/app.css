@@ -266,6 +266,189 @@ body {
 }
 .app-queue-empty { margin: 40px auto; text-align: center; }
 
+/* --- оценки и обсуждение ------------------------------------------------ */
+
+.app-ratings, .app-notes {
+  margin-top: 20px;
+  border-top: 1px solid var(--app-line);
+  padding-top: 14px;
+}
+.app-ratings h3, .app-notes h3 { margin: 0 0 6px; font-size: 0.95rem; }
+.app-note {
+  font-size: 0.85rem;
+  color: var(--app-muted);
+  margin: 0 0 10px;
+}
+
+.app-rating { margin-bottom: 10px; }
+.app-rating-title { font-size: 0.88rem; font-weight: 600; }
+.app-rating-scale { display: flex; gap: 4px; align-items: center; margin: 4px 0 2px; }
+.app-rating-btn {
+  width: 28px;
+  height: 26px;
+  background: #fff;
+  border: 1px solid var(--app-line);
+  border-radius: 3px;
+  cursor: pointer;
+  font: inherit;
+}
+.app-rating-btn.is-mine { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+.app-rating-clear {
+  margin-left: 6px;
+  background: none;
+  border: none;
+  color: var(--app-muted);
+  cursor: pointer;
+  font-size: 0.8rem;
+  text-decoration: underline;
+}
+.app-rating-others { font-size: 0.8rem; color: var(--app-muted); }
+
+.app-note-list { list-style: none; margin: 0 0 10px; padding: 0; }
+.app-note-list > .app-note {
+  border-left: 2px solid var(--app-line);
+  padding: 6px 0 8px 10px;
+  color: inherit;
+  font-size: inherit;
+}
+.app-note-list > .app-note.is-resolved { opacity: 0.6; }
+.app-note-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 0.8rem;
+  color: var(--app-muted);
+}
+.app-note-day { margin-left: auto; }
+.app-note-done {
+  margin-left: 0;
+  background: #e8f3ec;
+  color: #1a6b3c;
+  border-radius: 3px;
+  padding: 0 6px;
+}
+.app-note-body { font-size: 0.88rem; margin: 3px 0; white-space: pre-wrap; }
+.app-note-actions { display: flex; gap: 10px; }
+.app-note-actions button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--app-muted);
+  cursor: pointer;
+  font-size: 0.8rem;
+  text-decoration: underline;
+}
+.app-note-replies { list-style: none; margin: 6px 0 0 14px; padding: 0; }
+.app-note-form { display: flex; flex-direction: column; gap: 6px; }
+.app-note-form textarea {
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--app-line);
+  border-radius: 4px;
+  resize: vertical;
+}
+.app-note-form button { align-self: flex-start; }
+
+.app-timeline-filter { font-size: 0.85rem; color: var(--app-muted); margin-bottom: 8px; }
+.app-rev--rating .app-rev-action { background: #eaf1fb; }
+.app-rev--note .app-rev-action { background: #f3eefa; }
+
 @media (max-width: 1100px) {
   .app-queue { grid-template-columns: 1fr; }
+}
+
+/* --- экран страницы: скан с маркерами ---------------------------------- */
+/*
+   Скан слева, список замечаний справа. Кружки рисует общий с просмотрщиком
+   redpen-markers.js, поэтому классы у них те же (.circle), а вот стили — свои:
+   css/remarks.css сюда не подключён и подключаться не должен, иначе редактор
+   потянет за собой половину просмотрщика.
+*/
+
+.app-page {
+  display: grid;
+  grid-template-columns: minmax(420px, 1.4fr) minmax(320px, 1fr);
+  gap: 16px;
+  padding: 16px;
+  align-items: start;
+}
+
+.app-scan-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.app-scan { position: relative; }
+.app-scan img { display: block; width: 100%; height: auto; }
+
+/* Курсор-перекрестье включается только в режиме выбора точки: в обычном
+   состоянии клик по скану ничего не делает, и обещать обратное нечестно. */
+.app-scan.is-placing img { cursor: crosshair; }
+
+.app-scan-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+/* Маркеры кликабельны и таскаются, сам оверлей прозрачен для мыши. */
+.app-scan-overlay .circle {
+  position: absolute;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 700;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.6);
+  cursor: grab;
+  pointer-events: auto;
+  user-select: none;
+}
+
+.app-scan-overlay .circle.is-dragging { cursor: grabbing; opacity: 0.75; }
+.app-scan-overlay .circle.is-selected { outline: 3px solid var(--app-accent); }
+
+.app-page-list { list-style: none; margin: 0; padding: 0; }
+
+.app-page-item {
+  border-bottom: 1px solid var(--app-line);
+  padding: 8px 0;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.app-page-item:hover { background: #f2f4f7; }
+.app-page-item.is-draft { color: var(--app-muted); }
+
+.app-page-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--app-muted);
+}
+
+.app-page-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #eceff3;
+  font-weight: 700;
+}
+
+.app-page-nocoords { color: var(--app-accent); }
+
+#pg-form { border-bottom: 1px solid var(--app-line); margin-bottom: 16px; padding-bottom: 12px; }
+#pg-form .app-row { grid-template-columns: 1fr 1fr; }
+
+@media (max-width: 1100px) {
+  .app-page { grid-template-columns: 1fr; }
 }

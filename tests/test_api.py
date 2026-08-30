@@ -1001,62 +1001,66 @@ def test_editor_get_exposes_category(client):
 
 
 # ---------------------------------------------------------------------------
-# Совместимость с клиентами, написанными до переименования сущности (2026-08-29).
-# Клиенты редактора — статика: они переезжают на remarkId/kind отдельной
-# выкладкой, уже после этого API. Всё, что ниже, снимается в фазе 6.
+# Фаза 6 переименования (2026-08-30): переходная совместимость снята.
+# Клиенты редактора переведены на remarkId/kind, и API больше не понимает
+# прежних имён. Тесты ниже сторожат именно это: шим, вернувшийся по
+# невнимательности, снова разведёт два словаря по системе.
 # ---------------------------------------------------------------------------
 
-def test_editor_accepts_the_legacy_kind_key_and_values(client):
+def test_editor_rejects_the_legacy_kind_key(client):
     doc, page = "medinsky11klass", "22"
     r = client.post(f"/api/editor/{doc}/{page}",
                     json={"annType": "main", "text": "старый клиент", "coords": [1, 2]})
-    assert r.status_code == 200
-    remark_id = r.json()["id"]
-    stored = next(a for a in client.get(f"/api/editor/{doc}/{page}").json()["remarks"]
-                  if a["id"] == remark_id)
-    assert stored["kind"] == "major"
+    assert r.status_code == 400
 
 
-def test_editor_page_response_carries_both_key_sets(client):
+def test_editor_rejects_legacy_kind_values(client):
+    doc, page = "medinsky11klass", "22"
+    r = client.post(f"/api/editor/{doc}/{page}",
+                    json={"kind": "main", "text": "старое значение", "coords": [1, 2]})
+    assert r.status_code == 400
+
+
+def test_editor_page_response_carries_only_current_names(client):
     doc, page = "medinsky11klass", "23"
     client.post(f"/api/editor/{doc}/{page}",
                 json={"kind": "minor", "text": "x", "coords": [1, 2]})
     body = client.get(f"/api/editor/{doc}/{page}").json()
-    assert body["remarks"] == body["annotations"]
+    assert "annotations" not in body
     item = body["remarks"][0]
-    assert item["kind"] == "minor" and item["annType"] == "comment"
+    assert item["kind"] == "minor"
+    assert "annType" not in item
 
 
-def test_legacy_list_path_still_answers(client):
+def test_legacy_list_path_is_gone(client):
     doc, page = "medinsky11klass", "24"
     client.post(f"/api/editor/{doc}/{page}",
                 json={"kind": "major", "text": "y", "coords": [1, 2]})
-    old = client.get("/api/annotations", params={"docId": doc, "pageKey": page})
-    new = client.get("/api/remarks", params={"docId": doc, "pageKey": page})
-    assert old.status_code == 200 and old.json() == new.json()
-    item = new.json()["items"][0]
-    # Оба набора имён в одном элементе: кабинет ещё читает старые.
-    assert item["remarkId"] == item["annId"]
-    assert item["kind"] == "major" and item["annType"] == "main"
+    assert client.get("/api/annotations",
+                      params={"docId": doc, "pageKey": page}).status_code == 404
+    item = client.get("/api/remarks",
+                      params={"docId": doc, "pageKey": page}).json()["items"][0]
+    assert item["kind"] == "major"
+    assert "annId" not in item and "annType" not in item
 
 
-def test_legacy_list_filter_accepts_old_kind_values(client):
+def test_list_filter_rejects_old_kind_values(client):
     doc, page = "medinsky11klass", "25"
     client.post(f"/api/editor/{doc}/{page}",
                 json={"kind": "major", "text": "z", "coords": [1, 2]})
-    by_old = client.get("/api/annotations",
-                        params={"docId": doc, "pageKey": page, "annType": "main"})
-    assert by_old.status_code == 200
-    kinds = [i["kind"] for i in by_old.json()["items"]]
-    assert kinds and set(kinds) == {"major"}
+    r = client.get("/api/remarks",
+                   params={"docId": doc, "pageKey": page, "kind": "main"})
+    assert r.status_code == 400
 
 
-def test_legacy_history_filter_param_still_works(client):
+def test_history_filter_uses_remark_id_only(client):
     doc, page = "medinsky11klass", "26"
     created = client.post(f"/api/editor/{doc}/{page}",
                           json={"kind": "minor", "text": "h", "coords": [1, 2]}).json()
+    # Прежнее имя параметра больше не читается: фильтра нет, значит выдача не
+    # сузилась — но и 500 быть не должно, лишние параметры FastAPI игнорирует.
     old = client.get("/api/history", params={"docId": doc, "annId": created["id"]})
+    assert old.status_code == 200
     new = client.get("/api/history", params={"docId": doc, "remarkId": created["id"]})
-    assert old.status_code == 200 and old.json() == new.json()
     assert [i["remarkId"] for i in new.json()["items"]] == [created["id"]]
 

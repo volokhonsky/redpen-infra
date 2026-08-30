@@ -141,7 +141,11 @@
 	handle @preflight {
 		header Access-Control-Allow-Origin "https://{$DOMAIN}"
 		header Access-Control-Allow-Credentials "true"
-		header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+		# PATCH обязателен: узкие операции над замечанием
+		# (.../status, .../category, .../tags) ходят именно им, а редактор живёт
+		# на другом источнике, чем API, — без метода в этом списке браузер
+		# зарубит их на предполётном запросе.
+		header Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
 		header Access-Control-Allow-Headers "Content-Type, Authorization, X-CSRF-Token"
 		header Access-Control-Max-Age "86400"
 		respond 204

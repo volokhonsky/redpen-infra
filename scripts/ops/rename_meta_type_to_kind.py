@@ -21,7 +21,10 @@ import os
 import re
 import sys
 
-LEGACY_KINDS = {"main": "major", "comment": "minor"}
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import remark_kinds  # noqa: E402
+
+LEGACY_KINDS = remark_kinds.LEGACY_KINDS
 
 #: Разделитель мета-блока: тот же набор, что понимает remark_converter
 #: (включая хвостовые пробелы, встречающиеся в черновиках).

@@ -2,8 +2,12 @@
 Тесты сборщика офлайн-архива (``scripts/make_offline_bundle.py``).
 
 Проверяем ровно то, что обещано читателю на главной: в копии нет кода,
-обращающегося к сети, а все данные, которые просмотрщик грузит fetch'ем, лежат
-в offline-data.js — иначе под ``file://`` страница останется пустой.
+обращающегося к сети, и страница со всеми замечаниями открывается из файла.
+
+С 2026-08-30 бандл — прямая копия статики: постраничный просмотрщик не делает
+ни одного запроса, замечания приезжают инлайновым блоком redpen-page-data
+внутри самой страницы. Прежний offline-data.js и шим fetch существовали ради
+SPA и удалены вместе с ним.
 
 Работаем на синтетическом сайте из двух страниц, реальный redpen-publish не
 трогаем.
@@ -45,14 +49,12 @@ def site(tmp_path):
     (site_dir / "css").mkdir(parents=True)
     (site_dir / "js").mkdir()
     (site_dir / "css" / "main.css").write_text("body{}", encoding="utf-8")
-    for name in ("layout.js", "comment-content.js", "remarks.js", "mobile.js", "main.js"):
+    for name in ("page-view.js", "redpen-markers.js", "redpen-categories.js",
+                 "legacy-page-redirect.js"):
         (site_dir / "js" / name).write_text("// %s" % name, encoding="utf-8")
-    # редакторские скрипты — в архив попасть не должны
+    # редакторский модуль авторизации — в архив попасть не должен
     (site_dir / "js" / "redpen-auth.js").write_text(
         "var base='https://api.medinsky.net';", encoding="utf-8")
-    (site_dir / "js" / "redpen-editor-panel.js").write_text("//", encoding="utf-8")
-    (site_dir / "js" / "redpen-editor-bootstrap.js").write_text(
-        "fetch('https://api.medinsky.net/api/auth/me');", encoding="utf-8")
     (site_dir / "favicon.svg").write_text("<svg/>", encoding="utf-8")
 
     doc = site_dir / DOC
@@ -78,27 +80,33 @@ def site(tmp_path):
     # легаси-компаньон: в архив попасть не должен
     (doc / "remarks" / "page_001.drafts.json").write_text("[]", encoding="utf-8")
 
+    # Оглавление книги.
     (doc / "index.html").write_text("""<!DOCTYPE html>
 <html><head><link rel="stylesheet" href="../css/main.css"></head>
 <body>
-  <div id="layout"></div>
-  <script>
-    window.REDPEN_API_BASE = window.REDPEN_API_BASE || 'https://api.medinsky.net';
-    window.REDPEN_GOOGLE_CLIENT_ID = window.REDPEN_GOOGLE_CLIENT_ID || 'x.apps.googleusercontent.com';
-  </script>
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="../js/layout.js"></script>
-  <script src="../js/comment-content.js"></script>
-  <script src="../js/remarks.js"></script>
-  <script src="../js/mobile.js"></script>
-  <script src="../js/main.js?v=tags-1"></script>
-  <script src="../js/redpen-editor-panel.js"></script>
-  <script src="../js/redpen-auth.js"></script>
-  <script src="../js/redpen-editor-bootstrap.js"></script>
+  <div class="toc"></div>
+  <script src="../js/legacy-page-redirect.js"></script>
 </body></html>
 """, encoding="utf-8")
-    # копия, которую сборщик обязан отбросить
-    (doc / "document_index.html").write_text("<html></html>", encoding="utf-8")
+
+    # Страницы: замечания внутри html, ни одного запроса наружу.
+    for label, page in (("1", "page_001"), ("2", "page_002")):
+        page_dir = doc / "pages" / label
+        page_dir.mkdir(parents=True)
+        (page_dir / "index.html").write_text("""<!DOCTYPE html>
+<html><head><link rel="stylesheet" href="../../../css/main.css"></head>
+<body>
+  <img id="page-image" src="../../images/%s.png" />
+  <script type="application/json" id="redpen-page-data">[{"id":"ann-1"}]</script>
+  <script src="../../../js/redpen-categories.js"></script>
+  <script src="../../../js/redpen-markers.js"></script>
+  <script src="../../../js/page-view.js"></script>
+</body></html>
+""" % page, encoding="utf-8")
+
+    # копия старого SPA: могла остаться на томе публикации, в архив не идёт
+    (doc / "document_index.html").write_text(
+        "<script>fetch('https://api.medinsky.net/x')</script>", encoding="utf-8")
     return site_dir
 
 
@@ -118,8 +126,8 @@ def _read(root, *parts):
 def test_bundle_layout(bundle):
     root, _ = bundle
     for rel in ("index.html", "ЧИТАТЬ.html", "README.txt", "favicon.svg",
-                "css/main.css", "js/main.js", "js/redpen-offline.js",
-                DOC + "/index.html", DOC + "/offline-data.js",
+                "css/main.css", "js/page-view.js", "js/redpen-markers.js",
+                DOC + "/index.html", DOC + "/pages/1/index.html",
                 DOC + "/images/page_001.png", DOC + "/metadata.json"):
         assert os.path.exists(os.path.join(root, *rel.split("/"))), rel
 
@@ -138,76 +146,27 @@ def test_no_network_references(bundle):
     assert mob.check_no_network_refs(root) == []
 
 
-def test_doc_index_loads_offline_data_before_viewer(bundle):
+def test_page_carries_its_remarks_inline(bundle):
+    """Данные страницы едут в самой странице — под file:// fetch запрещён."""
     root, _ = bundle
-    html = _read(root, DOC, "index.html")
-    assert "offline-data.js" in html
-    assert "redpen-offline.js" in html
-    # шим обязан выполниться раньше main.js, иначе fetch уже улетит в никуда
-    assert html.index("redpen-offline.js") < html.index("../js/main.js")
-    assert html.index("offline-data.js") < html.index("redpen-offline.js")
-    # просмотрщик при этом остался на месте
-    assert "../js/remarks.js" in html
-    assert 'href="../css/main.css"' in html
+    html = _read(root, DOC, "pages", "1", "index.html")
+    assert 'id="redpen-page-data"' in html
+    assert '"ann-1"' in html
+    assert "../../../js/page-view.js" in html
 
 
 def test_all_paths_stay_relative(bundle):
     root, _ = bundle
-    html = _read(root, DOC, "index.html") + _read(root, "index.html")
+    html = (_read(root, DOC, "index.html") + _read(root, "index.html")
+            + _read(root, DOC, "pages", "1", "index.html"))
     assert not re.search(r'(?:src|href)="/[^/]', html)
     assert not re.search(r'(?:src|href)="https?://', html)
-
-
-# --- данные ---------------------------------------------------------------
-
-def test_offline_data_covers_every_page(bundle):
-    root, _ = bundle
-    payload = _parse_offline_data(_read(root, DOC, "offline-data.js"))
-    assert payload["metadata"]["title"] == "Тестовая книга"
-    assert sorted(payload["remarks"]) == ["page_001", "page_002"]
-    assert sorted(payload["text"]) == ["page_001", "page_002"]
-    assert payload["remarks"]["page_001"][0]["id"] == "ann-1"
-    assert "page_001.drafts" not in payload["remarks"]
-
-
-def test_offline_data_survives_non_ascii(bundle):
-    root, _ = bundle
-    payload = _parse_offline_data(_read(root, DOC, "offline-data.js"))
-    assert "«ёлки»" in payload["remarks"]["page_001"][0]["text"]
-
-
-def _parse_offline_data(js):
-    """Достаёт payload из ``window.REDPEN_OFFLINE = JSON.parse("...");``.
-
-    JS-строковый литерал совместим с JSON, поэтому разбираем двумя json.loads —
-    так тест заодно проверяет, что литерал корректно экранирован.
-    """
-    m = re.search(r'JSON\.parse\((".*")\);', js, re.DOTALL)
-    assert m, "offline-data.js не в ожидаемом формате"
-    return json.loads(json.loads(m.group(1)))
 
 
 def test_stats_counted(bundle):
     _root, stats = bundle
     assert stats["pages"] == 2
     assert stats["remarks"] == 2
-    assert stats["vendoredMarked"] is False
-
-
-# --- rewrite -------------------------------------------------------------
-
-def test_rewrite_keeps_vendored_marked_when_present(site, tmp_path):
-    (site / "js" / "vendor").mkdir()
-    (site / "js" / "vendor" / "marked.min.js").write_text("//marked", encoding="utf-8")
-    root, _ = mob.stage_bundle(str(site), DOC, str(tmp_path / "stage2"), "bundle")
-    html = _read(root, DOC, "index.html")
-    assert "../js/vendor/marked.min.js" in html
-    assert "cdn.jsdelivr.net" not in html
-
-
-def test_rewrite_fails_loudly_on_unknown_template():
-    with pytest.raises(RuntimeError):
-        mob.rewrite_doc_index("<html><body>нет скриптов</body></html>", False)
 
 
 # --- упаковка -------------------------------------------------------------
@@ -222,7 +181,7 @@ def test_zip_contents_and_manifest(site, tmp_path):
     with zipfile.ZipFile(out) as zf:
         names = zf.namelist()
         assert "redpen-testbook-offline/index.html" in names
-        assert "redpen-testbook-offline/%s/offline-data.js" % DOC in names
+        assert "redpen-testbook-offline/%s/pages/1/index.html" % DOC in names
         # PNG кладём без сжатия — распаковка с флешки заметно быстрее
         png = zf.getinfo("redpen-testbook-offline/%s/images/page_001.png" % DOC)
         assert png.compress_type == zipfile.ZIP_STORED

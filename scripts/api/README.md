@@ -6,13 +6,15 @@ FastAPI-сервис для хранения входящих данных и р
 
 С этапа 2 замечания редактора хранятся в SQLite (`db.py`, таблицы
 `remarks`/`remark_history`), а не в файлах. При каждой мутации
-`publisher.py` делает два шага: пишет `<docId>/remarks/page_NNN.json`
-(и, до фазы 6 переименования, тот же файл в прежний `<docId>/annotations/`)
-(«голый массив») и перерисовывает `<docId>/pages/<label>/index.html`.
+`publisher.py` делает два шага: пишет «голый массив»
+`<docId>/remarks/page_NNN.json` и перерисовывает
+`<docId>/pages/<label>/index.html`.
 
 Второй шаг обязателен: постраничный просмотрщик **не читает** JSON — он вообще
 ничего не загружает (инвариант офлайна) и берёт замечания из инлайнового блока
-`redpen-page-data` внутри HTML. JSON остался для старого SPA и офлайн-бандла.
+`redpen-page-data` внутри HTML. JSON остался для внешних потребителей и
+офлайн-архива; адреса из прежнего каталога `<docId>/annotations/` переадресует
+nginx (301), сам каталог удалён в фазе 6 переименования 2026-08-30.
 Оглавление и `sitemap.xml` перерисовываются только полной сборкой.
 
 `storage.py` отвечает только за inbox
@@ -64,7 +66,10 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 - `GET /api/hello` → `{message, version, now}` (smoke-тест)
 - ⛔ `GET /logs` → HTML-просмотр лога; ⛔ `GET /api/logs?lines=N` → JSON
 
-Приём данных (inbox):
+Приём данных (inbox). **Клиентов нет:** это наследие этапа 0, когда правки
+складывались в файлы до появления SQLite-канона. Ни просмотрщик, ни `/app/`,
+ни кабинет, ни content-sync сюда не обращаются; вместе с ними жив только ради
+них модуль `storage.py`. Оставлены намеренно (решение 2026-08-30).
 - 🔒 `POST /api/store` — сохраняет JSON-объект в `${STORAGE_DIR}/inbox/YYYYMMDD/<uuid>.json`.
   Ответ: `{"status":"stored","path":"inbox/YYYYMMDD/<uuid>.json"}`.
 - 🔒 `POST /api/store-raw` — то же, плюс необязательные поля `bucket` и `pageId`.
@@ -104,21 +109,19 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 Оптимистичная блокировка: если `clientPageSha` передан, не пуст и не
 совпадает с текущим `serverPageSha` страницы — ответ `409`
 `{"detail": "conflict", "serverPageSha": "<текущий>"}`. Если `clientPageSha`
-не передан, запрос принимается (переходный режим, пишется предупреждение в лог).
+не передан, запрос принимается, но в лог пишется предупреждение. Клиенты
+редактора шлют его всегда: и экран страницы, и карточка.
 
 Кабинет (`/cabinet/`, стадия 3) — списки/история/статистика поверх той же
 таблицы `remarks`/`remark_history`:
 - 🔒 `GET /api/remarks?docId&pageKey&kind&status&authorId&q&limit&offset`
-  (прежний адрес `GET /api/annotations` и параметр `annType` приняты как алиасы —
-  до фазы 6 переименования; элементы ответа несут и `remarkId`/`kind`, и прежние
-  `annId`/`annType`)
   (роль `editor`/`admin`, CSRF не требуется — чтение) → `{items, total, limit, offset}`.
   `items[]` — как `_remark_row_to_dict` + `authorName` (псевдоним автора;
   `null` для импортированных). Дополнительные фильтры: `category` (один из семи
   слагов) и `categorySource` (`default`/`tags-backfill`/`agent`/`human`) — вход
   очереди приёмки. Валидация: `docId`/`pageKey` — как в
   `/api/editor/...`; `status ∈ {published,draft,deleted}`;
-  `kind ∈ {main,comment}`; `limit ≤ 200` (по умолчанию 50);
+  `kind ∈ {major,minor}`; `limit ≤ 200` (по умолчанию 50);
   `offset ≥ 0`; `len(q) ≤ 200` — иначе `400`.
 - 🔒 `GET /api/tags?docId` (роль `editor`/`admin`, чтение) →
   `{"tags": [{tag, count}, …]}` (по убыванию частоты, без удалённых замечаний) — словарь тегов для фильтра в кабинете.

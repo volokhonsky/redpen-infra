@@ -2,7 +2,7 @@
 
 /* Палитра категорий замечаний — шесть приёмов пропаганды + «Прочее».
    Обоснование и проверка контраста: docs/annotation-classification-2026-08.md.
-   Значения продублированы в scripts/remark_categories.py и
+   Значения продублированы в scripts/annotation_categories.py и
    templates/js/redpen-categories.js — маркеры на скане красятся из JS. */
 :root {
   --cat-omission:  #1B4F9C;  /* 1. Умолчание */
@@ -35,18 +35,6 @@ header {
   font-size: 1.5rem;
 }
 
-nav {
-  background: #eee;
-  padding: 0.5rem 1rem;
-}
-
-nav a {
-  margin-right: 1rem;
-  color: #c00;
-  text-decoration: none;
-  font-weight: bold;
-}
-
 #layout {
   display: flex;
   flex-direction: column;
@@ -77,14 +65,6 @@ nav a {
 #page-image {
   max-width: 100%;
   height: auto;
-}
-
-#remarks-content {
-  width: 300px;
-  padding: 1rem;
-  background: #fff;
-  border-left: 1px solid #ddd;
-  display: none;
 }
 
 h2 {

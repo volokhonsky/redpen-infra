@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional
 
 import annotation_categories
 import blog
+import remark_kinds
 import chapters as chapters_mod
 
 _esc = html.escape
@@ -83,15 +84,7 @@ def make_description(remarks: List[Dict[str, Any]], fallback: str, limit: int = 
 #: `annType` со значениями main/comment: файлы в томе переезжают не одномоментно,
 #: а уже розданные офлайн-копии не переедут никогда.
 def remark_kind_of(ann: Dict[str, Any]) -> str:
-    kind = ann.get("kind") or ann.get("annType") or "minor"
-    return _LEGACY_KINDS.get(kind, "minor" if kind == "general" else kind)
-
-
-_LEGACY_KINDS = {"main": "major", "comment": "minor"}
-_LEGACY_KIND_NAMES = {v: k for k, v in _LEGACY_KINDS.items()}
-
-#: Каталог, куда замечания писались до переименования сущности.
-LEGACY_PAGE_DIRNAME = "annotations"
+    return remark_kinds.to_current(ann.get("kind") or ann.get("annType") or "minor")
 
 
 def is_anchored(ann: Dict[str, Any]) -> bool:
@@ -240,9 +233,6 @@ def _page_data_blob(remarks: List[Dict[str, Any]]) -> str:
         item = {
             "id": ann["id"],
             "kind": remark_kind_of(ann),
-            # Прежнее имя ключа: страницы перерисовываются по одной, и в момент
-            # выкладки часть их читает ещё не обновлённый JS. Снимается в фазе 6.
-            "annType": _LEGACY_KIND_NAMES.get(remark_kind_of(ann), remark_kind_of(ann)),
             # Категория — то, чем просмотрщик красит маркер. Без неё всё
             # схлопывается в «Прочее», поэтому она в блобе всегда.
             "category": annotation_categories.normalize_category(ann.get("category")),
@@ -361,6 +351,7 @@ def render_page(
 
 {_page_data_blob(remarks)}
   <script src="{root}js/redpen-categories.js"></script>
+  <script src="{root}js/redpen-markers.js"></script>
   <script src="{root}js/page-view.js"></script>
 </body>
 </html>
@@ -496,10 +487,6 @@ def locate_label(chapter_list: List[Dict[str, Any]], label: str) -> Dict[str, An
 def load_remarks(doc_dir: str, page_file: str) -> List[Dict[str, Any]]:
     path = os.path.join(doc_dir, "remarks", f"{page_file}.json")
     if not os.path.exists(path):
-        # Прежнее имя каталога: сборка может идти по тому, где publisher ещё
-        # не отработал после переименования.
-        path = os.path.join(doc_dir, LEGACY_PAGE_DIRNAME, f"{page_file}.json")
-    if not os.path.exists(path):
         return []
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -634,8 +621,7 @@ def build_pages(doc_dir: str, timestamp: str, auto_header: str = "") -> List[str
     # --target-dir therefore has none, and every page would silently render
     # empty and noindex. Loud, because the failure mode is an invisible
     # de-indexing of the whole site.
-    if not os.path.isdir(os.path.join(doc_dir, "remarks")) \
-            and not os.path.isdir(os.path.join(doc_dir, LEGACY_PAGE_DIRNAME)):
+    if not os.path.isdir(os.path.join(doc_dir, "remarks")):
         print(
             f"[page_html] WARNING: {doc_dir}/remarks is missing -- every page will render "
             f"empty and noindex. Remarks come from the DB export (scripts/api/export_remarks.py) "

@@ -1,18 +1,10 @@
-/*
- * ВНИМАНИЕ (переименование сущности, 2026-08-29). Этот файл — клиент API, и он
- * ещё говорит прежними именами: путь `/api/annotations`, поля `annId`/`annType`
- * со значениями `main`/`comment`. Так и задумано: статика выкладывается раньше
- * API, а на новые имена клиенты редактора переводятся отдельной выкладкой —
- * уже после того, как API начнёт их понимать (он принимает и отдаёт оба
- * набора). Читательская часть переведена сразу, см. page-view.js.
- */
 (function () {
   'use strict';
 
   /**
    * Карточка замечания: история правок, форма и живой просмотр рядом.
    *
-   * Адрес: /app/#/ann/<docId>/<pageKey>/<annId>
+   * Адрес: /app/#/ann/<docId>/<pageKey>/<remarkId>
    *
    * Просмотр — iframe на ту же страницу, которую видит читатель, с ?only=<id>.
    * Это намеренно: второй реализации рендера маркеров не будет, и «как оно
@@ -26,13 +18,26 @@
 
   var state = {
     user: null,
-    ref: null,        // {docId, pageKey, annId}
-    annotation: null,
+    ref: null,        // {docId, pageKey, remarkId}
+    remark: null,
     manifest: {},     // docId -> {page_006: "6"}
     section: null,    // текущий параграф, чтобы перечитывать его по фильтрам
     queue: { items: [], index: 0, skipped: {} },
-    dirty: false
+    dirty: false,
+    scales: [],       // описание шкал оценки, приходит с сервера
+    scaleTitles: {},  // name -> заголовок, для подписей в ленте
+    timeline: [],     // ревизии, оценки и комментарии одним списком
+    textOnly: false,  // фильтр ленты «только правки текста»
+    cardSha: null,    // serverPageSha страницы открытой карточки
+    notes: [],
+    replyTo: null,    // id корневого комментария, если пишем ответ
+    // Экран страницы: скан с маркерами. sha — вход оптимистической блокировки,
+    // приходит из GET /api/editor/... и уезжает обратно в каждой мутации.
+    page: { docId: null, pageKey: null, remarks: [], sha: null,
+            placing: false, pendingCoords: null, selectedId: null }
   };
+
+  var markers = window.RedPenMarkers;
 
   // --- мелочи -------------------------------------------------------------
 
@@ -96,7 +101,7 @@
 
   //: Все экраны приложения. Показываем ровно один — так не приходится
   //: помнить, что спрятать при каждом переходе.
-  var VIEWS = ['view-sections', 'view-section', 'view-queue', 'app-main'];
+  var VIEWS = ['view-sections', 'view-section', 'view-queue', 'view-page', 'app-main'];
 
   function showView(id) {
     VIEWS.forEach(function (name) { el(name).hidden = name !== id; });
@@ -112,10 +117,18 @@
         view: 'ann',
         docId: decodeURIComponent(ann[1]),
         pageKey: decodeURIComponent(ann[2]),
-        annId: decodeURIComponent(ann[3])
+        remarkId: decodeURIComponent(ann[3])
       };
     }
     if (/^#\/queue\b/.test(hash)) return { view: 'queue' };
+    var page = hash.match(/^#\/page\/([^/]+)\/([^/]+)$/);
+    if (page) {
+      return {
+        view: 'page',
+        docId: decodeURIComponent(page[1]),
+        pageKey: decodeURIComponent(page[2])
+      };
+    }
     var section = hash.match(/^#\/section\/([^/]+)\/(.+)$/);
     if (section) {
       return {
@@ -200,16 +213,21 @@
     fillCategorySelect(el('f-category'), selected);
   }
 
+  //: Теги, которые человеку показывают и разрешают править. Зеркальный тег
+  //: категории и `draft` производные — если дать их в поле, их попробуют
+  //: поправить и получат 400.
+  function visibleTags(ann) {
+    return (ann.tags || []).filter(function (t) {
+      return t.indexOf('cat:') !== 0 && t !== 'draft';
+    });
+  }
+
   function fillForm(ann) {
     el('f-text').value = ann.text || '';
     fillCategories(ann.category);
-    el('f-anntype').value = ann.annType || 'comment';
+    el('f-kind').value = ann.kind || 'minor';
     el('f-status').value = ann.status === 'published' ? 'published' : 'draft';
-    // Зеркальный тег категории производный — в поле его не показываем, иначе
-    // человек попробует его править (и получит 400).
-    el('f-tags').value = (ann.tags || []).filter(function (t) {
-      return t.indexOf('cat:') !== 0 && t !== 'draft';
-    }).join(', ');
+    el('f-tags').value = visibleTags(ann).join(', ');
     el('f-summary').value = '';
     setDirty(false);
     updateHint(ann);
@@ -231,7 +249,7 @@
     var tags = el('f-tags').value.split(',').map(function (t) { return t.trim().toLowerCase(); })
       .filter(Boolean);
     var body = {
-      annType: el('f-anntype').value,
+      kind: el('f-kind').value,
       text: el('f-text').value,
       status: el('f-status').value,
       category: el('f-category').value,
@@ -239,39 +257,218 @@
     };
     var summary = el('f-summary').value.trim();
     if (summary) body.summary = summary;
-    var ann = state.annotation;
+    var ann = state.remark;
     if (ann && ann.coordX != null && ann.coordY != null) body.coords = [ann.coordX, ann.coordY];
+    // Оптимистическая блокировка: без неё сервер принимает правку молча, и две
+    // одновременные сессии затирают друг друга (сервер это логирует как
+    // «clientPageSha missing»). Хеш читается вместе с карточкой.
+    if (state.cardSha) body.clientPageSha = state.cardSha;
     return body;
   }
 
-  // --- история ------------------------------------------------------------
+  // --- лента событий ------------------------------------------------------
+  //
+  // Ярлык действия приходит с сервера (см. scripts/api/remark_actions.py):
+  // держать здесь второй словарь значило бы синхронизировать его руками, как
+  // это уже приходится делать с категориями.
 
-  var ACTIONS = {
-    create: 'создан', update: 'правка', delete: 'удалён',
-    revert: 'откат', import: 'импорт'
-  };
+  //: Действия, означающие правку содержания. Совпадает с
+  //: remark_actions.CONTENT_ACTIONS — единственное, что здесь продублировано,
+  //: и только ради фильтра на клиенте.
+  var CONTENT_ACTIONS = ['text', 'coords', 'kind'];
 
-  function renderRevisions(items) {
+  function isContentEdit(actions) {
+    if (!actions || !actions.length) return false;
+    for (var i = 0; i < actions.length; i++) {
+      if (CONTENT_ACTIONS.indexOf(actions[i]) !== -1) return true;
+    }
+    return false;
+  }
+
+  function actorName(item) {
+    return item.actorName || (item.actorId ? 'Участник №' + item.actorId : 'без автора');
+  }
+
+  function timelineHead(item) {
+    var agent = item.agentRunId
+      ? ' <span class="app-agent">прогон #' + item.agentRunId + '</span>' : '';
+    return '<div class="app-rev-head">' +
+      (item.revNo ? '<span class="app-rev-no">№' + item.revNo + '</span>' : '') +
+      '<span class="app-rev-action">' + escapeHtml(item.actionLabel || '') + '</span>' +
+      '<span class="app-rev-who">' + escapeHtml(actorName(item)) + agent + '</span>' +
+      '<span class="app-rev-day">' + escapeHtml(formatDay(item.createdAt)) + '</span>' +
+    '</div>';
+  }
+
+  function renderTimelineItem(item) {
+    if (item.kind === 'rating') {
+      var scale = state.scaleTitles[item.scale] || item.scale;
+      return '<li class="app-rev app-rev--rating">' + timelineHead(item) +
+        '<div class="app-rev-text">' + escapeHtml(scale) + ': ' + item.value + ' из 5' +
+        (item.note ? ' — ' + escapeHtml(item.note) : '') + '</div>' +
+      '</li>';
+    }
+    if (item.kind === 'note') {
+      return '<li class="app-rev app-rev--note">' + timelineHead(item) +
+        '<div class="app-rev-text">' + escapeHtml((item.body || '').slice(0, 200)) + '</div>' +
+      '</li>';
+    }
+    return '<li class="app-rev">' + timelineHead(item) +
+      (item.summary ? '<div class="app-rev-summary">' + escapeHtml(item.summary) + '</div>' : '') +
+      '<div class="app-rev-text">' + escapeHtml((item.text || '').slice(0, 200)) + '</div>' +
+    '</li>';
+  }
+
+  function renderTimeline() {
     var host = el('app-revisions');
-    if (!items.length) { host.innerHTML = '<li class="app-empty">Правок пока нет.</li>'; return; }
+    var items = state.timeline || [];
+    if (state.textOnly) {
+      items = items.filter(function (item) {
+        return item.kind === 'revision' && isContentEdit(item.actions);
+      });
+    }
+    if (!items.length) {
+      host.innerHTML = '<li class="app-empty">' +
+        (state.textOnly ? 'Правок текста пока не было.' : 'Событий пока нет.') + '</li>';
+      return;
+    }
     // Старые сверху: историю читают сверху вниз, как она происходила.
-    host.innerHTML = items.slice().reverse().map(function (rev) {
-      var who = rev.authorName || (rev.authorId ? 'Участник №' + rev.authorId : 'без автора');
-      var agent = rev.agentRunId ? ' <span class="app-agent">прогон #' + rev.agentRunId + '</span>' : '';
-      var snap = rev.snapshot || {};
-      var cat = snap.category ? (cats && cats.TITLES && cats.TITLES[snap.category]) || snap.category : '';
-      return '<li class="app-rev">' +
-        '<div class="app-rev-head">' +
-          '<span class="app-rev-no">№' + (rev.revNo || '?') + '</span>' +
-          '<span class="app-rev-action">' + escapeHtml(ACTIONS[rev.action] || rev.action) + '</span>' +
-          '<span class="app-rev-who">' + escapeHtml(who) + agent + '</span>' +
-          '<span class="app-rev-day">' + escapeHtml(formatDay(rev.createdAt)) + '</span>' +
+    host.innerHTML = items.slice().reverse().map(renderTimelineItem).join('');
+  }
+
+  // --- оценки -------------------------------------------------------------
+
+  function renderRatings(summary) {
+    var host = el('app-rating-scales');
+    if (!state.scales.length) { host.innerHTML = ''; return; }
+    host.innerHTML = state.scales.map(function (scale) {
+      var row = (summary && summary[scale.name]) || {};
+      var buttons = '';
+      for (var v = scale.min; v <= scale.max; v++) {
+        buttons += '<button type="button" class="app-rating-btn' +
+          (row.mine === v ? ' is-mine' : '') + '" data-scale="' +
+          escapeHtml(scale.name) + '" data-value="' + v + '">' + v + '</button>';
+      }
+      var others = row.count
+        ? 'среднее ' + row.average + ' по ' + row.count
+        : 'ещё никто не оценил';
+      return '<div class="app-rating">' +
+        '<div class="app-rating-title" title="' + escapeHtml(scale.hint) + '">' +
+          escapeHtml(scale.title) + '</div>' +
+        '<div class="app-rating-scale">' + buttons +
+          (row.mine != null
+            ? '<button type="button" class="app-rating-clear" data-scale="' +
+              escapeHtml(scale.name) + '">снять</button>'
+            : '') +
         '</div>' +
-        (rev.summary ? '<div class="app-rev-summary">' + escapeHtml(rev.summary) + '</div>' : '') +
-        (cat ? '<div class="app-rev-cat">категория: ' + escapeHtml(cat) + '</div>' : '') +
-        '<div class="app-rev-text">' + escapeHtml((snap.text || '').slice(0, 200)) + '</div>' +
+        '<div class="app-rating-others">' + escapeHtml(others) + '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  function ratingsUrl(ref, scale) {
+    return '/api/remarks/' + encodeURIComponent(ref.docId) + '/' +
+      encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.remarkId) +
+      '/ratings' + (scale ? '/' + encodeURIComponent(scale) : '');
+  }
+
+  async function rate(scale, value) {
+    var ref = state.ref;
+    if (!ref) return;
+    var data = await apiMutate('PUT', ratingsUrl(ref, scale), { value: value });
+    renderRatings(data.summary);
+    await loadTimeline(ref);
+  }
+
+  async function unrate(scale) {
+    var ref = state.ref;
+    if (!ref) return;
+    var data = await apiMutate('DELETE', ratingsUrl(ref, scale));
+    renderRatings(data.summary);
+    await loadTimeline(ref);
+  }
+
+  // --- комментарии --------------------------------------------------------
+
+  function notesUrl(ref) {
+    return '/api/remarks/' + encodeURIComponent(ref.docId) + '/' +
+      encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.remarkId) + '/notes';
+  }
+
+  function renderNoteItem(note, replies) {
+    var head = '<div class="app-note-head">' +
+      '<span class="app-note-who">' +
+        escapeHtml(note.authorName || ('Участник №' + note.authorId)) + '</span>' +
+      '<span class="app-note-day">' + escapeHtml(formatDay(note.createdAt)) + '</span>' +
+      (note.resolved ? '<span class="app-note-done">решено</span>' : '') +
+    '</div>';
+    var body = '<div class="app-note-body">' + escapeHtml(note.body) + '</div>';
+    var actions = '<div class="app-note-actions">' +
+      '<button type="button" class="app-note-reply" data-id="' + note.id + '">ответить</button>' +
+      '<button type="button" class="app-note-resolve" data-id="' + note.id +
+        '" data-resolved="' + (note.resolved ? '1' : '0') + '">' +
+        (note.resolved ? 'открыть снова' : 'решено') + '</button>' +
+      '<button type="button" class="app-note-delete" data-id="' + note.id + '">удалить</button>' +
+    '</div>';
+    var children = replies.map(function (reply) {
+      return '<li class="app-note app-note--reply">' +
+        '<div class="app-note-head">' +
+          '<span class="app-note-who">' +
+            escapeHtml(reply.authorName || ('Участник №' + reply.authorId)) + '</span>' +
+          '<span class="app-note-day">' + escapeHtml(formatDay(reply.createdAt)) + '</span>' +
+        '</div>' +
+        '<div class="app-note-body">' + escapeHtml(reply.body) + '</div>' +
+        '<div class="app-note-actions">' +
+          '<button type="button" class="app-note-delete" data-id="' + reply.id + '">удалить</button>' +
+        '</div>' +
       '</li>';
     }).join('');
+    return '<li class="app-note' + (note.resolved ? ' is-resolved' : '') + '">' +
+      head + body + actions +
+      (children ? '<ol class="app-note-replies">' + children + '</ol>' : '') +
+    '</li>';
+  }
+
+  function renderNotes(items) {
+    var host = el('app-note-list');
+    var roots = items.filter(function (n) { return n.parentId == null; });
+    if (!roots.length) {
+      host.innerHTML = '<li class="app-empty">Обсуждения пока нет.</li>';
+      return;
+    }
+    host.innerHTML = roots.map(function (root) {
+      var replies = items.filter(function (n) { return n.parentId === root.id; });
+      return renderNoteItem(root, replies);
+    }).join('');
+  }
+
+  async function loadNotes(ref) {
+    var data = await apiGet(notesUrl(ref));
+    state.notes = data.items || [];
+    renderNotes(state.notes);
+  }
+
+  async function sendNote() {
+    var ref = state.ref;
+    if (!ref) return;
+    var body = el('n-body').value.trim();
+    if (!body) return;
+    var payload = { body: body };
+    if (state.replyTo) payload.parentId = state.replyTo;
+    await apiMutate('POST', notesUrl(ref), payload);
+    el('n-body').value = '';
+    setReplyTo(null);
+    await loadNotes(ref);
+    await loadTimeline(ref);
+  }
+
+  function setReplyTo(id) {
+    state.replyTo = id;
+    var field = el('n-body');
+    field.placeholder = id
+      ? 'Ответ в треде — Esc, чтобы отменить'
+      : 'Что смущает в этом замечании?';
+    if (id) field.focus();
   }
 
   // --- просмотр -----------------------------------------------------------
@@ -302,7 +499,7 @@
   async function renderPreview(ref) {
     var label = await pageLabel(ref.docId, ref.pageKey);
     var url = '../' + encodeURIComponent(ref.docId) + '/pages/' +
-              encodeURIComponent(label) + '/?only=' + encodeURIComponent(ref.annId);
+              encodeURIComponent(label) + '/?only=' + encodeURIComponent(ref.remarkId);
     el('app-preview').src = url;
     el('app-preview-link').href = url;
     fitPreview();
@@ -318,8 +515,9 @@
       '<span><a href="#/">параграфы</a></span>' +
       '<span>' + escapeHtml(ref.docId) + '</span>' +
       '<span>' + sectionLink + '</span>' +
-      '<span>стр. ' + escapeHtml(label) + '</span>' +
-      '<code>' + escapeHtml(ref.annId) + '</code>';
+      '<span><a href="#/page/' + encodeURIComponent(ref.docId) + '/' +
+        encodeURIComponent(ref.pageKey) + '">стр. ' + escapeHtml(label) + '</a></span>' +
+      '<code>' + escapeHtml(ref.remarkId) + '</code>';
   }
 
   // --- список параграфов --------------------------------------------------
@@ -392,19 +590,19 @@
     if (category) params.push('category=' + encodeURIComponent(category));
     if (source) params.push('categorySource=' + encodeURIComponent(source));
 
-    var data = await apiGet('/api/annotations?' + params.join('&'));
+    var data = await apiGet('/api/remarks?' + params.join('&'));
     var items = data.items || [];
     el('sec-count').textContent = 'показано ' + items.length + ' из ' + (data.total || 0);
 
     // Сортируем по странице: параграф читают подряд, а не по времени правки.
     items.sort(function (a, b) {
-      if (a.pageNum === b.pageNum) return String(a.annId).localeCompare(String(b.annId));
+      if (a.pageNum === b.pageNum) return String(a.remarkId).localeCompare(String(b.remarkId));
       return String(a.pageNum).localeCompare(String(b.pageNum));
     });
 
     el('sec-rows').innerHTML = items.map(function (a) {
       var href = '#/ann/' + encodeURIComponent(a.docId) + '/' +
-                 encodeURIComponent(a.pageNum) + '/' + encodeURIComponent(a.annId);
+                 encodeURIComponent(a.pageNum) + '/' + encodeURIComponent(a.remarkId);
       var todo = a.categorySource === 'default' || a.categorySource === 'tags-backfill';
       return '<tr>' +
         '<td class="app-nowrap"><a href="' + href + '">' + escapeHtml(a.pageNum) + '</a></td>' +
@@ -446,19 +644,19 @@
 
   async function fetchQueueItems(mode, sectionId) {
     if (mode === 'drafts') {
-      var data = await apiGet('/api/annotations?' + queueParams(mode, sectionId).join('&'));
+      var data = await apiGet('/api/remarks?' + queueParams(mode, sectionId).join('&'));
       return data.items || [];
     }
     var sources = ['default', 'tags-backfill', 'agent'];
     var batches = await Promise.all(sources.map(function (source) {
       var params = queueParams(mode, sectionId).concat(['categorySource=' + source]);
-      return apiGet('/api/annotations?' + params.join('&'));
+      return apiGet('/api/remarks?' + params.join('&'));
     }));
     var seen = {};
     var items = [];
     batches.forEach(function (batch) {
       (batch.items || []).forEach(function (item) {
-        var key = item.docId + '/' + item.pageNum + '/' + item.annId;
+        var key = item.docId + '/' + item.pageNum + '/' + item.remarkId;
         if (seen[key]) return;
         seen[key] = true;
         items.push(item);
@@ -486,7 +684,7 @@
     // Отложенные уходят в конец, а не исчезают: «отложить» — это «не сейчас».
     var skipped = state.queue.skipped;
     items.sort(function (a, b) {
-      var sa = skipped[a.annId] ? 1 : 0, sb = skipped[b.annId] ? 1 : 0;
+      var sa = skipped[a.remarkId] ? 1 : 0, sb = skipped[b.remarkId] ? 1 : 0;
       if (sa !== sb) return sa - sb;
       return String(a.pageNum).localeCompare(String(b.pageNum));
     });
@@ -514,13 +712,13 @@
 
     pageLabel(item.docId, item.pageNum).then(function (label) {
       var url = '../' + encodeURIComponent(item.docId) + '/pages/' +
-                encodeURIComponent(label) + '/?only=' + encodeURIComponent(item.annId);
+                encodeURIComponent(label) + '/?only=' + encodeURIComponent(item.remarkId);
       el('q-preview').src = url;
       el('q-preview-link').href = url;
       fitFrame('q-preview-fit', 'q-preview');
       el('q-where').innerHTML = '<span>' + escapeHtml(item.docId) + '</span>' +
         '<span>стр. ' + escapeHtml(label) + '</span>' +
-        '<code>' + escapeHtml(item.annId) + '</code>';
+        '<code>' + escapeHtml(item.remarkId) + '</code>';
     });
   }
 
@@ -537,29 +735,37 @@
   async function queueAccept() {
     var item = state.queue.items[state.queue.index];
     if (!item) return;
-    var body = {
-      annType: item.annType,
-      text: item.text,
-      status: el('q-status').value,
-      category: el('q-category').value
-    };
-    if (item.coordX != null && item.coordY != null) body.coords = [item.coordX, item.coordY];
+    var path = '/api/editor/' + encodeURIComponent(item.docId) + '/' +
+               encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.remarkId);
     // Резюме проставляется само: приёмка — действие однотипное, и заставлять
     // писать его руками на каждое замечание значит не разобрать очередь.
-    body.summary = el('q-mode').value === 'drafts' ? 'приёмка черновика' : 'категория подтверждена';
-    await apiMutate('PUT', '/api/editor/' + encodeURIComponent(item.docId) + '/' +
-                    encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.annId), body);
-    setStatus('Принято: ' + item.annId, false);
+    var summary = el('q-mode').value === 'drafts' ? 'приёмка черновика' : 'категория подтверждена';
+    var status = el('q-status').value;
+    var category = el('q-category').value;
+
+    // Узкие операции вместо полного PUT: очередь не правит текст, и слать его
+    // целиком означало бы записывать в журнал правку, которой не было.
+    //
+    // Категория пишется и тогда, когда значение не изменилось: подтверждение
+    // догадки — это и есть работа очереди, оно переводит category_source в
+    // 'human'. Без этого подтверждённое замечание всплывало бы в очереди снова.
+    if (category !== item.category || item.categorySource !== 'human') {
+      await apiMutate('PATCH', path + '/category', { category: category, summary: summary });
+    }
+    if (status !== item.status) {
+      await apiMutate('PATCH', path + '/status', { status: status, summary: summary });
+    }
+    setStatus('Принято: ' + item.remarkId, false);
     advance();
   }
 
   async function queueReject() {
     var item = state.queue.items[state.queue.index];
     if (!item) return;
-    if (!window.confirm('Отклонить замечание ' + item.annId + '? Оно будет удалено (мягко).')) return;
+    if (!window.confirm('Отклонить замечание ' + item.remarkId + '? Оно будет удалено (мягко).')) return;
     await apiMutate('DELETE', '/api/editor/' + encodeURIComponent(item.docId) + '/' +
-                    encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.annId));
-    setStatus('Отклонён: ' + item.annId, false);
+                    encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.remarkId));
+    setStatus('Отклонён: ' + item.remarkId, false);
     advance();
   }
 
@@ -575,34 +781,92 @@
     el('q-reject').addEventListener('click', function () { queueReject().catch(function () {}); });
     el('q-skip').addEventListener('click', function () {
       var item = state.queue.items[state.queue.index];
-      if (item) state.queue.skipped[item.annId] = true;
+      if (item) state.queue.skipped[item.remarkId] = true;
       advance();
     });
     el('q-edit').addEventListener('click', function () {
       var item = state.queue.items[state.queue.index];
       if (!item) return;
       window.location.hash = '#/ann/' + encodeURIComponent(item.docId) + '/' +
-        encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.annId);
+        encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.remarkId);
     });
   }
 
   // --- загрузка карточки --------------------------------------------------
 
+  async function loadScales() {
+    if (state.scales.length) return;
+    var data = await apiGet('/api/rating-scales');
+    state.scales = data.scales || [];
+    state.scaleTitles = {};
+    state.scales.forEach(function (scale) { state.scaleTitles[scale.name] = scale.title; });
+  }
+
+  async function loadTimeline(ref) {
+    var data = await apiGet('/api/remarks/' + encodeURIComponent(ref.docId) + '/' +
+                            encodeURIComponent(ref.pageKey) + '/' +
+                            encodeURIComponent(ref.remarkId) + '/timeline?limit=100');
+    state.timeline = data.items || [];
+    renderTimeline();
+  }
+
   async function loadCard(ref) {
     state.ref = ref;
-    var path = '/api/annotations/' + encodeURIComponent(ref.docId) + '/' +
-               encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.annId);
+    setReplyTo(null);
+    state.cardSha = null;
+    var path = '/api/remarks/' + encodeURIComponent(ref.docId) + '/' +
+               encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.remarkId);
     var data = await apiGet(path);
-    state.annotation = data.annotation;
-    fillForm(data.annotation);
+    state.remark = data.remark;
+    fillForm(data.remark);
+
+    // Хеш страницы для оптимистической блокировки. Отдельный запрос: карточка
+    // отдаёт одно замечание, а блокировка — про страницу целиком.
+    try {
+      var page = await apiGet('/api/editor/' + encodeURIComponent(ref.docId) + '/' +
+                              encodeURIComponent(ref.pageKey));
+      state.cardSha = page.serverPageSha || null;
+    } catch (e) {
+      state.cardSha = null;
+    }
 
     var label = await renderPreview(ref);
     await renderBreadcrumbs(ref, data.section, label);
 
-    var hist = await apiGet('/api/history?docId=' + encodeURIComponent(ref.docId) +
-                            '&pageKey=' + encodeURIComponent(ref.pageKey) +
-                            '&annId=' + encodeURIComponent(ref.annId) + '&limit=50');
-    renderRevisions(hist.items || []);
+    await loadScales();
+    var ratings = await apiGet(ratingsUrl(ref));
+    renderRatings(ratings.summary);
+    await loadNotes(ref);
+    await loadTimeline(ref);
+  }
+
+  //: Что из формы едет узкой операцией, а что — общим PUT. Текст и координаты
+  //: правит только PUT: у них оптимистическая блокировка по sha страницы.
+  //: Остальное — отдельные действия, и в журнале они видны по отдельности.
+  async function saveSideChanges(ref, before, body) {
+    var editorPath = '/api/editor/' + encodeURIComponent(ref.docId) + '/' +
+                     encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.remarkId);
+    var summary = body.summary;
+
+    if (body.status !== (before.status === 'published' ? 'published' : 'draft')) {
+      await apiMutate('PATCH', editorPath + '/status',
+                      { status: body.status, summary: summary });
+    }
+    if (body.category !== before.category) {
+      await apiMutate('PATCH', editorPath + '/category',
+                      { category: body.category, summary: summary });
+    }
+    if (!sameTags(body.tags, visibleTags(before))) {
+      await apiMutate('PATCH', editorPath + '/tags',
+                      { tags: body.tags, summary: summary });
+    }
+  }
+
+  function sameTags(a, b) {
+    if (a.length !== b.length) return false;
+    var left = a.slice().sort().join('\u0000');
+    var right = b.slice().sort().join('\u0000');
+    return left === right;
   }
 
   async function save() {
@@ -610,14 +874,302 @@
     if (!ref) return;
     var body = collectForm();
     if (!body.text.trim()) { setStatus('Текст замечания пуст.', true); return; }
-    await apiMutate('PUT', '/api/editor/' + encodeURIComponent(ref.docId) + '/' +
-                    encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.annId), body);
+    var before = state.remark || {};
+    var textChanged = body.text !== (before.text || '') ||
+                      body.kind !== (before.kind || 'minor');
+
+    if (textChanged) {
+      // Полный PUT: он несёт текст и координаты, а вместе с ними и всё
+      // остальное — узкие операции после него были бы холостыми.
+      await apiMutate('PUT', '/api/editor/' + encodeURIComponent(ref.docId) + '/' +
+                      encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.remarkId), body);
+    } else {
+      await saveSideChanges(ref, before, body);
+    }
     setStatus('Сохранено.', false);
     await loadCard(ref);
     // Просмотр перечитываем принудительно: страница уже перерисована на сервере,
     // но у iframe тот же адрес, и сам он не обновится.
     var frame = el('app-preview');
     frame.src = frame.src;
+  }
+
+  // --- экран страницы: скан с маркерами -----------------------------------
+  //
+  // До 2026-08-30 создать замечание и поставить маркер можно было только в
+  // старом SPA (document_index.html?editor=1) — редактор и просмотрщик там
+  // склеены одним DOM. Здесь то же самое, но данные берутся из API, а рисует
+  // маркеры общий с просмотрщиком redpen-markers.js, поэтому кружок в
+  // редакторе и кружок у читателя — это буквально один код.
+
+  function editorPageUrl(docId, pageKey) {
+    return '/api/editor/' + encodeURIComponent(docId) + '/' + encodeURIComponent(pageKey);
+  }
+
+  //: Тело PUT для существующего замечания. Отсутствие `tags` значит «не
+  //: трогать» — теги здесь не редактируются, и затирать их нельзя.
+  function remarkBody(ann, extra) {
+    var body = {
+      kind: markers.kindOf(ann),
+      text: ann.text || '',
+      status: ann.draft ? 'draft' : 'published',
+      category: ann.category || 'other',
+      coords: ann.coords,
+      clientPageSha: state.page.sha
+    };
+    Object.keys(extra || {}).forEach(function (k) { body[k] = extra[k]; });
+    return body;
+  }
+
+  async function loadPage(docId, pageKey) {
+    state.page.docId = docId;
+    state.page.pageKey = pageKey;
+    cancelPlacing();
+
+    var data = await apiGet(editorPageUrl(docId, pageKey));
+    state.page.remarks = data.remarks || [];
+    state.page.sha = data.serverPageSha || null;
+
+    var label = await pageLabel(docId, pageKey);
+    el('pg-where').innerHTML =
+      '<span><a href="#/">параграфы</a></span>' +
+      '<span>' + escapeHtml(docId) + '</span>' +
+      '<span>стр. ' + escapeHtml(label) + '</span>';
+    var withCoords = state.page.remarks.filter(markers.hasCoords).length;
+    el('pg-count').textContent = state.page.remarks.length + ' замечаний, ' +
+      withCoords + ' с маркером';
+
+    var image = el('pg-image');
+    var src = '../' + encodeURIComponent(docId) + '/images/page_' +
+              encodeURIComponent(pageKey) + '.png';
+    if (image.getAttribute('src') !== src) {
+      image.setAttribute('src', src);
+    } else {
+      drawPageMarkers();
+    }
+    renderPageList();
+  }
+
+  //: Порядок нумерации тот же, что у читателя: замечания идут как пришли, а
+  //: номер получают только те, у кого есть координата.
+  function numberedRemarks() {
+    return state.page.remarks.filter(markers.hasCoords);
+  }
+
+  function drawPageMarkers() {
+    var image = el('pg-image');
+    var overlay = el('pg-overlay');
+    if (!image.complete || !image.naturalWidth) return;
+
+    var scale = markers.scaleOf(image);
+    markers.fitOverlay(overlay, image);
+    overlay.innerHTML = '';
+
+    numberedRemarks().forEach(function (ann, index) {
+      var circle = markers.createCircle(ann, index + 1, scale);
+      if (ann.id === state.page.selectedId) circle.classList.add('is-selected');
+      circle.title = (ann.text || '').slice(0, 120);
+      wireMarkerDrag(circle, ann, image);
+      overlay.appendChild(circle);
+    });
+
+    if (state.page.pendingCoords) {
+      var ghost = markers.createCircle(
+        { id: '__new__', coords: state.page.pendingCoords, kind: el('pg-kind').value,
+          category: el('pg-category').value, draft: true },
+        '+', scale);
+      ghost.classList.add('is-selected');
+      overlay.appendChild(ghost);
+    }
+  }
+
+  /**
+   * Перетаскивание маркера. Правка уезжает только на mouseup и только если
+   * координата действительно изменилась: иначе обычный клик по маркеру писал
+   * бы в журнал ревизию «перенос маркера» без переноса.
+   */
+  function wireMarkerDrag(circle, ann, image) {
+    var dragging = false;
+    var moved = false;
+    var coords = null;
+
+    function onMove(event) {
+      if (!dragging) return;
+      var point = markers.pointToCoords(image, event.clientX, event.clientY);
+      if (!point) return;
+      moved = true;
+      coords = point;
+      var scale = markers.scaleOf(image);
+      var g = markers.geometry({ coords: coords, kind: markers.kindOf(ann) }, scale);
+      circle.style.left = g.cx + 'px';
+      circle.style.top = (g.cy - g.diameter / 2) + 'px';
+    }
+
+    async function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      if (!dragging) return;
+      dragging = false;
+      circle.classList.remove('is-dragging');
+      if (!moved || !coords) {
+        // Не перенос, а клик: открываем карточку.
+        openCard(ann.id);
+        return;
+      }
+      if (coords[0] === ann.coords[0] && coords[1] === ann.coords[1]) {
+        drawPageMarkers();
+        return;
+      }
+      try {
+        await saveCoords(ann, coords);
+      } catch (e) {
+        await loadPage(state.page.docId, state.page.pageKey);
+      }
+    }
+
+    circle.addEventListener('mousedown', function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      // В режиме выбора точки маркер не должен перехватывать клик: он лежит
+      // поверх скана, и попытка поставить новое замечание рядом с существующим
+      // иначе открывала бы чужую карточку вместо постановки.
+      if (state.page.placing) { onScanClick(event); return; }
+      dragging = true;
+      moved = false;
+      coords = null;
+      state.page.selectedId = ann.id;
+      circle.classList.add('is-dragging');
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
+
+  async function saveCoords(ann, coords) {
+    var path = editorPageUrl(state.page.docId, state.page.pageKey) + '/' +
+               encodeURIComponent(ann.id);
+    var res = await apiMutate('PUT', path, remarkBody(ann, {
+      coords: coords,
+      summary: 'перенос маркера'
+    }));
+    state.page.sha = res.serverPageSha || state.page.sha;
+    setStatus('Маркер перенесён.', false);
+    await loadPage(state.page.docId, state.page.pageKey);
+  }
+
+  function openCard(remarkId) {
+    window.location.hash = '#/ann/' + encodeURIComponent(state.page.docId) + '/' +
+      encodeURIComponent(state.page.pageKey) + '/' + encodeURIComponent(remarkId);
+  }
+
+  function renderPageList() {
+    var numbered = numberedRemarks();
+    var numberById = {};
+    numbered.forEach(function (ann, index) { numberById[ann.id] = index + 1; });
+
+    var html = state.page.remarks.map(function (ann) {
+      var num = numberById[ann.id];
+      var head = num
+        ? '<span class="app-page-num">' + num + '</span>'
+        : '<span class="app-page-nocoords">без маркера</span>';
+      return '<li class="app-page-item' + (ann.draft ? ' is-draft' : '') + '" data-id="' +
+        escapeHtml(ann.id) + '">' +
+        '<div class="app-page-item-head">' + head +
+        catDot(ann.category || 'other') +
+        '<span>' + escapeHtml(catTitle(ann.category || 'other')) + '</span>' +
+        '<span>' + (ann.draft ? 'черновик' : 'опубликовано') + '</span>' +
+        '</div>' +
+        '<div>' + escapeHtml((ann.text || '').slice(0, 200)) + '</div>' +
+        '</li>';
+    }).join('');
+    el('pg-list').innerHTML = html || '<li class="app-empty">На странице пока нет замечаний.</li>';
+  }
+
+  // --- создание замечания -------------------------------------------------
+
+  function cancelPlacing() {
+    state.page.placing = false;
+    state.page.pendingCoords = null;
+    el('pg-scan').classList.remove('is-placing');
+    el('pg-form').hidden = true;
+    el('pg-hint').textContent = '';
+  }
+
+  function startPlacing() {
+    state.page.placing = true;
+    state.page.pendingCoords = null;
+    el('pg-scan').classList.add('is-placing');
+    el('pg-hint').textContent = 'Щёлкните по скану там, где должен стоять маркер.';
+  }
+
+  function onScanClick(event) {
+    if (!state.page.placing) return;
+    var image = el('pg-image');
+    var coords = markers.pointToCoords(image, event.clientX, event.clientY);
+    if (!coords) return;
+    state.page.pendingCoords = coords;
+    el('pg-coords').textContent = 'Координаты: ' + coords[0] + ', ' + coords[1] +
+      ' (щёлкните ещё раз, чтобы передвинуть)';
+    el('pg-form').hidden = false;
+    el('pg-hint').textContent = '';
+    fillCategorySelect(el('pg-category'), 'other');
+    drawPageMarkers();
+    el('pg-text').focus();
+  }
+
+  async function createRemark() {
+    var coords = state.page.pendingCoords;
+    if (!coords) { setStatus('Сначала выберите точку на скане.', true); return; }
+    var text = el('pg-text').value.trim();
+    if (!text) { setStatus('Текст замечания пуст.', true); return; }
+
+    var res = await apiMutate('POST', editorPageUrl(state.page.docId, state.page.pageKey), {
+      kind: el('pg-kind').value,
+      text: text,
+      // Новое замечание всегда черновик: публикация — отдельное решение, и
+      // делается оно в карточке или в очереди приёмки.
+      status: 'draft',
+      category: el('pg-category').value,
+      coords: coords,
+      clientPageSha: state.page.sha,
+      summary: 'создано в редакторе'
+    });
+    state.page.sha = res.serverPageSha || state.page.sha;
+    el('pg-text').value = '';
+    cancelPlacing();
+    setStatus('Черновик создан.', false);
+    await loadPage(state.page.docId, state.page.pageKey);
+    if (res.id) openCard(res.id);
+  }
+
+  function wirePage() {
+    el('pg-image').addEventListener('load', drawPageMarkers);
+    el('pg-image').addEventListener('click', onScanClick);
+    el('pg-new').addEventListener('click', function () {
+      if (state.page.placing) { cancelPlacing(); return; }
+      startPlacing();
+    });
+    el('pg-cancel').addEventListener('click', function () {
+      el('pg-text').value = '';
+      cancelPlacing();
+      drawPageMarkers();
+    });
+    el('pg-reload').addEventListener('click', function () {
+      if (state.page.docId) loadPage(state.page.docId, state.page.pageKey).catch(function () {});
+    });
+    el('pg-form').addEventListener('submit', function (event) {
+      event.preventDefault();
+      createRemark().catch(function () {});
+    });
+    ['pg-kind', 'pg-category'].forEach(function (id) {
+      el(id).addEventListener('change', drawPageMarkers);
+    });
+    el('pg-list').addEventListener('click', function (event) {
+      var item = event.target.closest ? event.target.closest('.app-page-item') : null;
+      if (item && item.dataset.id) openCard(item.dataset.id);
+    });
+    window.addEventListener('resize', function () {
+      if (!el('view-page').hidden) drawPageMarkers();
+    });
   }
 
   // --- запуск -------------------------------------------------------------
@@ -634,7 +1186,7 @@
     el('app-preview').addEventListener('load', function () {
       fitFrame('app-preview-fit', 'app-preview');
     });
-    ['f-text', 'f-category', 'f-anntype', 'f-status', 'f-tags', 'f-summary'].forEach(function (id) {
+    ['f-text', 'f-category', 'f-kind', 'f-status', 'f-tags', 'f-summary'].forEach(function (id) {
       el(id).addEventListener('input', function () { setDirty(true); });
       el(id).addEventListener('change', function () { setDirty(true); });
     });
@@ -652,6 +1204,56 @@
     });
   }
 
+  function wireRatings() {
+    // Делегирование: кнопки шкал перерисовываются на каждую оценку, и вешать
+    // обработчики на каждую заново значило бы плодить их.
+    el('app-rating-scales').addEventListener('click', function (event) {
+      var target = event.target;
+      if (target.classList.contains('app-rating-btn')) {
+        rate(target.dataset.scale, parseInt(target.dataset.value, 10)).catch(function () {});
+      } else if (target.classList.contains('app-rating-clear')) {
+        unrate(target.dataset.scale).catch(function () {});
+      }
+    });
+  }
+
+  function wireNotes() {
+    el('app-note-form').addEventListener('submit', function (event) {
+      event.preventDefault();
+      sendNote().catch(function () {});
+    });
+    el('n-body').addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' && state.replyTo) setReplyTo(null);
+    });
+    el('app-note-list').addEventListener('click', function (event) {
+      var target = event.target;
+      var id = parseInt(target.dataset.id, 10);
+      if (!id) return;
+      if (target.classList.contains('app-note-reply')) {
+        setReplyTo(id);
+      } else if (target.classList.contains('app-note-resolve')) {
+        var resolved = target.dataset.resolved === '1';
+        apiMutate('PATCH', '/api/notes/' + id, { resolved: !resolved })
+          .then(function () { return loadNotes(state.ref); })
+          .then(function () { return loadTimeline(state.ref); })
+          .catch(function () {});
+      } else if (target.classList.contains('app-note-delete')) {
+        if (!window.confirm('Удалить комментарий?')) return;
+        apiMutate('DELETE', '/api/notes/' + id)
+          .then(function () { return loadNotes(state.ref); })
+          .then(function () { return loadTimeline(state.ref); })
+          .catch(function () {});
+      }
+    });
+  }
+
+  function wireTimeline() {
+    el('tl-text-only').addEventListener('change', function (event) {
+      state.textOnly = event.target.checked;
+      renderTimeline();
+    });
+  }
+
   async function route() {
     var ref = parseHash();
     setStatus('');
@@ -662,6 +1264,9 @@
       } else if (ref.view === 'queue') {
         showView('view-queue');
         await loadQueue();
+      } else if (ref.view === 'page') {
+        showView('view-page');
+        await loadPage(ref.docId, ref.pageKey);
       } else if (ref.view === 'section') {
         showView('view-section');
         state.section = ref;
@@ -690,7 +1295,11 @@
   }
 
   wireFilters();
+  wireRatings();
+  wireNotes();
+  wireTimeline();
   wireQueue();
+  wirePage();
   window.addEventListener('resize', fitPreview);
   window.addEventListener('hashchange', function () { route().catch(function () {}); });
   wireForm();

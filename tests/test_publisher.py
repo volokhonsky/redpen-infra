@@ -188,19 +188,15 @@ def test_sha_input_survives_the_rename_to_remarks():
         publisher.compute_page_sha(legacy)
 
 
-def test_publish_page_also_writes_the_legacy_directory():
-    """Пока в ходу прежние адреса и уже розданные офлайн-копии, тот же файл
-    пишется и в annotations/. Снимается в фазе 6 переименования."""
+def test_publish_page_writes_only_the_current_directory():
+    """Фаза 6: дублирующая запись в annotations/ снята. Каталог со старым
+    именем на томе больше не пополняется — его чистят выкладкой."""
     db.upsert_remark_db("doc1", "006", "ann-1", "minor", "one")
     publisher.publish_page("doc1", "006")
     new_path = os.path.join(config.PUBLISH_DIR, "doc1", "remarks", "page_006.json")
-    old_path = os.path.join(config.PUBLISH_DIR, "doc1",
-                            publisher.LEGACY_PAGE_DIRNAME, "page_006.json")
-    assert os.path.exists(new_path) and os.path.exists(old_path)
-    with open(new_path, encoding="utf-8") as f:
-        new_data = json.load(f)
-    with open(old_path, encoding="utf-8") as f:
-        assert json.load(f) == new_data
+    old_path = os.path.join(config.PUBLISH_DIR, "doc1", "annotations", "page_006.json")
+    assert os.path.exists(new_path)
+    assert not os.path.exists(old_path)
 
 
 def test_publish_all_counts_pages(tmp_path):

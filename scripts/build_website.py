@@ -14,7 +14,7 @@ Usage:
     python scripts/build_website.py [--skip-tests] [--skip-push] [--target-dir TARGET_DIR] [--document DOCUMENT] [--folders FOLDERS]
 
 Options:
-    --skip-tests    Skip running remark position tests
+    --skip-tests    Принимается для совместимости (браузерных тестов в сборке больше нет)
     --skip-push     Skip pushing changes to the redpen-publish submodule
     --target-dir    Specify a target directory for the build output (default: redpen-publish)
     --document      Specify a document to build (default: build all documents)
@@ -26,6 +26,7 @@ import sys
 import argparse
 import subprocess
 import importlib.util
+import json
 import shutil
 import glob
 import datetime
@@ -210,51 +211,21 @@ def convert_remarks(target_dir=None, document=None, specific_folders=None):
     """
     print(f"\n=== Converting Markdown Remarks to JSON for {document or (', '.join(specific_folders) if specific_folders else 'all documents')} ===")
 
-    # If document is specified, only convert that document's remarks
-    if document:
-        md_dir = os.path.join(project_root, 'redpen-content', document, 'remarks')
+    documents = [document] if document else get_document_folders(specific_folders)
+    publish_root = target_dir or os.path.join(project_root, 'redpen-publish')
+    success = True
 
-        # Use target_dir if provided, otherwise use default redpen-publish
-        if target_dir:
-            # Place remarks directly in the document directory
-            json_dir = os.path.join(target_dir, document, 'remarks')
-        else:
-            json_dir = os.path.join(project_root, 'redpen-publish', document, 'remarks')
-
-        # Create the directory if it doesn't exist
+    for doc in documents:
+        md_dir = os.path.join(project_root, 'redpen-content', doc, 'remarks')
+        json_dir = os.path.join(publish_root, doc, 'remarks')
         os.makedirs(json_dir, exist_ok=True)
-
         try:
             remark_converter.md_to_json(md_dir, json_dir)
-            return True
         except Exception as e:
-            print(f"Error converting remarks for {document}: {e}")
-            return False
-    else:
-        # Convert remarks for all documents or specific folders
-        documents = get_document_folders(specific_folders)
-        success = True
+            print(f"Error converting remarks for {doc}: {e}")
+            success = False
 
-        for doc in documents:
-            md_dir = os.path.join(project_root, 'redpen-content', doc, 'remarks')
-
-            # Use target_dir if provided, otherwise use default redpen-publish
-            if target_dir:
-                # Place remarks directly in the document directory
-                json_dir = os.path.join(target_dir, doc, 'remarks')
-            else:
-                json_dir = os.path.join(project_root, 'redpen-publish', doc, 'remarks')
-
-            # Create the directory if it doesn't exist
-            os.makedirs(json_dir, exist_ok=True)
-
-            try:
-                remark_converter.md_to_json(md_dir, json_dir)
-            except Exception as e:
-                print(f"Error converting remarks for {doc}: {e}")
-                success = False
-
-        return success
+    return success
 
 def generate_page_manifests(target_dir=None, document=None, specific_folders=None):
     """
@@ -321,132 +292,37 @@ def generate_page_html(target_dir=None, document=None, specific_folders=None):
 
     return success
 
-def run_remark_tests(target_dir=None):
-    """Run remark position tests"""
-    print("\n=== Running Remark Position Tests ===")
+def _publish_one_document(doc, output_dir, templates_dir):
+    """Опубликовать содержимое одного документа в <output_dir>/<doc>/."""
+    content_root = os.path.join(project_root, 'redpen-content', doc)
+    images_dir = os.path.join(content_root, 'images')
+    text_dir = os.path.join(content_root, 'text')
+    # Замечания не трогаем: канон — БД, в publish их кладёт API (publisher.py).
+    remarks_dir = None
 
-    # Import the remark_position_tests module
-    tests_module = import_module_from_file(
-        'remark_position_tests',
-        os.path.join(project_root, 'tests', 'remark_position_tests.py')
-    )
+    doc_output_dir = os.path.join(output_dir, doc)
+    os.makedirs(doc_output_dir, exist_ok=True)
 
-    # Create test files in the target directory
-    print("\n=== Creating Test Files for Remark Tests ===")
-    tests_module.create_test_files(target_dir or os.path.join(project_root, 'redpen-publish'))
+    publish_data.publish_data(images_dir, text_dir, remarks_dir, doc_output_dir)
 
-    try:
-        # Run the tests with a custom function that captures the result
-        class TestResult:
-            def __init__(self):
-                self.all_pass = None
+    # Иллюстрации, если они есть, ложатся в тот же images/
+    illustrations_dir = os.path.join(content_root, 'illustrations')
+    if os.path.exists(illustrations_dir) and os.path.isdir(illustrations_dir):
+        images_output = os.path.join(doc_output_dir, "images")
+        publish_data.copy_files(illustrations_dir, images_output, "*")
+        print(f"[+] Published illustrations from {illustrations_dir} to {images_output}")
 
-        result = TestResult()
+    meta_json_path = os.path.join(content_root, 'meta.json')
+    metadata_json_path = os.path.join(doc_output_dir, 'metadata.json')
+    if os.path.exists(meta_json_path):
+        shutil.copy2(meta_json_path, metadata_json_path)
+        print(f"[+] Copied meta.json to {metadata_json_path}")
 
-        # Monkey patch the run_tests function to capture the result
-        original_run_tests = tests_module.run_tests
+    # <doc>/index.html пишет шаг 3.6 (page_html.build_pages) — это оглавление.
+    # Здесь раньше публиковался старый SPA (document_index.html), последнее
+    # место, где жил режим редактора ?editor=1; редактор переехал в /app/,
+    # и SPA удалён 2026-08-30.
 
-        def patched_run_tests(update_baseline=False):
-            # Load baseline positions
-            baseline = tests_module.load_baseline_positions()
-
-            # Get the base path and publish directory
-            base_path = os.path.abspath(os.path.join(os.path.dirname(tests_module.__file__), '..'))
-
-            # Use target_dir if provided, otherwise use default redpen-publish
-            if target_dir:
-                publish_dir = target_dir
-            else:
-                publish_dir = os.path.join(base_path, 'redpen-publish')
-
-            # Save current directory to restore it later
-            original_dir = os.getcwd()
-
-            # Start a local HTTP server
-            port = tests_module.find_free_port()
-            print(f"Starting HTTP server on port {port}...")
-            server = tests_module.start_http_server(publish_dir, port)
-
-            try:
-                with tests_module.sync_playwright() as p:
-                    # Test 1: Desktop width (1280px)
-                    print("\n=== Test 1: Desktop Width (1280px) ===")
-                    desktop_results = tests_module.test_desktop_width(p, port)
-
-                    # Test 2: Mobile width (800px)
-                    print("\n=== Test 2: Mobile Width (800px) ===")
-                    mobile_results = tests_module.test_mobile_width(p, port)
-
-                    # Test 3: Resize from desktop to mobile
-                    print("\n=== Test 3: Resize from Desktop to Mobile ===")
-                    desktop_to_mobile_results = tests_module.test_resize_desktop_to_mobile(p, port)
-
-                    # Test 4: Resize from mobile to desktop
-                    print("\n=== Test 4: Resize from Mobile to Desktop ===")
-                    mobile_to_desktop_results = tests_module.test_resize_mobile_to_desktop(p, port)
-
-                    # Update baseline if requested
-                    if update_baseline:
-                        baseline = {
-                            'desktop': desktop_results,
-                            'mobile': mobile_results,
-                            'desktop_to_mobile': desktop_to_mobile_results,
-                            'mobile_to_desktop': mobile_to_desktop_results
-                        }
-                        tests_module.save_baseline_positions(baseline)
-                        print("\nBaseline positions updated")
-                    else:
-                        # Compare with baseline
-                        print("\n=== Comparing with Baseline ===")
-                        desktop_match = tests_module.compare_positions(desktop_results, baseline.get('desktop', []))
-                        mobile_match = tests_module.compare_positions(mobile_results, baseline.get('mobile', []))
-                        desktop_to_mobile_match = tests_module.compare_positions(desktop_to_mobile_results, baseline.get('desktop_to_mobile', []))
-                        mobile_to_desktop_match = tests_module.compare_positions(mobile_to_desktop_results, baseline.get('mobile_to_desktop', []))
-
-                        # Print overall results
-                        print("\n=== Overall Results ===")
-                        print(f"Desktop width test: {'PASS' if desktop_match else 'FAIL'}")
-                        print(f"Mobile width test: {'PASS' if mobile_match else 'FAIL'}")
-                        print(f"Desktop to mobile resize test: {'PASS' if desktop_to_mobile_match else 'FAIL'}")
-                        print(f"Mobile to desktop resize test: {'PASS' if mobile_to_desktop_match else 'FAIL'}")
-
-                        result.all_pass = desktop_match and mobile_match and desktop_to_mobile_match and mobile_to_desktop_match
-                        print(f"\nOverall: {'PASS' if result.all_pass else 'FAIL'}")
-            finally:
-                # Restore original directory
-                os.chdir(original_dir)
-
-                # Shutdown the server
-                server.shutdown()
-
-        # Replace the original function with our patched version
-        tests_module.run_tests = patched_run_tests
-
-        # Run the tests
-        tests_module.run_tests(update_baseline=False)
-
-        # Restore the original function
-        tests_module.run_tests = original_run_tests
-
-        return result.all_pass
-    except Exception as e:
-        print(f"Error running remark tests: {e}")
-        return False
-
-def run_editor_mode_tests(target_dir=None):
-    """Run editor mode visibility tests (presence of panel when ?editor=1)."""
-    print("\n=== Running Editor Mode Visibility Tests ===")
-    try:
-        tests_module = import_module_from_file(
-            'editor_mode_tests',
-            os.path.join(project_root, 'tests', 'editor_mode_tests.py')
-        )
-        result = tests_module.run_tests(target_dir)
-        print(f"Editor mode tests: {'PASS' if result else 'FAIL'}")
-        return bool(result)
-    except Exception as e:
-        print(f"Error running editor mode tests: {e}")
-        return False
 
 def publish_website_data(target_dir=None, document=None, specific_folders=None):
     """
@@ -472,149 +348,12 @@ def publish_website_data(target_dir=None, document=None, specific_folders=None):
     os.makedirs(output_dir, exist_ok=True)
 
     try:
-        # If document is specified, only publish that document's data
-        if document:
-            images_dir = os.path.join(project_root, 'redpen-content', document, 'images')
-            text_dir = os.path.join(project_root, 'redpen-content', document, 'text')
-            # Skip remarks as they're already converted and in the right place
-            remarks_dir = None
+        # Одна ветка на любое число документов: раньше «один документ» и «все
+        # документы» были двумя копиями одного блока, которые успели разойтись.
+        documents = [document] if document else get_document_folders(specific_folders)
 
-            # Create document-specific output directory
-            doc_output_dir = os.path.join(output_dir, document)
-            os.makedirs(doc_output_dir, exist_ok=True)
-
-            # Use the document directory directly for content
-            doc_content_dir = doc_output_dir
-
-            # Publish content data directly to the document directory
-            publish_data.publish_data(images_dir, text_dir, remarks_dir, doc_content_dir)
-
-            # Check if illustrations folder exists and publish its content to images folder
-            illustrations_dir = os.path.join(project_root, 'redpen-content', document, 'illustrations')
-            if os.path.exists(illustrations_dir) and os.path.isdir(illustrations_dir):
-                images_output = os.path.join(doc_content_dir, "images")
-                publish_data.copy_files(illustrations_dir, images_output, "*")
-                print(f"[+] Published illustrations from {illustrations_dir} to {images_output}")
-
-            # Copy meta.json to the document directory as metadata.json
-            meta_json_path = os.path.join(project_root, 'redpen-content', document, 'meta.json')
-            metadata_json_path = os.path.join(doc_content_dir, 'metadata.json')
-            if os.path.exists(meta_json_path):
-                shutil.copy2(meta_json_path, metadata_json_path)
-                print(f"[+] Copied meta.json to {metadata_json_path}")
-
-            # Copy document index template to the document directory with updated timestamp
-            document_template = os.path.join(templates_dir, 'document_index.html')
-            document_index = os.path.join(doc_content_dir, 'index.html')
-            if os.path.exists(document_template):
-                # Read the template content
-                with open(document_template, 'r', encoding='utf-8') as f:
-                    template_content = f.read()
-
-                # Replace the timestamp with current date and time
-                current_timestamp = datetime.datetime.now().strftime('%d.%m.%Y')
-                template_content = template_content.replace('Последнее обновление: 15.05.2023 14:30', f'Последнее обновление: {current_timestamp}')
-
-                # Prepend autogenerated notice
-                auto_hdr = page_html.AUTO_HEADER
-                # Write the modified content to the output file
-                with open(document_index, 'w', encoding='utf-8') as f:
-                    f.write(auto_hdr + template_content)
-
-                print(f"[+] Copied document index template to {document_index} with updated timestamp")
-
-            # No need for redirect HTML file anymore as we're using the document directory directly
-            # create_redirect_html(doc_output_dir, f"i/{document}")
-
-            # Clean up only the old nested structure
-            old_dirs = ['i']
-            for old_dir in old_dirs:
-                old_path = os.path.join(doc_output_dir, old_dir)
-                if os.path.exists(old_path) and os.path.isdir(old_path):
-                    try:
-                        shutil.rmtree(old_path)
-                        print(f"[+] Removed old directory: {old_path}")
-                    except Exception as e:
-                        print(f"[!] Error removing directory {old_path}: {e}")
-        else:
-            # Publish data for all documents or specific folders
-            documents = get_document_folders(specific_folders)
-
-            for doc in documents:
-                images_dir = os.path.join(project_root, 'redpen-content', doc, 'images')
-                text_dir = os.path.join(project_root, 'redpen-content', doc, 'text')
-                # Skip remarks as they're already converted and in the right place
-                remarks_dir = None
-
-                # Create document-specific output directory
-                doc_output_dir = os.path.join(output_dir, doc)
-                os.makedirs(doc_output_dir, exist_ok=True)
-
-                # Use the document directory directly for content
-                doc_content_dir = doc_output_dir
-
-                # Publish content data directly to the document directory
-                publish_data.publish_data(images_dir, text_dir, remarks_dir, doc_content_dir)
-
-                # Check if illustrations folder exists and publish its content to images folder
-                illustrations_dir = os.path.join(project_root, 'redpen-content', doc, 'illustrations')
-                if os.path.exists(illustrations_dir) and os.path.isdir(illustrations_dir):
-                    images_output = os.path.join(doc_content_dir, "images")
-                    publish_data.copy_files(illustrations_dir, images_output, "*")
-                    print(f"[+] Published illustrations from {illustrations_dir} to {images_output}")
-
-                # Copy meta.json to the document directory as metadata.json
-                meta_json_path = os.path.join(project_root, 'redpen-content', doc, 'meta.json')
-                metadata_json_path = os.path.join(doc_content_dir, 'metadata.json')
-                if os.path.exists(meta_json_path):
-                    shutil.copy2(meta_json_path, metadata_json_path)
-                    print(f"[+] Copied meta.json to {metadata_json_path}")
-
-                # Copy document index template to the document directory with updated timestamp
-                document_template = os.path.join(templates_dir, 'document_index.html')
-                document_index = os.path.join(doc_content_dir, 'index.html')
-                document_index_html = os.path.join(doc_content_dir, 'document_index.html')
-                if os.path.exists(document_template):
-                    # Read the template content
-                    with open(document_template, 'r', encoding='utf-8') as f:
-                        template_content = f.read()
-
-                    # Replace the timestamp with current date and time
-                    current_timestamp = datetime.datetime.now().strftime('%d.%m.%Y')
-                    template_content = template_content.replace('Последнее обновление: 15.05.2023 14:30', f'Последнее обновление: {current_timestamp}')
-
-                    # Prepend autogenerated notice
-                    auto_hdr = page_html.AUTO_HEADER
-                    # Write the modified content to the output files
-                    with open(document_index, 'w', encoding='utf-8') as f:
-                        f.write(auto_hdr + template_content)
-
-                    # ВНИМАНИЕ: <doc>/index.html ниже перезаписывается оглавлением
-                    # на шаге 3.6 (page_html.build_pages). Эта вторая копия,
-                    # <doc>/document_index.html, -- единственное место, где на
-                    # проде живёт старый SPA, а вместе с ним и режим редактора
-                    # (?editor=1). Удалять её можно только вместе с переездом
-                    # редактора в отдельное приложение -- см.
-                    # docs/refactoring-plan-2026-08.md, раздел 5.
-                    with open(document_index_html, 'w', encoding='utf-8') as f:
-                        f.write(auto_hdr + template_content)
-
-                    print(f"[+] Copied document index template to {document_index} with updated timestamp")
-                    print(f"[+] Also created document_index.html at {document_index_html} (SPA + editor host)")
-
-                # No need for redirect HTML file anymore as we're using the document directory directly
-                # create_redirect_html(doc_output_dir, f"i/{doc}")
-
-                # Clean up only the old nested structure
-                old_dirs = ['i']
-                for old_dir in old_dirs:
-                    old_path = os.path.join(doc_output_dir, old_dir)
-                    if os.path.exists(old_path) and os.path.isdir(old_path):
-                        try:
-                            shutil.rmtree(old_path)
-                            print(f"[+] Removed old directory: {old_path}")
-                        except Exception as e:
-                            print(f"[!] Error removing directory {old_path}: {e}")
+        for doc in documents:
+            _publish_one_document(doc, output_dir, templates_dir)
 
         # Copy template files (CSS, JS, HTML, etc.)
         print("\n=== Copying Template Files ===")
@@ -666,43 +405,52 @@ def _document_subtitle(meta_data):
     return ' · '.join(parts)
 
 
+def _iter_published_pages(doc_output_dir):
+    """Опубликованные замечания постранично: (имя файла, [замечание, ...]).
+
+    Один обход <doc>/remarks/ на всех, кто считает статистику публикации.
+    Черновики лежат в тех же page_NNN.json под флагом draft и не считаются:
+    без ?showDrafts=1 читатель их не видит. Легаси-компаньоны
+    page_NNN.drafts.json пропускаются по той же причине. Страницы без единого
+    опубликованного замечания не выдаются вовсе.
+    """
+    ann_dir = os.path.join(doc_output_dir, 'remarks')
+    if not os.path.isdir(ann_dir):
+        return
+    for name in sorted(os.listdir(ann_dir)):
+        if not name.startswith('page_') or not name.endswith('.json'):
+            continue
+        if name.endswith('.drafts.json'):
+            continue
+        try:
+            with open(os.path.join(ann_dir, name), 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if not isinstance(data, list):
+            continue
+        published = [a for a in data if isinstance(a, dict) and not a.get('draft')]
+        if published:
+            yield name, published
+
+
 def _methods_density(doc_output_dirs):
     """
     Числа для абзаца «Перед вами учебник пропаганды» на титульной.
 
-    Считаем только то, что читатель реально видит: черновики (draft) исключены,
-    как и в _count_published_remarks. `method_pages` — страницы, где есть
-    хотя бы одно замечание-приём, то есть категория не «Прочее»; именно на этом
-    числе держится фраза «почти на каждой». Категория берётся из общей таблицы
+    Считаем только то, что читатель реально видит: черновики исключены обходом
+    _iter_published_pages. `method_pages` — страницы, где есть хотя бы одно
+    замечание-приём, то есть категория не «Прочее»; именно на этом числе
+    держится фраза «почти на каждой». Категория берётся из общей таблицы
     scripts/annotation_categories.py — той же, по которой красится просмотрщик.
     """
-    import json
-
     import annotation_categories
 
     pages = 0
     method_pages = 0
     remarks = 0
     for doc_output_dir in doc_output_dirs:
-        ann_dir = os.path.join(doc_output_dir, 'remarks')
-        if not os.path.isdir(ann_dir):
-            continue
-        for name in sorted(os.listdir(ann_dir)):
-            if not name.startswith('page_') or not name.endswith('.json'):
-                continue
-            if name.endswith('.drafts.json'):
-                continue
-            try:
-                with open(os.path.join(ann_dir, name), 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-            except Exception:
-                continue
-            if not isinstance(data, list):
-                continue
-            published = [a for a in data
-                         if isinstance(a, dict) and not a.get('draft')]
-            if not published:
-                continue
+        for _name, published in _iter_published_pages(doc_output_dir):
             pages += 1
             remarks += len(published)
             if any(annotation_categories.category_for(a) != annotation_categories.OTHER
@@ -739,37 +487,14 @@ def _count_published_remarks(doc_output_dir):
     """
     Count published remarks in a built document directory.
 
-    Returns {'remarks': N, 'pages': M} — M is the number of pages that
-    actually carry at least one remark. Drafts share page_NNN.json with the
-    published ones now (each flagged draft/tagged 'draft') and are deliberately
-    not counted: they are invisible without ?showDrafts=1. Legacy
-    page_NNN.drafts.json companions are skipped for the same reason.
+    Returns {'remarks': N, 'pages': M} — M is the number of pages that actually
+    carry at least one remark. Drafts are excluded by _iter_published_pages.
     """
-    import json
-
     result = {'remarks': 0, 'pages': 0}
-    ann_dir = os.path.join(doc_output_dir, 'remarks')
-    if not os.path.isdir(ann_dir):
-        return result
-
-    for name in sorted(os.listdir(ann_dir)):
-        if not name.startswith('page_') or not name.endswith('.json'):
-            continue
-        if name.endswith('.drafts.json'):
-            continue
-        try:
-            with open(os.path.join(ann_dir, name), 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except Exception:
-            continue
-        if not isinstance(data, list):
-            continue
-        published = [a for a in data if not (isinstance(a, dict) and a.get('draft'))]
-        if published:
-            result['remarks'] += len(published)
-            result['pages'] += 1
+    for _name, published in _iter_published_pages(doc_output_dir):
+        result['remarks'] += len(published)
+        result['pages'] += 1
     return result
-
 
 def _plural_ru(n, one, few, many):
     """Russian plural: 1 замечание / 2 замечания / 5 замечаний."""
@@ -817,7 +542,6 @@ def create_index_page(target_dir=None, specific_folders=None):
         meta_json_path = os.path.join(project_root, 'redpen-content', doc_id, 'meta.json')
         if os.path.exists(meta_json_path):
             try:
-                import json
                 with open(meta_json_path, 'r', encoding='utf-8') as f:
                     meta_data = json.load(f)
                     if 'title' in meta_data:
@@ -913,10 +637,8 @@ def create_index_page(target_dir=None, specific_folders=None):
   <meta property="og:description" content="Антимифы к единому учебнику истории: постраничный разбор с фактчеком, разбором манипуляций и умолчаний прямо поверх страниц оригинала."/>
   <meta property="og:url" content="https://medinsky.net/"/>
   <link rel="stylesheet" href="css/main.css">
-  <link rel="stylesheet" href="css/components.css">
   <link rel="stylesheet" href="css/landing.css">
   <link rel="stylesheet" href="css/blog.css">
-  <link rel="stylesheet" href="css/responsive.css">
   <link rel="icon" href="favicon.svg">
   <style>
     /* Каркас (.landing/.prose/.btn/footer) — в css/landing.css, он общий
@@ -1240,33 +962,6 @@ def create_index_page(target_dir=None, specific_folders=None):
 
     return True
 
-def create_redirect_html(directory, target_path):
-    """Create an HTML file that redirects to the target path"""
-    print(f"Creating redirect from {directory} to {target_path}")
-
-    # Create the redirect HTML content
-    redirect_html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta http-equiv="refresh" content="0;url={target_path}/index.html">
-    <title>Redirecting...</title>
-</head>
-<body>
-    <p>Redirecting to <a href="{target_path}/index.html">{target_path}/index.html</a>...</p>
-    <script>
-        window.location.href = "{target_path}/index.html";
-    </script>
-</body>
-</html>
-"""
-
-    # Write the redirect HTML to a file
-    redirect_path = os.path.join(directory, "index.html")
-    with open(redirect_path, "w") as f:
-        f.write(redirect_html)
-
-    print(f"[+] Created redirect file at {redirect_path}")
-
 def push_to_submodule(target_dir=None):
     """Commit and push changes to the redpen-publish repository"""
     # Only push if target_dir is None or is the default redpen-publish directory
@@ -1317,7 +1012,12 @@ def push_to_submodule(target_dir=None):
 def main():
     """Main function to build and publish the website"""
     parser = argparse.ArgumentParser(description="Build and publish the website")
-    parser.add_argument("--skip-tests", action="store_true", help="Skip running remark position tests")
+    # Флаг ничего не выключает с 2026-08-30: браузерные проверки, которые
+    # сборка гоняла (позиции маркеров и режим редактора), целились в старый SPA
+    # и удалены вместе с ним. Аргумент принимается, чтобы не ломать команды из
+    # доков и журналов, где он написан в каждой второй строке.
+    parser.add_argument("--skip-tests", action="store_true",
+                        help="Принимается для совместимости; сборка браузерных тестов больше не гоняет")
     parser.add_argument("--skip-push", action="store_true", help="Skip pushing changes to the redpen-publish repository")
     parser.add_argument("--target-dir", help="Specify a target directory for the build output (default: redpen-publish)")
     parser.add_argument("--document", help="Specify a document to build (default: build all documents)")
@@ -1383,19 +1083,6 @@ def main():
     else:
         print("Skipping markdown->JSON remark conversion (pass --remarks-from-md to force; md is archive-only)")
 
-    # Step 2: Run remark position tests (if not skipped)
-    if not args.skip_tests:
-        # For now, we'll only run tests if no specific document is specified
-        if not document:
-            tests_passed = run_remark_tests(target_dir)
-            if not tests_passed:
-                print("Remark position tests failed. Aborting.")
-                sys.exit(1)
-        else:
-            print("Skipping remark position tests for specific document")
-    else:
-        print("Skipping remark position tests")
-
     # Step 3: Publish data
     if not publish_website_data(target_dir, document, specific_folders):
         print("Failed to publish website data. Aborting.")
@@ -1422,17 +1109,6 @@ def main():
         # blog and every per-page file already exist -- the sitemap is built by
         # scanning the output and skipping anything marked noindex.
         sitemap.generate(publish_dir, os.getenv('REDPEN_SITE_URL', 'https://medinsky.net'))
-
-    # Step 5: Run editor mode tests (post-publish) unless skipped
-    if not args.skip_tests and not document:
-        editor_passed = run_editor_mode_tests(target_dir)
-        if not editor_passed:
-            print("Editor mode tests failed. Aborting.")
-            sys.exit(1)
-    elif args.skip_tests:
-        print("Skipping editor mode tests")
-    else:
-        print("Skipping editor mode tests for specific document build")
 
     # Step 6: Push changes to redpen-publish repository (if not skipped)
     if not args.skip_push:
