@@ -1,0 +1,169 @@
+/* Опросник: оценка замечаний людьми вне закрытого круга.
+
+   Отличается от редактора и кабинета намеренно: сюда приходит человек,
+   который видит проект впервые, с телефона и один раз. Отсюда крупный шрифт,
+   одна колонка и по одному действию на экран — ни таблиц, ни фильтров, ни
+   сокращений, понятных только своим. */
+
+:root {
+  --sv-line: #dcdcdc;
+  --sv-ink: #222;
+  --sv-quiet: #666;
+  --sv-accent: crimson;
+}
+
+body { color: var(--sv-ink); }
+
+.sv-home-link {
+  float: left;
+  color: #fff;
+  text-decoration: none;
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+.sv-card {
+  max-width: 44rem;
+  margin: 24px auto;
+  padding: 20px 24px;
+  background: #fff;
+  border: 1px solid var(--sv-line);
+  border-radius: 6px;
+  font-size: 1.02rem;
+  line-height: 1.5;
+}
+
+/* Экран оценки шире: в нём стоит скан страницы учебника. */
+.sv-card--wide { max-width: 68rem; }
+
+.sv-card h2 { margin: 0 0 12px; font-size: 1.25rem; }
+.sv-card p { margin: 0 0 12px; }
+
+.sv-hint { font-size: 0.9rem; color: var(--sv-quiet); }
+.sv-error { color: #b00020; font-size: 0.92rem; min-height: 1.2em; }
+
+.sv-status {
+  max-width: 44rem;
+  margin: 12px auto 0;
+  padding: 10px 14px;
+  border-radius: 4px;
+  background: #eef3ff;
+  font-size: 0.92rem;
+}
+.sv-status.is-error { background: #fdecec; color: #b00020; }
+
+/* --- псевдоним ---------------------------------------------------------- */
+
+.sv-name-form { display: flex; flex-direction: column; gap: 6px; margin-top: 16px; }
+.sv-name-form label { font-weight: 600; font-size: 0.92rem; }
+.sv-name-form input {
+  padding: 10px 12px;
+  font-size: 1.05rem;
+  border: 1px solid var(--sv-line);
+  border-radius: 4px;
+}
+.sv-name-form input:focus { outline: 2px solid var(--sv-accent); outline-offset: 1px; }
+
+.sv-intro-scales { margin: 0 0 12px; padding-left: 1.3em; }
+.sv-intro-scales li { margin-bottom: 8px; }
+
+/* --- кнопки ------------------------------------------------------------- */
+
+.sv-btn {
+  align-self: flex-start;
+  margin-top: 8px;
+  padding: 11px 22px;
+  font-size: 1rem;
+  color: #fff;
+  background: var(--sv-accent);
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.sv-btn:hover { filter: brightness(1.08); }
+.sv-btn--quiet { background: #eee; color: var(--sv-ink); }
+
+/* --- карточка оценки ---------------------------------------------------- */
+
+.sv-progress {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+  font-size: 0.92rem;
+  color: var(--sv-quiet);
+}
+.sv-progress a { margin-left: auto; }
+
+/* Скан рисуется в настоящую десктопную ширину и ужимается под панель: внутри
+   узкого фрейма включились бы мобильные правила просмотрщика, и человек
+   оценивал бы не то, что видит большинство читателей. */
+.sv-preview-fit {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--sv-line);
+  border-radius: 4px;
+  background: #fff;
+  height: 62vh;
+  min-height: 380px;
+}
+
+.sv-preview-frame {
+  width: var(--preview-width, 1200px);
+  height: var(--preview-height, 1000px);
+  border: 0;
+  transform-origin: 0 0;
+  background: #fff;
+}
+
+/* --- шкалы -------------------------------------------------------------- */
+
+.sv-scales {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.sv-scale {
+  padding: 12px 14px;
+  border: 1px solid var(--sv-line);
+  border-radius: 5px;
+  background: #fafafa;
+}
+.sv-scale-title { font-weight: 600; margin-bottom: 4px; }
+.sv-scale-hint { font-size: 0.85rem; color: var(--sv-quiet); margin-bottom: 10px; }
+.sv-scale-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.sv-scale-ends {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: var(--sv-quiet);
+}
+
+/* Кнопка ответа крупная: по этому экрану чаще всего тычут пальцем. */
+.sv-choice {
+  min-width: 2.8rem;
+  padding: 10px 14px;
+  font-size: 1rem;
+  background: #fff;
+  border: 1px solid var(--sv-line);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.sv-choice:hover { border-color: var(--sv-accent); }
+.sv-choice.is-picked {
+  background: var(--sv-accent);
+  border-color: var(--sv-accent);
+  color: #fff;
+}
+
+.sv-actions { display: flex; gap: 10px; margin-top: 18px; }
+
+@media (max-width: 767px) {
+  .sv-card { margin: 12px 8px; padding: 16px; border-radius: 0; }
+  .sv-preview-fit { height: 55vh; min-height: 300px; }
+  .sv-actions { flex-direction: column; }
+  .sv-btn { align-self: stretch; text-align: center; }
+}

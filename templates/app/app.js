@@ -20,12 +20,11 @@
     user: null,
     ref: null,        // {docId, pageKey, remarkId}
     remark: null,
-    manifest: {},     // docId -> {page_006: "6"}
     section: null,    // текущий параграф, чтобы перечитывать его по фильтрам
     queue: { items: [], index: 0, skipped: {} },
     dirty: false,
     scales: [],       // описание шкал оценки, приходит с сервера
-    scaleTitles: {},  // name -> заголовок, для подписей в ленте
+    scaleByName: {},  // name -> описание шкалы, для подписей в ленте
     timeline: [],     // ревизии, оценки и комментарии одним списком
     textOnly: false,  // фильтр ленты «только правки текста»
     cardSha: null,    // serverPageSha страницы открытой карточки
@@ -38,6 +37,7 @@
   };
 
   var markers = window.RedPenMarkers;
+  var preview = window.RedPenPreview;
 
   // --- мелочи -------------------------------------------------------------
 
@@ -140,19 +140,8 @@
     return { view: 'sections' };
   }
 
-  async function pageLabel(docId, pageKey) {
-    if (!state.manifest[docId]) {
-      try {
-        var res = await fetch('../' + encodeURIComponent(docId) + '/metadata.json');
-        var meta = await res.json();
-        var map = {};
-        (meta.pages || []).forEach(function (p) { map[p.file] = String(p.label); });
-        state.manifest[docId] = map;
-      } catch (e) {
-        state.manifest[docId] = {};
-      }
-    }
-    return state.manifest[docId]['page_' + pageKey] || String(parseInt(pageKey, 10) || pageKey);
+  function pageLabel(docId, pageKey) {
+    return preview.pageLabel(docId, pageKey);
   }
 
   // --- вход ---------------------------------------------------------------
@@ -302,9 +291,20 @@
 
   function renderTimelineItem(item) {
     if (item.kind === 'rating') {
-      var scale = state.scaleTitles[item.scale] || item.scale;
-      return '<li class="app-rev app-rev--rating">' + timelineHead(item) +
-        '<div class="app-rev-text">' + escapeHtml(scale) + ': ' + item.value + ' из 5' +
+      var meta = state.scaleByName[item.scale];
+      var scale = (meta && meta.title) || item.scale;
+      // Подписанная шкала показывается подписью: «1 из 2» под вопросом
+      // «можно ли публиковать» читателю ленты ничего не говорит.
+      var answer = item.value + ' из ' + (meta ? meta.max : 5);
+      if (meta && meta.options) {
+        meta.options.forEach(function (choice) {
+          if (choice.value === item.value) answer = choice.label;
+        });
+      }
+      return '<li class="app-rev app-rev--rating' +
+        (item.source === 'survey' ? ' app-rev--survey' : '') + '">' + timelineHead(item) +
+        '<div class="app-rev-text">' + escapeHtml(scale) + ': ' + escapeHtml(answer) +
+        (item.source === 'survey' ? ' <span class="app-agent">опрос</span>' : '') +
         (item.note ? ' — ' + escapeHtml(item.note) : '') + '</div>' +
       '</li>';
     }
@@ -343,14 +343,23 @@
     if (!state.scales.length) { host.innerHTML = ''; return; }
     host.innerHTML = state.scales.map(function (scale) {
       var row = (summary && summary[scale.name]) || {};
-      var buttons = '';
-      for (var v = scale.min; v <= scale.max; v++) {
-        buttons += '<button type="button" class="app-rating-btn' +
-          (row.mine === v ? ' is-mine' : '') + '" data-scale="' +
-          escapeHtml(scale.name) + '" data-value="' + v + '">' + v + '</button>';
+      // Подписи вместо цифр там, где шкала — вопрос о решении, а не о мере:
+      // «2» под вопросом «можно ли публиковать» не значит ничего.
+      var choices = scale.options || [];
+      if (!choices.length) {
+        for (var v = scale.min; v <= scale.max; v++) choices.push({ value: v, label: String(v) });
       }
+      var buttons = choices.map(function (choice) {
+        return '<button type="button" class="app-rating-btn' +
+          (row.mine === choice.value ? ' is-mine' : '') + '" data-scale="' +
+          escapeHtml(scale.name) + '" data-value="' + choice.value + '">' +
+          escapeHtml(choice.label) + '</button>';
+      }).join('');
       var others = row.count
-        ? 'среднее ' + row.average + ' по ' + row.count
+        ? (scale.options
+            // Среднее по «да или нет» ничего не сообщает: нужен расклад.
+            ? 'оценили: ' + row.count
+            : 'среднее ' + row.average + ' по ' + row.count)
         : 'ещё никто не оценил';
       return '<div class="app-rating">' +
         '<div class="app-rating-title" title="' + escapeHtml(scale.hint) + '">' +
@@ -473,22 +482,8 @@
 
   // --- просмотр -----------------------------------------------------------
 
-  //: Ширина, в которую рисуется просмотр. Больше брейкпоинта просмотрщика
-  //: (767px), иначе в редакторе показывался бы мобильный вид.
-  var PREVIEW_WIDTH = 1200;
-
   function fitFrame(fitId, frameId) {
-    var fit = el(fitId);
-    var frame = el(frameId);
-    if (!fit || !frame) return;
-    var available = fit.clientWidth;
-    if (!available) return;
-    var scale = Math.min(1, available / PREVIEW_WIDTH);
-    frame.style.setProperty('--preview-width', PREVIEW_WIDTH + 'px');
-    // Высота в собственных координатах iframe: то, что после сжатия займёт
-    // всю панель. Без этого низ страницы обрезался бы.
-    frame.style.setProperty('--preview-height', Math.round(fit.clientHeight / scale) + 'px');
-    frame.style.transform = 'scale(' + scale + ')';
+    preview.fitFrame(fitId, frameId);
   }
 
   function fitPreview() {
@@ -498,8 +493,7 @@
 
   async function renderPreview(ref) {
     var label = await pageLabel(ref.docId, ref.pageKey);
-    var url = '../' + encodeURIComponent(ref.docId) + '/pages/' +
-              encodeURIComponent(label) + '/?only=' + encodeURIComponent(ref.remarkId);
+    var url = preview.remarkUrl(ref.docId, label, ref.remarkId);
     el('app-preview').src = url;
     el('app-preview-link').href = url;
     fitPreview();
@@ -711,8 +705,7 @@
       (item.categorySource === 'human' ? 'is-ok' : 'is-todo');
 
     pageLabel(item.docId, item.pageNum).then(function (label) {
-      var url = '../' + encodeURIComponent(item.docId) + '/pages/' +
-                encodeURIComponent(label) + '/?only=' + encodeURIComponent(item.remarkId);
+      var url = preview.remarkUrl(item.docId, label, item.remarkId);
       el('q-preview').src = url;
       el('q-preview-link').href = url;
       fitFrame('q-preview-fit', 'q-preview');
@@ -798,8 +791,8 @@
     if (state.scales.length) return;
     var data = await apiGet('/api/rating-scales');
     state.scales = data.scales || [];
-    state.scaleTitles = {};
-    state.scales.forEach(function (scale) { state.scaleTitles[scale.name] = scale.title; });
+    state.scaleByName = {};
+    state.scales.forEach(function (scale) { state.scaleByName[scale.name] = scale; });
   }
 
   async function loadTimeline(ref) {

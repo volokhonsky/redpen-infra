@@ -96,10 +96,14 @@ def test_classify_kinds(uri, kind):
     "/app/", "/app/index.html", "/cabinet/", "/api/remarks/x/y",
     "/.hooks/redpen-publish",
     "/medinsky11klass/pages/17/?editor=1",
+    # Опросник тоже грузит читательскую страницу во фрейм: без исключения
+    # оценка замечания считалась бы за чтение.
+    "/survey/", "/survey/index.html",
 ])
 def test_editor_traffic_is_private(uri):
-    """Редактор и кабинет — закрытый круг участников. Связывать их запросы с
-    адресом нельзя (docs/anonymity-model.md), поэтому они не учитываются."""
+    """Редактор, кабинет и опросник читателями не являются. Для первых двух
+    связывать запросы с адресом прямо запрещено (docs/anonymity-model.md),
+    для опросника — испортило бы счётчики чтения."""
     assert analytics.classify_path(uri)["private"] is True
 
 
@@ -426,6 +430,7 @@ PREVIEW = "https://medinsky.net/app/"
     ("https://medinsky.net/app/", True),
     ("https://medinsky.net/app", True),
     ("https://medinsky.net/cabinet/?tag=draft", True),
+    ("https://medinsky.net/survey/", True),
     ("https://medinsky.net/medinsky11klass/pages/17/", False),
     ("https://t.me/x", False),
     # Чужой сайт со своим /app/ нам не указ.

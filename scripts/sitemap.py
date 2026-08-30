@@ -29,7 +29,7 @@ NOINDEX_RE = re.compile(
 #: SPA, удалённый 2026-08-30; имя оставлено, потому что копии файла остаются
 #: на томе публикации, пока он не будет вычищен вручную.
 SKIP_NAMES = {"document_index.html"}
-SKIP_DIRS = {"cabinet", "app", ".git"}
+SKIP_DIRS = {"cabinet", "app", "survey", ".git"}
 
 
 def is_indexable(path: str) -> bool:

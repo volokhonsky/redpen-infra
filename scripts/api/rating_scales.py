@@ -12,12 +12,22 @@
 разные — первое отправляет замечание в отсев, второе понижает его в очереди,
 третье требует переписать формулировку, — а значение выходило одно.
 
-Каждая шкала растёт в сторону названного качества: 5 по «допустимости» означает
-«вполне допустимо», а не «недопустимо».
+Каждая шкала растёт в сторону названного качества: старшее значение
+«допустимости» означает «вполне допустимо», а не «недопустимо».
+
+Диапазон у шкал разный (2026-08-31). «Интересность» и «важность» — вопросы о
+мере, на них честно отвечать пятибалльно. «Допустимость» — вопрос о решении:
+публикуем это в текущем виде или нет. Третьего не дано, и промежуточные баллы
+там означали лишь нежелание отвечать. Поэтому у шкалы появились собственные
+`min`/`max` и подписанные варианты `options`, а интерфейсы (редактор `/app/` и
+опросник `/survey/`) рисуют кнопки по описанию из `describe()`, а не по
+зашитому диапазону.
 """
 
 from typing import Any, Dict, List, Optional
 
+#: Диапазон по умолчанию — шкала меры. Шкала с собственными границами
+#: перекрывает их своими ключами `min`/`max`.
 MIN_VALUE = 1
 MAX_VALUE = 5
 
@@ -35,9 +45,17 @@ SCALES: Dict[str, Dict[str, Any]] = {
                 "понимание параграфа или уточняет частность.",
     },
     "admissibility": {
-        "title": "Допустимость",
-        "hint": "Насколько правомерно предъявлять это в такой формулировке: "
-                "хватает ли оснований и не приписано ли учебнику лишнее.",
+        "title": "Можно ли публиковать в текущем виде",
+        "hint": "Правомерно ли предъявлять это в такой формулировке: хватает ли "
+                "оснований и не приписано ли учебнику лишнее.",
+        "min": 1,
+        "max": 2,
+        # Порядок тот же, что у остальных шкал: старшее значение — в сторону
+        # названного качества.
+        "options": [
+            {"value": 1, "label": "Нет"},
+            {"value": 2, "label": "Да"},
+        ],
     },
 }
 
@@ -64,12 +82,26 @@ def normalize_scale(raw: Any) -> str:
     return raw
 
 
-def normalize_value(raw: Any) -> int:
+def bounds(scale: Any) -> tuple:
+    """Границы конкретной шкалы. Шкала без собственных — шкала меры 1..5."""
+    meta = SCALES[normalize_scale(scale)]
+    return meta.get("min", MIN_VALUE), meta.get("max", MAX_VALUE)
+
+
+def options(scale: Any) -> Optional[List[Dict[str, Any]]]:
+    """Подписанные варианты — только там, где цифра сама по себе непонятна."""
+    return SCALES[normalize_scale(scale)].get("options")
+
+
+def normalize_value(scale: Any, raw: Any) -> int:
+    """Значение проверяется по границам своей шкалы: у «допустимости» их две,
+    у остальных пять, и общего диапазона на всех больше нет."""
+    low, high = bounds(scale)
     if isinstance(raw, bool) or not isinstance(raw, int):
         # bool — подкласс int, и True прошёл бы как 1: оценка «истина» бессмысленна.
-        raise ScaleError(f"value must be an integer {MIN_VALUE}..{MAX_VALUE}")
-    if not MIN_VALUE <= raw <= MAX_VALUE:
-        raise ScaleError(f"value must be between {MIN_VALUE} and {MAX_VALUE}")
+        raise ScaleError(f"value must be an integer {low}..{high}")
+    if not low <= raw <= high:
+        raise ScaleError(f"value must be between {low} and {high}")
     return raw
 
 
@@ -84,9 +116,17 @@ def normalize_note(raw: Any) -> Optional[str]:
 
 def describe() -> List[Dict[str, Any]]:
     """Описание шкал для интерфейса — единственный источник, из которого
-    редактор узнаёт, какие шкалы существуют и как они называются."""
-    return [
-        {"name": name, "title": meta["title"], "hint": meta["hint"],
-         "min": MIN_VALUE, "max": MAX_VALUE}
-        for name, meta in SCALES.items()
-    ]
+    редактор и опросник узнают, какие шкалы существуют, как называются и какие
+    у них границы."""
+    out: List[Dict[str, Any]] = []
+    for name, meta in SCALES.items():
+        low, high = bounds(name)
+        out.append({
+            "name": name,
+            "title": meta["title"],
+            "hint": meta["hint"],
+            "min": low,
+            "max": high,
+            "options": meta.get("options"),
+        })
+    return out

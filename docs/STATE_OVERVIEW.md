@@ -38,10 +38,15 @@ JSON, и HTML страницы.
 | Адрес | Что это | Данные |
 |---|---|---|
 | `/app/` | редактор: карточка замечания, доска параграфов, очередь приёмки, экран страницы со сканом | только API |
-| `/cabinet/` | кабинет: списки замечаний и ревизий, роли, приглашения | только API |
+| `/cabinet/` | кабинет: списки замечаний и ревизий, роли, приглашения, результаты опроса и пул | только API |
+| `/survey/` | опросник: оценка замечаний людьми **вне** круга, входа не требует | только API |
 
-Обе точки входа устроены одинаково: свой html/js/css, вход через
-`redpen-auth.js`, ноль общего DOM с просмотрщиком. Экраны редактора —
+Все три точки входа устроены одинаково: свой html/js/css, ноль общего DOM с
+просмотрщиком. Первые две входят через `redpen-auth.js`; опросник не входит
+никуда — респондент называет псевдоним и опознаётся заголовком
+`X-Survey-Token` (`docs/anonymity-model.md`, «Анонимные респонденты опроса»).
+Единичное замечание ни одна из них не рисует заново: все показывают во фрейме
+читательскую страницу с `?only=<id>` (`templates/js/redpen-preview.js`). Экраны редактора —
 `#/` (параграфы), `#/section/<doc>/<id>`, `#/queue`, `#/page/<doc>/<pageKey>`,
 `#/ann/<doc>/<pageKey>/<remarkId>`.
 
@@ -52,11 +57,12 @@ JSON, и HTML страницы.
 ## Кто кому пишет
 
 ```
-человек в /app/ ──┐
-агент по токену ──┼──▶ API (FastAPI) ──▶ SQLite: канон замечаний
-кабинет ──────────┘         │            (remarks + remark_history +
-                            │             remark_tags/ratings/notes,
-                            │             users/sessions, sections)
+человек в /app/ ────┐
+агент по токену ────┼──▶ API (FastAPI) ──▶ SQLite: канон замечаний
+кабинет ────────────┤       │              (remarks + remark_history +
+человек в /survey/ ─┘       │               remark_tags/ratings/notes,
+   (без входа)              │               users/sessions, sections,
+                            │               rating_pool + survey_*)
                             │
                             └─▶ publisher.py на каждую мутацию:
                                   remarks/page_NNN.json  +  pages/<label>/index.html
@@ -68,7 +74,7 @@ git redpen-publish ──▶ content-sync ──▶ тот же том, но К�
 
 `build_website.py` собирает всё, кроме замечаний: шаблоны, картинки, текст,
 манифест страниц, страницы читателя, оглавление, титульную, блог, sitemap,
-`/app/` и `/cabinet/`.
+`/app/`, `/cabinet/` и `/survey/`.
 
 ## Ключевые файлы
 
@@ -77,6 +83,7 @@ git redpen-publish ──▶ content-sync ──▶ тот же том, но К�
 | страницы читателя и оглавление | `scripts/page_html.py` |
 | поведение страницы у читателя | `templates/js/page-view.js` |
 | геометрия и цвет маркеров (общие с редактором) | `templates/js/redpen-markers.js` |
+| фрейм с одним замечанием (общий с редактором и опросом) | `templates/js/redpen-preview.js` |
 | семь категорий приёмов | `scripts/annotation_categories.py` + двойник `templates/js/redpen-categories.js` |
 | виды замечаний и прежние имена | `scripts/remark_kinds.py` |
 | сборка сайта | `scripts/build_website.py` |

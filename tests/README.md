@@ -27,6 +27,7 @@ pytest            # из корня репозитория; конфиг в pyte
 | `test_export_remarks.py` | CLI-экспорт БД в файлы (`scripts/api/export_remarks.py`) |
 | `test_api.py` | Эндпоинты FastAPI через `TestClient`: health, store, store-raw, editor GET/POST/PUT/DELETE, publish-all, auth |
 | `test_auth.py` | Google-вход, роли, allowlist, publish-all (стадии 1–2) |
+| `test_survey.py` | Опрос `/survey/`: анонимный респондент, пул, ответы, лента (`scripts/api/main.py`, `db.py`) |
 | `test_build_website.py` | Сборка сайта (`scripts/build_website.py`): per-document раскладка, `--remarks-from-md`, индексная страница |
 
 `test_build_website.py` строит сайт из синтетического мини-контента во временном

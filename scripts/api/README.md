@@ -106,6 +106,14 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
   (`status='deleted'`, остаётся в истории) + республикация. `404`, если
   замечания нет или она уже удалена. Ответ: `{id, serverPageSha, published}`.
 
+Узкие операции — правят одно поле и записывают в журнал ровно то изменение,
+которое произошло. `serverPageSha` не требуют: оптимистическая блокировка
+защищает текст и координаты, где двое правят одно и то же.
+- 🔒 `PATCH /api/editor/{docId}/{pageNum}/{remarkId}/status` `{status, summary?}`
+- 🔒 `PATCH /api/editor/{docId}/{pageNum}/{remarkId}/category` `{category|null, summary?}`
+- 🔒 `PATCH /api/editor/{docId}/{pageNum}/{remarkId}/tags` `{tags, summary?}` —
+  полная замена; `[]` очищает.
+
 Оптимистичная блокировка: если `clientPageSha` передан, не пуст и не
 совпадает с текущим `serverPageSha` страницы — ответ `409`
 `{"detail": "conflict", "serverPageSha": "<текущий>"}`. Если `clientPageSha`
@@ -145,6 +153,64 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 - ⛔🔒 `POST /api/admin/users/{userId}/role` `{role}` → сменить роль
 - ⛔🔒 `POST /api/admin/users/{userId}/retire` → отвязать участника от аккаунта
   (история сохраняется, связь с аккаунтом теряется)
+
+Оценки и комментарии (рабочие данные редактора). **Ни один из этих маршрутов
+не публикует ничего:** оценки и комментарии в статику не попадают и ревизиями
+не становятся, а сводятся только на чтении — `docs/remark_specification.md`,
+раздел «Оценки и комментарии».
+- 🔒 `GET /api/rating-scales` (чтение) → `{"scales": [{name, title, hint, min,
+  max, options}, …]}` — единственный источник, из которого интерфейсы узнают о
+  шкалах. `options` (список `{value, label}`) есть у шкал, где цифра сама по
+  себе непонятна: у `admissibility` это «Нет»/«Да», диапазон 1..2. Зашивать
+  диапазоны в JS нельзя — они принадлежат шкале.
+- 🔒 `GET /api/remarks/{docId}/{pageKey}/{remarkId}/ratings` (чтение) →
+  `{summary: {scale: {scale, count, average, mine, myNote}}, items: [...]}`
+- 🔒 `PUT .../ratings/{scale}` `{value, note?}` → `{rating, summary}`.
+  `value` проверяется по границам своей шкалы (400 вне диапазона);
+  `note` ≤ 500 символов. Одна оценка на (замечание, шкала, участник):
+  повторная перезаписывает прежнюю, журнала изменения оценок нет.
+- 🔒 `DELETE .../ratings/{scale}` → `{summary}` (404, если оценки не было)
+- 🔒 `GET .../notes` (чтение) → `{items, open}`;
+  🔒 `POST .../notes` `{body, parentId?}` → `{note}` (ответ ровно в один уровень)
+- 🔒 `PATCH /api/notes/{noteId}` `{body}` либо `{resolved}` → `{note}`.
+  Править тело может автор или админ, закрыть тред — любой редактор.
+- 🔒 `DELETE /api/notes/{noteId}` → мягкое удаление: строка остаётся ради
+  связности треда, тело затирается.
+- 🔒 `GET .../timeline?limit=100` (чтение) → `{items}` — ревизии, оценки
+  участников, ответы опроса и комментарии одним списком, новые сверху. У
+  элемента `kind ∈ {revision, rating, note}`; у оценок `source ∈
+  {editor, survey}` — голос участника и голос с улицы не смешиваются.
+
+Опрос (`/survey/`) — оценка замечаний людьми вне закрытого круга. Респондент
+опознаётся заголовком **`X-Survey-Token`**, а не кукой: кука потребовала бы
+CSRF, а токен, недоступный чужому сайту, снимает вопрос. Модель субъекта —
+`docs/anonymity-model.md`, раздел «Анонимные респонденты опроса».
+- `POST /api/survey/session` `{pseudonym}` → `{id, pseudonym, author, token,
+  createdAt, scales}`. **Единственный маршрут, заводящий субъекта без
+  приглашения.** Псевдоним: 2..32 символа, без `:` (иначе 400) — подпись
+  `anonymous:<псевдоним>` собирается на чтении и подделке не поддаётся.
+  Респондент не заводится в `users`.
+- `GET /api/survey/batch?limit=10` (токен) → `{items: [{docId, pageNum,
+  remarkId}], remaining, author, scales}` — случайные замечания из пула,
+  которых респондент ещё не оценивал (не больше 50). Отдаются одни адреса:
+  текст опросник берёт с читательской страницы (`?only=<id>`).
+- `PUT /api/survey/ratings` `{docId, pageKey, remarkId, interest?, importance?,
+  admissibility?}` (токен) → `{saved, docId, pageNum, remarkId}`. Все шкалы
+  одним вызовом; пустой ответ — 400; замечание вне пула — 403.
+- ⛔ `GET /api/survey/pool?docId&limit&offset` → `{items, total, limit, offset}`
+  (с текстом замечания и числом полученных ответов)
+- ⛔🔒 `POST /api/survey/pool` `{docId, pageKey, remarkId}` → `{item}`
+  (повтор — не ошибка)
+- ⛔🔒 `DELETE /api/survey/pool/{docId}/{pageKey}/{remarkId}` → `{removed}`.
+  Ответы при этом остаются: снять вопрос с раздачи и стереть ответы — разные
+  действия.
+- ⛔ `GET /api/survey/results?docId&limit&offset` → `{items, total, limit,
+  offset}`; у элемента `interest`/`importance` — `{count, average}`,
+  `admissibility` — `{yes, no}`. Расклад, а не среднее: среднее по «да или
+  нет» ничего не сообщает.
+
+`/api/survey/session` и `/api/survey/ratings` живут в жёстком ведре
+рейт-лимита (`AUTH_PATHS`) — это единственные анонимные пути записи.
 
 Администрирование (приглашения, публикация):
 - ⛔ `GET /api/admin/invites` → `{"invites": [{codeHash, role, note, createdBy,

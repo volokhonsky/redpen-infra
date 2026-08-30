@@ -105,7 +105,10 @@ app.add_middleware(
     allow_origins=allow_origins,
     allow_credentials=allow_credentials,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "X-CSRF-Token"],
+    # X-Survey-Token — опознание респондента опроса: он ходит с другого
+    # источника (сайт), а токен вместо куки выбран как раз затем, чтобы
+    # не заводить CSRF там, где её можно не заводить.
+    allow_headers=["Content-Type", "X-CSRF-Token", "X-Survey-Token"],
 )
 
 # Setup Jinja2 templates
@@ -383,7 +386,10 @@ async def get_logs_json(lines: int = 100, user: Dict[str, str] = Depends(require
 
 #: Дорогие ручки, открытые всем: проверка Google-токена ходит в сеть и считает
 #: подпись, вход по токену сравнивает секреты. Им отдельный, жёсткий предел.
-AUTH_PATHS = ("/api/auth/google", "/api/auth/login")
+#: Опросные маршруты здесь же, но по другой причине: это единственные
+#: анонимные пути записи в системе, и общий предел для них слишком щедр.
+AUTH_PATHS = ("/api/auth/google", "/api/auth/login",
+              "/api/survey/session", "/api/survey/ratings")
 
 _rate_general = ratelimit.TokenBucket(config.RATE_LIMIT_PER_MINUTE, config.RATE_LIMIT_BURST)
 _rate_auth = ratelimit.TokenBucket(config.RATE_LIMIT_AUTH_PER_MINUTE, config.RATE_LIMIT_AUTH_BURST)
@@ -1296,7 +1302,7 @@ async def put_remark_rating(docId: str, pageKey: str, remarkId: str, scale: str,
     body = await _patch_body(request)
     try:
         scale_name = rating_scales.normalize_scale(scale)
-        value = rating_scales.normalize_value(body.get("value"))
+        value = rating_scales.normalize_value(scale_name, body.get("value"))
         note = rating_scales.normalize_note(body.get("note"))
     except rating_scales.ScaleError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1408,12 +1414,13 @@ async def delete_note(noteId: int, user: Dict[str, Any] = Depends(require_editor
 async def get_remark_timeline(docId: str, pageKey: str, remarkId: str,
                               limit: int = 100,
                               user: Dict[str, Any] = Depends(require_editor_read)):
-    """Всё, что происходило с замечанием, одним списком: ревизии, оценки,
-    комментарии. Новые сверху.
+    """Всё, что происходило с замечанием, одним списком: ревизии, оценки
+    участников, ответы опроса, комментарии. Новые сверху.
 
-    Слияние здесь, а не в БД: три источника живут в трёх таблицах намеренно
-    (ревизия — снимок состояния, оценка и комментарий состояния не меняют), и
-    сводить их в одну таблицу ради удобства чтения значило бы сломать откат.
+    Слияние здесь, а не в БД: источники живут в разных таблицах намеренно
+    (ревизия — снимок состояния, оценка и комментарий состояния не меняют,
+    а ответ опроса приходит от человека вне круга и в `users` не заводится),
+    и сводить их в одну таблицу ради удобства чтения значило бы сломать откат.
     """
     page_num_str = _remark_target(docId, pageKey, remarkId)
     items: List[Dict[str, Any]] = []
@@ -1437,6 +1444,7 @@ async def get_remark_timeline(docId: str, pageKey: str, remarkId: str,
     for rating in db.list_ratings(docId, page_num_str, remarkId):
         items.append({
             "kind": "rating",
+            "source": "editor",
             "id": rating["id"],
             "actions": ["rate"],
             "actionLabel": remark_actions.LABELS["rate"],
@@ -1448,6 +1456,26 @@ async def get_remark_timeline(docId: str, pageKey: str, remarkId: str,
             "scale": rating["scale"],
             "value": rating["value"],
             "note": rating["note"],
+        })
+
+    for answer in db.list_survey_ratings(docId, page_num_str, remarkId):
+        items.append({
+            "kind": "rating",
+            # Тот же вид события, но другой источник: оценку участника и ответ
+            # с улицы нельзя складывать в одно среднее, и в ленте они тоже
+            # должны различаться на вид.
+            "source": "survey",
+            "id": answer["id"],
+            "actions": ["rate"],
+            "actionLabel": remark_actions.LABELS["rate"],
+            # Респондента нет в `users`, и actorId ему взять неоткуда:
+            # подписью служит `anonymous:<псевдоним>`.
+            "actorId": None,
+            "actorName": answer["author"],
+            "createdAt": answer["updatedAt"],
+            "scale": answer["scale"],
+            "value": answer["value"],
+            "note": None,
         })
 
     for note in db.list_notes(docId, page_num_str, remarkId):
@@ -1465,9 +1493,151 @@ async def get_remark_timeline(docId: str, pageKey: str, remarkId: str,
         })
 
     # Метки времени огрублены до дня (docs/anonymity-model.md), поэтому внутри
-    # одного дня порядок задаёт id — он же порядок записи.
-    items.sort(key=lambda item: (item["createdAt"], item["id"]), reverse=True)
+    # одного дня порядок задаёт id — он же порядок записи. id считается в
+    # пределах своей таблицы, поэтому вид события входит в ключ: иначе порядок
+    # зависел бы от того, в какой таблице счётчик убежал дальше.
+    items.sort(key=lambda item: (item["createdAt"], item["kind"], item["id"]),
+               reverse=True)
     return {"items": items[:limit]}
+
+
+# ===== ОПРОС =====
+#
+# Опрос спрашивает у людей вне закрытого круга то, на что круг ответить не
+# может: интересен ли факт и можно ли предъявлять замечание в такой
+# формулировке. Как и оценки участников, ни один маршрут ниже не вызывает
+# publish_page — в статику опрос не попадает никогда.
+#
+# Респондент опознаётся токеном в заголовке `X-Survey-Token`, а не кукой.
+# Кука потребовала бы CSRF-защиты; токен, недоступный чужому сайту, снимает
+# вопрос целиком. В базе от токена остаётся только хеш.
+# Модель субъекта — docs/anonymity-model.md, «Анонимные респонденты опроса».
+
+
+async def require_respondent(request: Request) -> Dict[str, Any]:
+    """FastAPI dependency: респондент опроса по токену или 401."""
+    respondent = db.get_respondent_by_token(request.headers.get("X-Survey-Token"))
+    if not respondent:
+        raise HTTPException(status_code=401, detail="survey session required")
+    return respondent
+
+
+@app.post("/api/survey/session")
+async def create_survey_session(body: Dict[str, Any]):
+    """Начать опрос: назваться псевдонимом и получить токен сессии.
+
+    Единственный маршрут в системе, который заводит субъекта без приглашения.
+    Ничего, кроме псевдонима и хеша токена, при этом не записывается.
+    """
+    try:
+        respondent = db.create_respondent(body.get("pseudonym"))
+    except db.SurveyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info("survey session created respondent_id=%s", respondent["id"])
+    # Шкалы отдаются здесь же. Заводить для них анонимный маршрут не нужно, а
+    # переписывать словарь шкал в опроснике — тем более: у описания шкал ровно
+    # один источник (rating_scales), и он должен остаться единственным.
+    return dict(respondent, scales=rating_scales.describe())
+
+
+@app.get("/api/survey/batch")
+async def get_survey_batch(limit: int = db.SURVEY_BATCH_SIZE,
+                           respondent: Dict[str, Any] = Depends(require_respondent)):
+    """Очередная порция замечаний: случайные из пула, которых этот респондент
+    ещё не оценивал.
+
+    Отдаются одни адреса. Текст замечания опросник берёт с обычной читательской
+    страницы (`?only=<id>`) — второго пути к тексту, да ещё анонимного, заводить
+    не нужно.
+    """
+    limit = max(1, min(limit, db.MAX_SURVEY_BATCH_SIZE))
+    batch = db.pool_pick(respondent["id"], limit=limit)
+    # Шкалы прилагаются и здесь: вкладку могли перезагрузить посреди опроса,
+    # и тогда ответа `/session` со словарём шкал у опросника уже нет.
+    return {"items": batch["items"], "remaining": batch["remaining"],
+            "author": respondent["author"], "scales": rating_scales.describe()}
+
+
+@app.put("/api/survey/ratings")
+async def put_survey_rating(body: Dict[str, Any],
+                            respondent: Dict[str, Any] = Depends(require_respondent)):
+    """Ответы по одному замечанию — все шкалы одним вызовом.
+
+    Карточка опроса оценивается целиком, и разбивать её на три запроса значило
+    бы допускать наполовину заполненные ответы там, где половины не бывает.
+    Незаполненную шкалу можно не присылать; пустой ответ — 400.
+    """
+    doc_id = str(body.get("docId") or "")
+    page_key = str(body.get("pageKey") or body.get("pageNum") or "")
+    remark_id = str(body.get("remarkId") or "")
+    page_num_str = _remark_target(doc_id, page_key, remark_id)
+    if not db.pool_contains(doc_id, page_num_str, remark_id):
+        # Отвечать можно только на то, что вынесено на оценку: иначе опрос
+        # превращается в анонимную запись по любому адресу.
+        raise HTTPException(status_code=403, detail="remark is not in the rating pool")
+
+    values: Dict[str, int] = {}
+    for scale in rating_scales.names():
+        if body.get(scale) is None:
+            continue
+        try:
+            values[scale] = rating_scales.normalize_value(scale, body.get(scale))
+        except rating_scales.ScaleError as exc:
+            raise HTTPException(status_code=400, detail=f"{scale}: {exc}")
+    if not values:
+        raise HTTPException(status_code=400, detail="no answers given")
+
+    for scale, value in values.items():
+        db.set_survey_rating(respondent["id"], doc_id, page_num_str, remark_id,
+                             scale, value)
+    return {"saved": sorted(values), "docId": doc_id, "pageNum": page_num_str,
+            "remarkId": remark_id}
+
+
+@app.get("/api/survey/pool")
+async def get_survey_pool(docId: Optional[str] = None, limit: int = 200, offset: int = 0,
+                          user: Dict[str, Any] = Depends(require_admin)):
+    if docId is not None and not _validate_doc_id(docId):
+        raise HTTPException(status_code=400, detail="invalid docId")
+    return db.pool_list(doc_id=docId, limit=max(1, min(limit, 500)), offset=max(0, offset))
+
+
+@app.post("/api/survey/pool")
+async def add_to_survey_pool(body: Dict[str, Any],
+                             user: Dict[str, Any] = Depends(require_admin_csrf)):
+    """Вынести замечание на оценку. Повтор — не ошибка."""
+    page_num_str = _remark_target(str(body.get("docId") or ""),
+                                  str(body.get("pageKey") or body.get("pageNum") or ""),
+                                  str(body.get("remarkId") or ""))
+    item = db.pool_add(str(body.get("docId")), page_num_str,
+                       str(body.get("remarkId")), added_by=user["userId"])
+    return {"item": item}
+
+
+@app.delete("/api/survey/pool/{docId}/{pageKey}/{remarkId}")
+async def remove_from_survey_pool(docId: str, pageKey: str, remarkId: str,
+                                  user: Dict[str, Any] = Depends(require_admin_csrf)):
+    """Убрать из раздачи. Уже полученные ответы остаются: снять вопрос и
+    стереть ответы — разные действия, и второе здесь не подразумевается."""
+    if not _validate_doc_id(docId):
+        raise HTTPException(status_code=400, detail="invalid docId")
+    page_num_str = _validate_page_key(pageKey)
+    if page_num_str is None:
+        raise HTTPException(status_code=400, detail="invalid pageKey")
+    if not db.pool_remove(docId, page_num_str, remarkId):
+        raise HTTPException(status_code=404, detail="not in the rating pool")
+    return {"removed": True}
+
+
+@app.get("/api/survey/results")
+async def get_survey_results(docId: Optional[str] = None, limit: int = 100, offset: int = 0,
+                             user: Dict[str, Any] = Depends(require_admin)):
+    """Таблица результатов. Считается по ответам, а не по пулу: замечание могли
+    снять с раздачи, но полученные ответы от этого не исчезли."""
+    if docId is not None and not _validate_doc_id(docId):
+        raise HTTPException(status_code=400, detail="invalid docId")
+    return db.survey_results(doc_id=docId, limit=max(1, min(limit, 200)),
+                             offset=max(0, offset))
 
 
 @app.get("/api/sections")

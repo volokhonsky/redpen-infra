@@ -37,13 +37,15 @@ _RE_SPA = re.compile(r"^/(?P<doc>[A-Za-z0-9_-]+/)?document_index\.html$")
 _RE_ASSET = re.compile(r"\.(js|css|svg|ico|woff2?|map)$", re.I)
 _RE_META = re.compile(r"^/(robots\.txt|sitemap[^/]*\.xml|favicon\.[a-z]+)$")
 
-#: Пути редактора и кабинета. Их запросы не попадают ни в Matomo, ни в наши
-#: счётчики: там следы участников закрытого круга, а не читателей, и связывать
-#: их с адресом прямо запрещает docs/anonymity-model.md.
-_RE_PRIVATE = re.compile(r"^/(app|cabinet)(/|$)|^/\.hooks/|^/api/")
+#: Пути редактора, кабинета и опросника. Их запросы не попадают ни в Matomo,
+#: ни в наши счётчики: там следы участников закрытого круга, а не читателей, и
+#: связывать их с адресом прямо запрещает docs/anonymity-model.md. Опросник
+#: (2026-08-31) — по другой причине: он тоже грузит читательскую страницу во
+#: фрейм, и без исключения оценка замечания считалась бы за чтение.
+_RE_PRIVATE = re.compile(r"^/(app|cabinet|survey)(/|$)|^/\.hooks/|^/api/")
 
 #: То же самое, но со стороны ссылающейся страницы.
-_RE_PRIVATE_REFERER = re.compile(r"^/(app|cabinet)(/|$)")
+_RE_PRIVATE_REFERER = re.compile(r"^/(app|cabinet|survey)(/|$)")
 
 
 def private_referer(referer: str, own_hosts: Tuple[str, ...] = ()) -> bool:

@@ -235,6 +235,59 @@ def init_db() -> None:
               ON remark_notes(doc_id, page_num, remark_id, id);
             CREATE INDEX IF NOT EXISTS idx_remark_notes_author
               ON remark_notes(author_id, id);
+
+            -- ===== ОПРОС: ПУЛ, РЕСПОНДЕНТЫ, ОТВЕТЫ =====
+            --
+            -- Опрос (`/survey/`) спрашивает у людей вне закрытого круга то, на
+            -- что круг ответить не может: интересен ли факт и можно ли
+            -- предъявлять замечание в такой формулировке. К статике всё это
+            -- отношения не имеет — как и оценки участников, наружу не выходит.
+
+            -- Что вынесено на оценку. Отдельная таблица, а не тег: теги
+            -- рендерятся в redpen-page-data и в читательские фильтры, и
+            -- служебная метка уехала бы к читателю.
+            CREATE TABLE IF NOT EXISTS rating_pool (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              doc_id TEXT NOT NULL,
+              page_num TEXT NOT NULL,
+              remark_id TEXT NOT NULL,
+              added_by INTEGER REFERENCES users(id),
+              added_at TEXT NOT NULL,
+              UNIQUE(doc_id, page_num, remark_id)
+            );
+
+            -- Респондент опроса. В `users` он намеренно не заводится: users --
+            -- это круг участников, вход в него по приглашению, и пополнять его
+            -- с улицы значило бы стереть границу, ради которой приглашения
+            -- заведены (docs/anonymity-model.md, «Анонимные респонденты
+            -- опроса»). Отсюда и отдельная таблица ответов ниже.
+            --
+            -- Псевдоним хранится как введён: префикс `anonymous:` приписывается
+            -- на чтении (survey_author) и потому не подделывается вводом.
+            -- От токена сессии в базе остаётся только хеш -- как от кода
+            -- приглашения.
+            CREATE TABLE IF NOT EXISTS survey_respondents (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              pseudonym TEXT NOT NULL,
+              token_hash TEXT NOT NULL UNIQUE,
+              created_at TEXT NOT NULL,
+              last_seen_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS survey_ratings (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              respondent_id INTEGER NOT NULL REFERENCES survey_respondents(id),
+              doc_id TEXT NOT NULL,
+              page_num TEXT NOT NULL,
+              remark_id TEXT NOT NULL,
+              scale TEXT NOT NULL,
+              value INTEGER NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              UNIQUE(respondent_id, doc_id, page_num, remark_id, scale)
+            );
+            CREATE INDEX IF NOT EXISTS idx_survey_ratings_target
+              ON survey_ratings(doc_id, page_num, remark_id);
             """
         )
         _migrate_schema(_conn)
@@ -2201,3 +2254,374 @@ def get_stats() -> Dict[str, Any]:
         "docs": sorted(docs.values(), key=lambda d: d["docId"]),
         "recentActivity": recent_activity,
     }
+
+
+# ===== ОПРОС: ПУЛ, РЕСПОНДЕНТЫ, ОТВЕТЫ =====
+#
+# Опрос спрашивает у людей вне закрытого круга то, на что круг ответить не
+# может: интересен ли факт и можно ли предъявлять замечание в такой
+# формулировке. Всё, что здесь есть, — рабочие данные: в статику не попадает
+# ничего, ревизиями ответы не становятся (как и оценки участников).
+
+#: Подпись респондента. Приписывается на чтении, в базе не хранится — потому
+#: и не подделывается вводом псевдонима (docs/anonymity-model.md).
+SURVEY_AUTHOR_PREFIX = "anonymous:"
+
+#: Псевдоним — подпись, а не имя. Верхняя граница не техническая: длинная
+#: строка на этом месте почти всегда означает, что человек вписал туда что-то
+#: лишнее.
+MIN_PSEUDONYM_LENGTH = 2
+MAX_PSEUDONYM_LENGTH = 32
+
+#: Сколько замечаний выдаётся за один заход опроса.
+SURVEY_BATCH_SIZE = 10
+MAX_SURVEY_BATCH_SIZE = 50
+
+
+class SurveyError(ValueError):
+    """Негодный псевдоним или неизвестный респондент."""
+
+
+def survey_author(pseudonym: str) -> str:
+    return SURVEY_AUTHOR_PREFIX + pseudonym
+
+
+def normalize_pseudonym(raw: Any) -> str:
+    """Псевдоним респондента.
+
+    Двоеточие запрещено намеренно: подпись строится как `anonymous:<псевдоним>`,
+    и без запрета человек мог бы представиться `anonymous:Пётр` и получить
+    подпись, неотличимую от чужой. Управляющие символы убираются по той же
+    причине — подпись должна выглядеть в списке так же, как её ввели.
+    """
+    name = " ".join(str(raw or "").split())
+    if ":" in name:
+        raise SurveyError("pseudonym must not contain ':'")
+    if any(ch < " " or ch == "\x7f" for ch in name):
+        raise SurveyError("pseudonym must not contain control characters")
+    if not MIN_PSEUDONYM_LENGTH <= len(name) <= MAX_PSEUDONYM_LENGTH:
+        raise SurveyError(
+            f"pseudonym must be {MIN_PSEUDONYM_LENGTH}..{MAX_PSEUDONYM_LENGTH} characters"
+        )
+    return name
+
+
+# --- пул ------------------------------------------------------------------
+
+
+def _pool_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    item = {
+        "docId": row["doc_id"],
+        "pageNum": row["page_num"],
+        "remarkId": row["remark_id"],
+        "addedAt": row["added_at"],
+        "addedBy": row["added_by"],
+    }
+    for extra, key in (("text", "text"), ("status", "status"), ("kind", "kind"),
+                       ("answers", "answers")):
+        if extra in row.keys():
+            item[key] = row[extra]
+    return item
+
+
+def pool_add(doc_id: str, page_num: str, remark_id: str,
+             added_by: Optional[int] = None) -> Dict[str, Any]:
+    """Внести замечание в пул. Повтор — не ошибка: «уже там» и «положили» для
+    вызывающего одно и то же."""
+    conn = get_connection()
+    now = _now_iso()
+    with _lock:
+        conn.execute(
+            "INSERT OR IGNORE INTO rating_pool (doc_id, page_num, remark_id, added_by, added_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (doc_id, page_num, remark_id, added_by, now),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM rating_pool WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
+            (doc_id, page_num, remark_id),
+        ).fetchone()
+    return _pool_row_to_dict(row)
+
+
+def pool_remove(doc_id: str, page_num: str, remark_id: str) -> bool:
+    """Убрать из пула. False — его там и не было.
+
+    Уже поставленные ответы не трогаются: убрать вопрос из раздачи и стереть
+    полученные ответы — разные действия.
+    """
+    conn = get_connection()
+    with _lock:
+        cur = conn.execute(
+            "DELETE FROM rating_pool WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
+            (doc_id, page_num, remark_id),
+        )
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def pool_contains(doc_id: str, page_num: str, remark_id: str) -> bool:
+    conn = get_connection()
+    with _lock:
+        row = conn.execute(
+            "SELECT 1 FROM rating_pool WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
+            (doc_id, page_num, remark_id),
+        ).fetchone()
+    return row is not None
+
+
+def pool_list(doc_id: Optional[str] = None, limit: int = 200,
+              offset: int = 0) -> Dict[str, Any]:
+    """Пул с текстом замечания и числом полученных ответов — это список
+    вопросов, и по одним идентификаторам он нечитаем."""
+    conn = get_connection()
+    where = "WHERE p.doc_id = ?" if doc_id else ""
+    params: List[Any] = [doc_id] if doc_id else []
+    with _lock:
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM rating_pool p {where}", tuple(params)
+        ).fetchone()[0]
+        rows = conn.execute(
+            f"""
+            SELECT p.*, a.text AS text, a.status AS status, a.kind AS kind,
+                   (SELECT COUNT(DISTINCT s.respondent_id) FROM survey_ratings s
+                     WHERE s.doc_id = p.doc_id AND s.page_num = p.page_num
+                       AND s.remark_id = p.remark_id) AS answers
+            FROM rating_pool p
+            LEFT JOIN remarks a
+              ON a.doc_id = p.doc_id AND a.page_num = p.page_num
+             AND a.remark_id = p.remark_id
+            {where}
+            ORDER BY p.doc_id, p.page_num, p.remark_id
+            LIMIT ? OFFSET ?
+            """,
+            tuple(params) + (limit, offset),
+        ).fetchall()
+    return {
+        "items": [_pool_row_to_dict(row) for row in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def pool_pick(respondent_id: int, limit: int = SURVEY_BATCH_SIZE) -> Dict[str, Any]:
+    """Случайные замечания из пула, которых респондент ещё не оценивал.
+
+    Случайность берётся у SQLite (`ORDER BY RANDOM()`): пул — сотни строк, а не
+    миллионы, и выбирать иначе значило бы вычитывать его целиком ради десяти
+    элементов. Выдаются только идентификаторы: текст замечания опросник берёт
+    с обычной читательской страницы (`?only=`), и второго пути к тексту
+    заводить не нужно.
+    """
+    conn = get_connection()
+    with _lock:
+        remaining = conn.execute(
+            """
+            SELECT COUNT(*) FROM rating_pool p
+            WHERE NOT EXISTS (
+              SELECT 1 FROM survey_ratings s
+              WHERE s.respondent_id = ? AND s.doc_id = p.doc_id
+                AND s.page_num = p.page_num AND s.remark_id = p.remark_id
+            )
+            """,
+            (respondent_id,),
+        ).fetchone()[0]
+        rows = conn.execute(
+            """
+            SELECT p.doc_id, p.page_num, p.remark_id FROM rating_pool p
+            WHERE NOT EXISTS (
+              SELECT 1 FROM survey_ratings s
+              WHERE s.respondent_id = ? AND s.doc_id = p.doc_id
+                AND s.page_num = p.page_num AND s.remark_id = p.remark_id
+            )
+            ORDER BY RANDOM()
+            LIMIT ?
+            """,
+            (respondent_id, limit),
+        ).fetchall()
+    return {
+        "items": [{"docId": r["doc_id"], "pageNum": r["page_num"],
+                   "remarkId": r["remark_id"]} for r in rows],
+        "remaining": remaining,
+    }
+
+
+# --- респонденты ----------------------------------------------------------
+
+
+def _hash_survey_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def create_respondent(pseudonym: str) -> Dict[str, Any]:
+    """Завести респондента и выдать токен сессии.
+
+    Совпадение псевдонимов ничего не значит и строку не переиспользует:
+    псевдоним — подпись, а не личность, и два человека под одним именем не
+    должны видеть и перезаписывать ответы друг друга.
+    """
+    name = normalize_pseudonym(pseudonym)
+    token = secrets.token_hex(32)
+    conn = get_connection()
+    now = _now_iso()
+    with _lock:
+        cur = conn.execute(
+            "INSERT INTO survey_respondents (pseudonym, token_hash, created_at, last_seen_at) "
+            "VALUES (?, ?, ?, ?)",
+            (name, _hash_survey_token(token), now, now),
+        )
+        conn.commit()
+    return {
+        "id": cur.lastrowid,
+        "pseudonym": name,
+        "author": survey_author(name),
+        "token": token,
+        "createdAt": now,
+    }
+
+
+def get_respondent_by_token(token: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Респондент по токену. Отметка last_seen_at обновляется здесь же —
+    другого места, где видно, что человек ещё отвечает, нет."""
+    if not token:
+        return None
+    conn = get_connection()
+    now = _now_iso()
+    with _lock:
+        row = conn.execute(
+            "SELECT * FROM survey_respondents WHERE token_hash = ?",
+            (_hash_survey_token(token),),
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute("UPDATE survey_respondents SET last_seen_at = ? WHERE id = ?",
+                     (now, row["id"]))
+        conn.commit()
+    return {
+        "id": row["id"],
+        "pseudonym": row["pseudonym"],
+        "author": survey_author(row["pseudonym"]),
+        "createdAt": row["created_at"],
+    }
+
+
+# --- ответы ---------------------------------------------------------------
+
+
+def set_survey_rating(respondent_id: int, doc_id: str, page_num: str, remark_id: str,
+                      scale: str, value: int) -> None:
+    """Ответ респондента по одной шкале. Значения нормализует вызывающий
+    (rating_scales), сюда приходят уже проверенные.
+
+    Повтор перезаписывает: человек мог вернуться и передумать, и второй ответ
+    того же человека — это исправление, а не второй голос.
+    """
+    conn = get_connection()
+    now = _now_iso()
+    with _lock:
+        conn.execute(
+            """
+            INSERT INTO survey_ratings
+              (respondent_id, doc_id, page_num, remark_id, scale, value, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(respondent_id, doc_id, page_num, remark_id, scale) DO UPDATE SET
+              value = excluded.value,
+              updated_at = excluded.updated_at
+            """,
+            (respondent_id, doc_id, page_num, remark_id, scale, value, now, now),
+        )
+        conn.commit()
+
+
+def list_survey_ratings(doc_id: str, page_num: str, remark_id: str) -> List[Dict[str, Any]]:
+    """Ответы по одному замечанию — для ленты (timeline). Подпись собирается
+    на чтении, префикс в базе не лежит."""
+    conn = get_connection()
+    with _lock:
+        rows = conn.execute(
+            """
+            SELECT s.*, r.pseudonym AS pseudonym
+            FROM survey_ratings s
+            LEFT JOIN survey_respondents r ON r.id = s.respondent_id
+            WHERE s.doc_id = ? AND s.page_num = ? AND s.remark_id = ?
+            ORDER BY s.id
+            """,
+            (doc_id, page_num, remark_id),
+        ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "respondentId": row["respondent_id"],
+            "author": survey_author(row["pseudonym"]) if row["pseudonym"] else None,
+            "scale": row["scale"],
+            "value": row["value"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def survey_results(doc_id: Optional[str] = None, limit: int = 100,
+                   offset: int = 0) -> Dict[str, Any]:
+    """Сводка ответов по замечаниям — таблица результатов опроса.
+
+    Считается по `survey_ratings`, а не по пулу: замечание могли убрать из
+    раздачи, но полученные ответы от этого никуда не делись и в отчёте остаются.
+    Шкалы меры сводятся средним, «можно ли публиковать» — двумя счётчиками:
+    среднее по вопросу «да или нет» ничего не сообщает.
+    """
+    conn = get_connection()
+    where = "WHERE s.doc_id = ?" if doc_id else ""
+    params: List[Any] = [doc_id] if doc_id else []
+    with _lock:
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM (SELECT 1 FROM survey_ratings s {where} "
+            f"GROUP BY s.doc_id, s.page_num, s.remark_id)",
+            tuple(params),
+        ).fetchone()[0]
+        rows = conn.execute(
+            f"""
+            SELECT s.doc_id, s.page_num, s.remark_id,
+                   COUNT(DISTINCT s.respondent_id) AS raters,
+                   SUM(CASE WHEN s.scale = 'interest' THEN 1 ELSE 0 END) AS interest_n,
+                   AVG(CASE WHEN s.scale = 'interest' THEN s.value END) AS interest_avg,
+                   SUM(CASE WHEN s.scale = 'importance' THEN 1 ELSE 0 END) AS importance_n,
+                   AVG(CASE WHEN s.scale = 'importance' THEN s.value END) AS importance_avg,
+                   SUM(CASE WHEN s.scale = 'admissibility' AND s.value = 2 THEN 1 ELSE 0 END) AS yes_n,
+                   SUM(CASE WHEN s.scale = 'admissibility' AND s.value = 1 THEN 1 ELSE 0 END) AS no_n,
+                   MAX(s.updated_at) AS updated_at,
+                   a.text AS text, a.status AS status
+            FROM survey_ratings s
+            LEFT JOIN remarks a
+              ON a.doc_id = s.doc_id AND a.page_num = s.page_num
+             AND a.remark_id = s.remark_id
+            {where}
+            GROUP BY s.doc_id, s.page_num, s.remark_id
+            ORDER BY s.doc_id, s.page_num, s.remark_id
+            LIMIT ? OFFSET ?
+            """,
+            tuple(params) + (limit, offset),
+        ).fetchall()
+    items = []
+    for row in rows:
+        items.append({
+            "docId": row["doc_id"],
+            "pageNum": row["page_num"],
+            "remarkId": row["remark_id"],
+            "text": row["text"],
+            "status": row["status"],
+            "raters": row["raters"],
+            "updatedAt": row["updated_at"],
+            "interest": {
+                "count": row["interest_n"],
+                "average": round(row["interest_avg"], 1) if row["interest_avg"] is not None else None,
+            },
+            "importance": {
+                "count": row["importance_n"],
+                "average": round(row["importance_avg"], 1) if row["importance_avg"] is not None else None,
+            },
+            "admissibility": {"yes": row["yes_n"], "no": row["no_n"]},
+        })
+    return {"items": items, "total": total, "limit": limit, "offset": offset}

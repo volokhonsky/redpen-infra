@@ -61,13 +61,28 @@ def test_scales_are_served_to_the_ui(monkeypatch):
     body = editor.get("/api/rating-scales").json()
     names = [s["name"] for s in body["scales"]]
     assert names == ["interest", "importance", "admissibility"]
-    assert all(s["min"] == 1 and s["max"] == 5 for s in body["scales"])
+    by_name = {s["name"]: s for s in body["scales"]}
+    assert by_name["interest"]["min"] == 1 and by_name["interest"]["max"] == 5
+    assert by_name["interest"]["options"] is None
+    # «Допустимость» — вопрос о решении, а не о мере: два подписанных варианта.
+    assert by_name["admissibility"]["min"] == 1
+    assert by_name["admissibility"]["max"] == 2
+    assert [o["label"] for o in by_name["admissibility"]["options"]] == ["Нет", "Да"]
 
 
 def test_value_validation_rejects_booleans():
     """bool — подкласс int, и True прошёл бы как 1: оценка «истина» бессмысленна."""
     with pytest.raises(rating_scales.ScaleError):
-        rating_scales.normalize_value(True)
+        rating_scales.normalize_value("interest", True)
+
+
+def test_binary_scale_has_its_own_bounds():
+    """Диапазон принадлежит шкале, а не модулю: 3 по «допустимости» — ошибка,
+    хотя для «интересности» это законное значение."""
+    assert rating_scales.normalize_value("admissibility", 2) == 2
+    assert rating_scales.normalize_value("interest", 3) == 3
+    with pytest.raises(rating_scales.ScaleError):
+        rating_scales.normalize_value("admissibility", 3)
 
 
 # --- постановка оценки -----------------------------------------------------
@@ -112,11 +127,11 @@ def test_ratings_of_different_people_average(monkeypatch):
 def test_rating_note_is_optional_and_bounded(monkeypatch):
     editor = _editor(monkeypatch)
     _create(editor)
-    r = editor.put(_url("admissibility"), json={"value": 3, "note": "нужен источник"})
+    r = editor.put(_url("admissibility"), json={"value": 1, "note": "нужен источник"})
     assert r.status_code == 200
     assert r.json()["rating"]["note"] == "нужен источник"
     assert editor.put(_url("admissibility"),
-                      json={"value": 3, "note": "x" * 600}).status_code == 400
+                      json={"value": 1, "note": "x" * 600}).status_code == 400
 
 
 @pytest.mark.parametrize("value", [0, 6, -1, "три", None, 2.5])
@@ -124,6 +139,13 @@ def test_value_out_of_range_is_refused(monkeypatch, value):
     editor = _editor(monkeypatch)
     _create(editor)
     assert editor.put(_url("interest"), json={"value": value}).status_code == 400
+
+
+@pytest.mark.parametrize("value", [0, 3, 5])
+def test_binary_scale_refuses_middle_values_over_http(monkeypatch, value):
+    editor = _editor(monkeypatch)
+    _create(editor)
+    assert editor.put(_url("admissibility"), json={"value": value}).status_code == 400
 
 
 def test_unknown_scale_is_refused(monkeypatch):

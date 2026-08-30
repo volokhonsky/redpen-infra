@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Мединский.нет — оценка замечаний</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <meta name="robots" content="noindex,nofollow" />
+  <link rel="stylesheet" href="../css/main.css">
+  <link rel="stylesheet" href="survey.css">
+  <link rel="icon" href="../favicon.svg">
+</head>
+<body>
+  <header>
+    <a href="../index.html" class="sv-home-link" title="К разбору учебников">⌂</a>
+    Оценка замечаний
+  </header>
+
+  <div id="sv-status" class="sv-status" hidden></div>
+
+  <!-- 1. Псевдоним -->
+  <section id="sv-screen-name" class="sv-card">
+    <h2>Как вас подписать</h2>
+    <p>
+      Замечания к учебнику пишет небольшая группа людей, и она успевает
+      привыкнуть к собственным формулировкам. Нам нужен взгляд со стороны:
+      ваш.
+    </p>
+    <p>
+      Придумайте <b>подпись</b> — она попадёт в рабочий журнал рядом с вашими
+      ответами. Это не имя и не логин: входить под ней потом никуда не нужно.
+      <b>Не вписывайте сюда настоящее имя, почту или что-то ещё, по чему вас
+      можно узнать.</b> Мы не спрашиваем, кто вы, и не хотим этого знать.
+    </p>
+    <form id="sv-name-form" class="sv-name-form">
+      <label for="sv-name-input">Подпись</label>
+      <input id="sv-name-input" type="text" maxlength="32" autocomplete="off"
+             spellcheck="false" placeholder="например, Прохожий" required />
+      <p class="sv-hint">Вы будете подписаны как <code id="sv-name-preview">anonymous:…</code></p>
+      <button type="submit" class="sv-btn">Дальше</button>
+    </form>
+    <div id="sv-name-error" class="sv-error"></div>
+  </section>
+
+  <!-- 2. Инструкция -->
+  <section id="sv-screen-intro" class="sv-card" hidden>
+    <h2>Что нужно сделать</h2>
+    <p>
+      Мы покажем до десяти замечаний к страницам школьного учебника
+      истории — по одному. Замечание выглядит как кружок на скане страницы и
+      текст рядом с ним; прочитайте и то и другое.
+    </p>
+    <p>По каждому ответьте на три вопроса:</p>
+    <ol id="sv-intro-scales" class="sv-intro-scales"></ol>
+    <p class="sv-hint">
+      Правильных ответов нет — нужно ваше впечатление. Если по какому-то
+      вопросу ответить не получается, оставьте его пустым и идите дальше.
+      Вернуться к уже отвеченному нельзя, но ошибиться здесь не страшно.
+    </p>
+    <button type="button" id="sv-intro-start" class="sv-btn">Начать</button>
+  </section>
+
+  <!-- 3. Оценка -->
+  <section id="sv-screen-card" class="sv-card sv-card--wide" hidden>
+    <div class="sv-progress">
+      <span id="sv-progress-text"></span>
+      <a id="sv-open-link" href="#" target="_blank" rel="noopener">открыть страницу целиком</a>
+    </div>
+    <div class="sv-preview-fit" id="sv-preview-fit">
+      <!-- Referer нужен: по нему аналитика отличает показ во фрейме опроса от
+           настоящего чтения страницы (scripts/analytics.py). -->
+      <iframe id="sv-preview" class="sv-preview-frame"
+              title="Замечание на странице учебника"></iframe>
+    </div>
+    <div id="sv-scales" class="sv-scales"></div>
+    <div class="sv-actions">
+      <button type="button" id="sv-next" class="sv-btn">Ответить и дальше</button>
+      <button type="button" id="sv-skip" class="sv-btn sv-btn--quiet">Пропустить</button>
+    </div>
+  </section>
+
+  <!-- 4. Финал -->
+  <section id="sv-screen-done" class="sv-card" hidden>
+    <h2>Спасибо</h2>
+    <p id="sv-done-text"></p>
+    <button type="button" id="sv-more" class="sv-btn" hidden>Оценить ещё десять</button>
+    <p class="sv-hint"><a href="../index.html">Вернуться к разбору учебников</a></p>
+  </section>
+
+  <script>
+    // На localhost опросник говорит с локальным API, а не с продом: иначе
+    // локальный стенд молча пишет в боевые данные. Порт задаётся ?api=<порт>
+    // либо берётся по умолчанию (8080).
+    (function(){
+      if (window.REDPEN_API_BASE) return;
+      var host = window.location.hostname;
+      if (host === 'localhost' || host === '127.0.0.1') {
+        var port = new URLSearchParams(window.location.search).get('api') || '8080';
+        window.REDPEN_API_BASE = 'http://' + host + ':' + port;
+        return;
+      }
+      window.REDPEN_API_BASE = 'https://api.medinsky.net';
+    })();
+  </script>
+  <script src="../js/redpen-preview.js"></script>
+  <script src="survey.js"></script>
+</body>
+</html>

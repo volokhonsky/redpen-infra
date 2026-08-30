@@ -8,7 +8,8 @@
     manifestCache: {}, // docId -> {fileKey: label} | null (null = no manifest / offline)
     ann: { items: [], total: 0, limit: 50, offset: 0, filters: {} },
     hist: { items: [], hasMore: false, limit: 50, offset: 0, filters: {} },
-    admin: { loaded: false }
+    admin: { loaded: false },
+    survey: { loaded: false, docId: '', results: [], total: 0, limit: 50, offset: 0, pool: [] }
   };
 
   function escapeHtml(s){
@@ -260,10 +261,13 @@
     document.getElementById('cab-tabs').style.display = canEdit ? '' : 'none';
     document.getElementById('cab-viewer-notice').style.display = canEdit ? 'none' : '';
     document.getElementById('cab-tab-admin-btn').style.display = state.user.role === 'admin' ? '' : 'none';
+    // Опрос — админская вкладка: пул решает, что показывают людям снаружи.
+    document.getElementById('cab-tab-survey-btn').style.display = state.user.role === 'admin' ? '' : 'none';
 
     if (!canEdit) {
       document.getElementById('cab-tab-remarks').style.display = 'none';
       document.getElementById('cab-tab-history').style.display = 'none';
+      document.getElementById('cab-tab-survey').style.display = 'none';
       document.getElementById('cab-tab-admin').style.display = 'none';
       return;
     }
@@ -287,10 +291,11 @@
     Array.prototype.forEach.call(document.querySelectorAll('.cab-tab-btn'), function(btn){
       btn.classList.toggle('is-active', btn.getAttribute('data-tab') === tab);
     });
-    ['remarks', 'history', 'admin'].forEach(function(t){
+    ['remarks', 'history', 'survey', 'admin'].forEach(function(t){
       document.getElementById('cab-tab-' + t).style.display = (t === tab) ? '' : 'none';
     });
     if (tab === 'admin' && state.user.role === 'admin' && !state.admin.loaded) loadAdmin();
+    if (tab === 'survey' && state.user.role === 'admin' && !state.survey.loaded) loadSurvey();
   }
 
   // ===== stats (doc filter options) =====
@@ -421,6 +426,12 @@
           '" data-page="' + escapeHtml(a.pageNum) + '">Удалить</button>'
         : '';
       var histBtn = '<button type="button" class="cab-btn-secondary cab-remark-history" data-ann="' + escapeHtml(a.remarkId) + '" data-doc="' + escapeHtml(a.docId) + '">История</button>';
+      // Вынести на оценку может только админ: пул решает, что показывают
+      // людям снаружи.
+      var poolBtn = state.user && state.user.role === 'admin'
+        ? '<button type="button" class="cab-btn-secondary cab-remark-pool" data-ann="' + escapeHtml(a.remarkId) +
+          '" data-doc="' + escapeHtml(a.docId) + '" data-page="' + escapeHtml(a.pageNum) + '">В опрос</button>'
+        : '';
       var badgeClass = 'cab-badge-' + a.status;
       return '<tr>' +
         '<td>' + escapeHtml(a.docId) + '</td>' +
@@ -430,7 +441,7 @@
         '<td>' + escapeHtml(a.authorName || '—') + '</td>' +
         '<td>' + escapeHtml(formatDate(a.updatedAt)) + '</td>' +
         '<td>' + escapeHtml((a.text || '').slice(0, 80)) + '</td>' +
-        '<td class="cab-row-actions">' + openBtn + editBtn + toggleBtn + delBtn + histBtn + '</td>' +
+        '<td class="cab-row-actions">' + openBtn + editBtn + toggleBtn + delBtn + histBtn + poolBtn + '</td>' +
       '</tr>';
     }).join('');
 
@@ -444,6 +455,11 @@
     });
     Array.prototype.forEach.call(tbody.querySelectorAll('.cab-remark-delete'), function(btn){
       btn.addEventListener('click', function(){ deleteAnnotation(btn.dataset.doc, btn.dataset.page, btn.dataset.ann); });
+    });
+    Array.prototype.forEach.call(tbody.querySelectorAll('.cab-remark-pool'), function(btn){
+      btn.addEventListener('click', function(){
+        addToPool(btn.dataset.doc, btn.dataset.page, btn.dataset.ann);
+      });
     });
     Array.prototype.forEach.call(tbody.querySelectorAll('.cab-remark-history'), function(btn){
       btn.addEventListener('click', function(){
@@ -716,6 +732,157 @@
     try { data = await apiGet('/api/logs?lines=200'); }
     catch (e) { return; }
     pre.textContent = (data.logs || []).map(function(l){ return l.timestamp + ' | ' + l.level + ' | ' + l.message; }).join('\n');
+  }
+
+  // ===== опрос =====
+  //
+  // Две вещи на одной вкладке, и разделять их не стоит: пул — это список
+  // заданных вопросов, результаты — полученные на них ответы, и смотрят на
+  // них подряд. Оценки, поставленные участниками круга в /app/, сюда не
+  // попадают: это другой голос, и складывать их в одно среднее нельзя.
+
+  function renderSurveyShell(){
+    document.getElementById('cab-tab-survey').innerHTML =
+      '<div class="cab-admin-section">' +
+        '<form id="cab-survey-filters" class="cab-filters">' +
+          '<label>Документ <select name="docId">' + docOptionsHtml() + '</select></label>' +
+          '<button type="submit">Показать</button>' +
+        '</form>' +
+        '<p class="cab-muted">Опросник: ' +
+          '<a href="../survey/" target="_blank" rel="noopener">/survey/</a> — ' +
+          'ссылка для тех, кого просят оценить. Входа не требует.</p>' +
+      '</div>' +
+      '<div class="cab-admin-section">' +
+        '<h3>Результаты</h3>' +
+        '<table class="cab-table"><thead><tr>' +
+          '<th>Документ</th><th>Стр.</th><th>Замечание</th><th>Ответивших</th>' +
+          '<th>Интересность</th><th>Важность</th><th>Публиковать</th><th></th>' +
+        '</tr></thead><tbody id="cab-survey-tbody"></tbody></table>' +
+        '<p id="cab-survey-empty" class="cab-muted">Ответов пока нет.</p>' +
+        '<button type="button" id="cab-survey-more" class="cab-load-more" style="display:none;">Ещё</button>' +
+      '</div>' +
+      '<div class="cab-admin-section">' +
+        '<h3>Пул для оценки</h3>' +
+        '<p class="cab-muted">Из этого списка опросник выдаёт людям случайные ' +
+          'замечания. Добавить — кнопкой «В опрос» на вкладке «Замечания».</p>' +
+        '<table class="cab-table"><thead><tr>' +
+          '<th>Документ</th><th>Стр.</th><th>Замечание</th><th>Ответов</th><th></th>' +
+        '</tr></thead><tbody id="cab-pool-tbody"></tbody></table>' +
+        '<p id="cab-pool-empty" class="cab-muted">Пул пуст: опросу нечего показывать.</p>' +
+      '</div>';
+
+    document.getElementById('cab-survey-filters').addEventListener('submit', function(ev){
+      ev.preventDefault();
+      state.survey.docId = ev.target.elements.docId.value;
+      loadSurvey(true);
+    });
+    document.getElementById('cab-survey-more').addEventListener('click', function(){
+      loadSurveyResults(false);
+    });
+  }
+
+  function surveyRowLink(item){
+    var link = annotationLink(item.docId, item.pageNum, item.remarkId);
+    return link
+      ? '<a href="' + escapeHtml(link) + '" target="_blank" rel="noopener">Открыть</a>'
+      : '<span class="cab-muted" title="страница вне легаси-нумерации">Открыть</span>';
+  }
+
+  function renderSurveyResults(){
+    var tbody = document.getElementById('cab-survey-tbody');
+    tbody.innerHTML = state.survey.results.map(function(item){
+      var yes = item.admissibility.yes, no = item.admissibility.no;
+      // Расклад, а не среднее: среднее по «да или нет» ничего не сообщает.
+      var verdict = (yes + no) ? (yes + ' да / ' + no + ' нет') : '—';
+      return '<tr>' +
+        '<td>' + escapeHtml(item.docId) + '</td>' +
+        '<td>' + escapeHtml(pageDisplay(item.docId, item.pageNum)) + '</td>' +
+        '<td>' + escapeHtml((item.text || item.remarkId).slice(0, 90)) + '</td>' +
+        '<td>' + item.raters + '</td>' +
+        '<td>' + (item.interest.average == null ? '—' : item.interest.average + ' (' + item.interest.count + ')') + '</td>' +
+        '<td>' + (item.importance.average == null ? '—' : item.importance.average + ' (' + item.importance.count + ')') + '</td>' +
+        '<td>' + escapeHtml(verdict) + '</td>' +
+        '<td class="cab-row-actions">' + surveyRowLink(item) + '</td>' +
+      '</tr>';
+    }).join('');
+    document.getElementById('cab-survey-empty').style.display = state.survey.results.length ? 'none' : '';
+    document.getElementById('cab-survey-more').style.display =
+      state.survey.results.length < state.survey.total ? '' : 'none';
+  }
+
+  function renderSurveyPool(){
+    var tbody = document.getElementById('cab-pool-tbody');
+    tbody.innerHTML = state.survey.pool.map(function(item){
+      return '<tr>' +
+        '<td>' + escapeHtml(item.docId) + '</td>' +
+        '<td>' + escapeHtml(pageDisplay(item.docId, item.pageNum)) + '</td>' +
+        '<td>' + escapeHtml((item.text || item.remarkId).slice(0, 90)) + '</td>' +
+        '<td>' + (item.answers || 0) + '</td>' +
+        '<td class="cab-row-actions">' + surveyRowLink(item) +
+          '<button type="button" class="cab-btn-secondary cab-pool-remove" data-doc="' +
+            escapeHtml(item.docId) + '" data-page="' + escapeHtml(item.pageNum) +
+            '" data-ann="' + escapeHtml(item.remarkId) + '">Убрать</button>' +
+        '</td>' +
+      '</tr>';
+    }).join('');
+    document.getElementById('cab-pool-empty').style.display = state.survey.pool.length ? 'none' : '';
+    Array.prototype.forEach.call(tbody.querySelectorAll('.cab-pool-remove'), function(btn){
+      btn.addEventListener('click', function(){
+        removeFromPool(btn.dataset.doc, btn.dataset.page, btn.dataset.ann);
+      });
+    });
+  }
+
+  async function loadSurveyResults(reset){
+    if (reset) state.survey.offset = 0;
+    var data;
+    try {
+      data = await apiGet('/api/survey/results' + qs({
+        docId: state.survey.docId, limit: state.survey.limit, offset: state.survey.offset
+      }));
+    } catch (e) { return; }
+    state.survey.results = reset ? (data.items || []) : state.survey.results.concat(data.items || []);
+    state.survey.total = data.total || 0;
+    state.survey.offset = state.survey.results.length;
+    await prefetchManifests(state.survey.results.map(function(i){ return i.docId; }));
+    renderSurveyResults();
+  }
+
+  async function loadSurveyPool(){
+    var data;
+    try { data = await apiGet('/api/survey/pool' + qs({ docId: state.survey.docId })); }
+    catch (e) { return; }
+    state.survey.pool = data.items || [];
+    await prefetchManifests(state.survey.pool.map(function(i){ return i.docId; }));
+    renderSurveyPool();
+  }
+
+  async function loadSurvey(refresh){
+    if (!state.survey.loaded || refresh) {
+      if (!state.survey.loaded) renderSurveyShell();
+      state.survey.loaded = true;
+    }
+    await Promise.all([loadSurveyResults(true), loadSurveyPool()]);
+  }
+
+  async function addToPool(docId, pageKey, remarkId){
+    try {
+      await apiMutate('POST', '/api/survey/pool',
+                      { docId: docId, pageKey: pageKey, remarkId: remarkId });
+      setStatus('Вынесено на оценку: ' + remarkId, false);
+      if (state.survey.loaded) loadSurveyPool();
+    } catch (e) { /* сообщение уже показано */ }
+  }
+
+  async function removeFromPool(docId, pageKey, remarkId){
+    // Ответы при этом остаются: снять вопрос с раздачи и стереть ответы —
+    // разные действия, и второе здесь не подразумевается.
+    try {
+      await apiMutate('DELETE', '/api/survey/pool/' + encodeURIComponent(docId) + '/' +
+                      encodeURIComponent(pageKey) + '/' + encodeURIComponent(remarkId));
+      setStatus('Убрано из опроса: ' + remarkId, false);
+      loadSurveyPool();
+    } catch (e) { /* сообщение уже показано */ }
   }
 
   // ===== init =====

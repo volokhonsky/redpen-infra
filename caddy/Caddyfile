@@ -146,7 +146,11 @@
 		# на другом источнике, чем API, — без метода в этом списке браузер
 		# зарубит их на предполётном запросе.
 		header Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
-		header Access-Control-Allow-Headers "Content-Type, Authorization, X-CSRF-Token"
+		# X-Survey-Token обязателен по той же причине, что и PATCH выше: опросник
+		# (/survey/) опознаёт респондента этим заголовком вместо куки, живёт на
+		# другом источнике, чем API, и без заголовка в этом списке браузер рубит
+		# предполётный запрос — опрос молча сообщает «нет связи с сервером».
+		header Access-Control-Allow-Headers "Content-Type, Authorization, X-CSRF-Token, X-Survey-Token"
 		header Access-Control-Max-Age "86400"
 		respond 204
 	}
