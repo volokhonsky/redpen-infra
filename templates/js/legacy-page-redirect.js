@@ -12,9 +12,10 @@
 (function () {
   'use strict';
 
+  // Раньше здесь стояло исключение для ?editor=1: редактор жил в старом SPA по
+  // этому же адресу, и увести его значило бы обезоружить правку. SPA удалён
+  // 2026-08-30, редактор переехал в /app/ — уводим всех без исключений.
   var params = new URLSearchParams(window.location.search);
-  // Редактору старый просмотрщик по-прежнему нужен — не уводим его.
-  if (params.get('editor')) return;
 
   var label = params.get('p') || params.get('page');
   if (!label) {

@@ -6,15 +6,17 @@ make_offline_bundle.py
 можно распаковать на флешку и читать без интернета (см.
 ``docs/offline-bundle-plan.md``).
 
-Что делает сборщик, чего не делает обычная публикация:
+Что делает сборщик, чего не делает обычная публикация: собирает каталог книги,
+общую статику и точку входа в один архив и **проверяет грепом**, что в нём не
+осталось ни одного адреса, ведущего наружу (``--check`` включён по умолчанию).
 
-1. пишет ``offline-data.js`` — все ``metadata.json``/``remarks/*.json``/
-   ``text/*.json`` одним файлом, потому что под ``file://`` fetch к соседним
-   файлам запрещён (подменой занимается ``js/redpen-offline.js``);
-2. вырезает из index.html книги всё, что умеет ходить в сеть: скрипты с
-   абсолютными http(s)-адресами, ``REDPEN_API_BASE`` и редакторские скрипты.
-   После этого офлайн-копия физически не содержит кода, обращающегося к API, —
-   и это проверяется грепом (``--check`` включён по умолчанию).
+Раньше он делал больше: писал ``offline-data.js`` со всеми данными книги и
+подключал шим ``js/redpen-offline.js``, потому что под ``file://`` запрещён
+fetch к соседним файлам. Это было нужно старому SPA. Постраничный просмотрщик
+не делает ни одного запроса вовсе — замечания приезжают инлайновым блоком
+``redpen-page-data`` внутри самой страницы, — поэтому с 2026-08-30 бандл это
+просто копия статики, а шим и ``offline-data.js`` (около 3.6 МБ) выброшены
+вместе с SPA.
 
 Использование:
 
@@ -26,7 +28,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import shutil
 import sys
 import zipfile
@@ -34,19 +35,14 @@ from datetime import datetime, timezone
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
-# Хосты, которых в html/js офлайн-копии быть не должно. Тела замечаний
-# (offline-data.js) не проверяем: там живут ссылки на источники, это нормально.
+# Хосты, которых в html/js офлайн-копии быть не должно. Страницы книги — тоже
+# html, и в телах замечаний бывают ссылки на источники, но это ссылки наружу
+# в тексте, а не наши хосты: список именно из наших.
 FORBIDDEN_HOSTS = ('api.medinsky.net', 'cdn.jsdelivr.net', 'accounts.google.com')
 
 # Скрипты редактора: офлайн они бесполезны и как раз они умеют ходить в API.
-EDITOR_SCRIPTS = (
-    'redpen-editor-panel.js',
-    'redpen-auth.js',
-    'redpen-editor-bootstrap.js',
-)
-
-PAGE_JSON_RE = re.compile(r'^(?P<page>.+)\.json$')
-
+# Остальные («редакторская панель», «бутстрап») удалены вместе с SPA.
+EDITOR_SCRIPTS = ('redpen-auth.js',)
 
 # --------------------------------------------------------------------------
 # сбор данных
@@ -57,81 +53,28 @@ def _read_json(path):
         return json.load(f)
 
 
-def collect_page_data(doc_dir, subdir):
-    """{page_id: <разобранный json>} для remarks/ или text/.
+def count_pages_and_remarks(doc_dir):
+    """(страниц с замечаниями, замечаний) — только для строк отчёта и README.
 
-    Легаси-компаньоны ``*.drafts.json`` пропускаем: черновики давно лежат в
-    основном ``page_NNN.json`` под тегом draft.
+    Черновики не считаем: в архиве они лежат, но читателю не видны, ровно как
+    на сайте. Легаси-компаньоны page_NNN.drafts.json в архив не попадают вовсе.
     """
-    src = os.path.join(doc_dir, subdir)
-    out = {}
-    if not os.path.isdir(src):
-        return out
-    for name in sorted(os.listdir(src)):
-        m = PAGE_JSON_RE.match(name)
-        if not m:
+    ann_dir = os.path.join(doc_dir, 'remarks')
+    pages = 0
+    remarks = 0
+    if not os.path.isdir(ann_dir):
+        return 0, 0
+    for name in sorted(os.listdir(ann_dir)):
+        if not name.endswith('.json') or name.endswith('.drafts.json'):
             continue
-        page = m.group('page')
-        if page.endswith('.drafts'):
+        data = _read_json(os.path.join(ann_dir, name))
+        if not isinstance(data, list):
             continue
-        out[page] = _read_json(os.path.join(src, name))
-    return out
-
-
-def build_offline_data_js(metadata, remarks, text):
-    """``window.REDPEN_OFFLINE = JSON.parse("...")``.
-
-    Именно JSON.parse из строкового литерала, а не объектный литерал: движок
-    разбирает такой мегабайтный payload заметно быстрее.
-    """
-    payload = {'metadata': metadata, 'remarks': remarks, 'text': text}
-    raw = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
-    # Экранируем как JS-строку: json.dumps даёт корректный литерал в двойных
-    # кавычках, включая \u2028/\u2029 (ensure_ascii=False их бы оставил живыми,
-    # а в JS они ломают строку).
-    literal = json.dumps(raw, ensure_ascii=False).replace('\u2028', '\\u2028').replace('\u2029', '\\u2029')
-    return (
-        '// Данные офлайн-копии: подменяют fetch(metadata/remarks/text).\n'
-        '// Сгенерировано scripts/make_offline_bundle.py — не править руками.\n'
-        'window.REDPEN_OFFLINE = JSON.parse(%s);\n' % literal
-    )
-
-
-# --------------------------------------------------------------------------
-# правка index.html книги
-# --------------------------------------------------------------------------
-
-def rewrite_doc_index(html, has_vendored_marked):
-    """Убирает из страницы книги всё сетевое и подключает офлайн-данные."""
-    # 1. Скрипты с абсолютным http(s)-адресом (marked с CDN и что угодно ещё).
-    html = re.sub(r'[ \t]*<script[^>]+src="https?://[^"]*"[^>]*>\s*</script>\s*\n?', '', html)
-
-    # 2. Инлайн-блок с адресом API и Google client id.
-    html = re.sub(
-        r'[ \t]*<script>\s*\n?(?:[^<]*REDPEN_API_BASE[^<]*)</script>\s*\n?',
-        '', html, flags=re.DOTALL)
-
-    # 3. Редакторские скрипты.
-    for name in EDITOR_SCRIPTS:
-        html = re.sub(
-            r'[ \t]*<script[^>]+src="[^"]*%s(?:\?[^"]*)?"[^>]*>\s*</script>\s*\n?' % re.escape(name),
-            '', html)
-
-    # 4. Офлайн-данные и шим — до всех остальных скриптов страницы.
-    inserts = []
-    if has_vendored_marked:
-        inserts.append('  <script src="../js/vendor/marked.min.js"></script>')
-    inserts.append('  <script src="offline-data.js"></script>')
-    inserts.append('  <script src="../js/redpen-offline.js"></script>')
-    block = '\n'.join(inserts) + '\n'
-
-    m = re.search(r'(?P<indent>[ \t]*)<script[^>]+src="\.\./js/', html)
-    if not m:
-        raise RuntimeError('в index.html книги не найдено ни одного скрипта ../js/ — шаблон изменился?')
-    # m.start() указывает на начало отступа — возвращаем его следующему тегу,
-    # иначе он уезжает к нулевой колонке.
-    html = html[:m.start()] + block + m.group('indent') + html[m.end('indent'):]
-    return html
+        published = [a for a in data if isinstance(a, dict) and not a.get('draft')]
+        if published:
+            pages += 1
+            remarks += len(published)
+    return pages, remarks
 
 
 # --------------------------------------------------------------------------
@@ -269,41 +212,25 @@ def stage_bundle(site_dir, doc_id, stage_root, bundle_name):
     if os.path.exists(favicon):
         shutil.copy2(favicon, os.path.join(root, 'favicon.svg'))
 
-    # Шим мог не попасть в опубликованный js/ (сайт собран до его появления).
-    shim_dst = os.path.join(root, 'js', 'redpen-offline.js')
-    if not os.path.exists(shim_dst):
-        shutil.copy2(os.path.join(PROJECT_ROOT, 'templates', 'js', 'redpen-offline.js'), shim_dst)
-
     # Редакторские скрипты в архиве не нужны вовсе.
     for name in EDITOR_SCRIPTS:
         path = os.path.join(root, 'js', name)
         if os.path.exists(path):
             os.remove(path)
 
-    # 2. каталог книги
+    # 2. каталог книги — прямой копией. Правка index.html больше не нужна:
+    # оглавление и страницы не содержат ни одного сетевого вызова, а
+    # document_index.html (старый SPA, который их и содержал) удалён.
     doc_dst = os.path.join(root, doc_id)
     shutil.copytree(
         doc_src, doc_dst,
         ignore=shutil.ignore_patterns('document_index.html', '*.drafts.json'))
 
-    # 3. данные для file://
+    # 3. корневые файлы
     metadata = _read_json(os.path.join(doc_src, 'metadata.json'))
-    remarks = collect_page_data(doc_src, 'remarks')
-    text = collect_page_data(doc_src, 'text')
-    with open(os.path.join(doc_dst, 'offline-data.js'), 'w', encoding='utf-8') as f:
-        f.write(build_offline_data_js(metadata, remarks, text))
-
-    # 4. index.html книги без сетевых зависимостей
-    has_vendored_marked = os.path.exists(os.path.join(root, 'js', 'vendor', 'marked.min.js'))
-    with open(os.path.join(doc_src, 'index.html'), 'r', encoding='utf-8') as f:
-        html = f.read()
-    with open(os.path.join(doc_dst, 'index.html'), 'w', encoding='utf-8') as f:
-        f.write(rewrite_doc_index(html, has_vendored_marked))
-
-    # 5. корневые файлы
     built_at = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    pages = len(metadata.get('pages') or []) or len(text) or len(remarks)
-    ann_count = sum(len(v) for v in remarks.values() if isinstance(v, list))
+    ann_pages, ann_count = count_pages_and_remarks(doc_src)
+    pages = len(metadata.get('pages') or []) or ann_pages
     with open(os.path.join(root, 'index.html'), 'w', encoding='utf-8') as f:
         f.write(render_root_index(doc_id, metadata, built_at))
     with open(os.path.join(root, 'ЧИТАТЬ.html'), 'w', encoding='utf-8') as f:
@@ -316,7 +243,6 @@ def stage_bundle(site_dir, doc_id, stage_root, bundle_name):
         'pages': pages,
         'remarks': ann_count,
         'builtAt': built_at,
-        'vendoredMarked': has_vendored_marked,
     }
     return root, stats
 
@@ -327,8 +253,6 @@ def check_no_network_refs(root):
     for dirpath, _dirnames, filenames in os.walk(root):
         for name in filenames:
             if not name.endswith(('.html', '.js')):
-                continue
-            if name == 'offline-data.js':  # тела замечаний, ссылки на источники — норма
                 continue
             path = os.path.join(dirpath, name)
             with open(path, 'r', encoding='utf-8', errors='replace') as f:
@@ -386,10 +310,6 @@ def main(argv=None):
     root, stats = stage_bundle(args.site_dir, args.doc, stage_dir, bundle_name)
     print('[+] дерево собрано: %s' % root)
     print('    страниц: %(pages)s, замечаний: %(remarks)s' % stats)
-    if not stats['vendoredMarked']:
-        print('[!] js/vendor/marked.min.js нет — разметка замечаний офлайн будет'
-              ' упрощённой (fallback в remark-content.js)')
-
     problems = check_no_network_refs(root)
     if problems:
         print('[!] в бандле остались сетевые ссылки:')

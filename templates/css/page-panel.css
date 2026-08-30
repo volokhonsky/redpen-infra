@@ -1,8 +1,9 @@
 /*
  * Стили страницы разбора (<doc>/pages/<label>/index.html).
  *
- * Эти страницы не используют responsive.css: тот описывает SPA-просмотрщик с
- * его #remark-sidebar и войной !important. Здесь раскладка своя и
+ * Единственная адаптивная раскладка просмотрщика. Раньше рядом жил
+ * responsive.css со своим набором брейкпоинтов для SPA — он удалён вместе с
+ * SPA 2026-08-30. Здесь раскладка своя и
  * целиком на медиазапросах — JS в неё не вмешивается.
  */
 
@@ -19,8 +20,6 @@
 .breadcrumbs a {
   color: #c00;
   text-decoration: none;
-  margin-right: 0;
-  font-weight: normal;
 }
 
 .breadcrumbs a:hover {
@@ -242,7 +241,6 @@
   color: #c00;
   text-decoration: none;
   font-weight: bold;
-  margin-right: 0;
 }
 
 .page-nav a:hover {

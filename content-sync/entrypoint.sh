@@ -44,12 +44,9 @@ publish_from_repo() {
   # plan, phase 6). Dropping either exclude wipes live data.
   rsync -a --delete --exclude ".git" --exclude "/*/annotations/" --exclude "/*/remarks/" /srv/repo/ /srv/staging/
 
-  # Generate app-config.js into staging
-  if [ -n "${API_BASE_URL}" ]; then
-    printf 'window.APP_CONFIG={apiBaseUrl:%q};' "${API_BASE_URL}" > /srv/staging/app-config.js
-  fi
-
-  # Ensure app-config.js is referenced by HTML files and patch bootstrap js
+  # Правки статики на месте развёртывания. Подстановка адреса API отсюда ушла
+  # вместе со старым SPA (2026-08-30): её единственным потребителем был
+  # redpen-editor-bootstrap.js, а кабинет и /app/ знают адрес сами.
   /usr/bin/env python3 /app/content_sync.py --mutate-only --staging /srv/staging || true
 
   # Sync to public (shared volume)

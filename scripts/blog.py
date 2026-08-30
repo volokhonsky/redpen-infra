@@ -254,7 +254,6 @@ def _page(title, description, prefix, timestamp, body_html, canonical_path=''):
   <link rel="stylesheet" href="{up}css/main.css">
   <link rel="stylesheet" href="{up}css/landing.css">
   <link rel="stylesheet" href="{up}css/blog.css">
-  <link rel="stylesheet" href="{up}css/responsive.css">
   <link rel="icon" href="{up}favicon.svg">
 </head>
 <body>

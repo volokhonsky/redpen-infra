@@ -94,8 +94,13 @@ def test_build_produces_per_document_layout(synthetic_project, tmp_path):
     assert (doc_dir / "remarks" / "page_007.json").is_file()
     assert (doc_dir / "images" / "page_007.png").is_file()
     assert (doc_dir / "text" / "page_007.json").is_file()
-    assert (doc_dir / "index.html").is_file()
     assert (doc_dir / "metadata.json").is_file()
+    # <doc>/index.html здесь НЕ появляется: его пишет шаг 3.6
+    # (page_html.build_pages) — это оглавление. Раньше publish_website_data
+    # клала сюда старый SPA, который тот шаг потом затирал; SPA удалён
+    # 2026-08-30, вместе с ним ушла и бессмысленная первая запись.
+    assert not (doc_dir / "index.html").exists()
+    assert not (doc_dir / "document_index.html").exists()
 
     # Shared assets are copied to the target root.
     assert (target / "css").is_dir() and any((target / "css").iterdir())
