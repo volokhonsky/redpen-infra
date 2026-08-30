@@ -159,9 +159,8 @@
   //
   // Раньше здесь строился адрес `<doc>/?p=<label>&editor=1&ann=<id>` — то есть
   // оглавление, где редакторских скриптов нет вовсе, и кнопка просто не
-  // работала. Режим редактирования живёт только в старом SPA
-  // (`document_index.html`) и переезжает в отдельное приложение; пока переезд
-  // не сделан, честнее вести на рабочий просмотр, чем на сломанную правку.
+  // работала. Правка теперь живёт в /app/ (см. editorLink ниже), а эта ссылка
+  // ведёт туда, где видно результат: на страницу читателя.
   function annotationLink(docId, pageNum, annId){
     var map = state.manifestCache[docId];
     var label = map && map['page_' + pageNum];
@@ -172,6 +171,13 @@
     }
     return '../' + encodeURIComponent(docId) + '/pages/' + encodeURIComponent(label) +
            '/?only=' + encodeURIComponent(annId);
+  }
+
+  // Ссылка на правку: карточка замечания в редакторе /app/. Ключ страницы там
+  // файловый, как в API, — переводить его в читательскую метку не нужно.
+  function editorLink(docId, pageNum, annId){
+    return '../app/#/ann/' + encodeURIComponent(docId) + '/' +
+           encodeURIComponent(pageNum) + '/' + encodeURIComponent(annId);
   }
 
   // ===== login / profile =====
@@ -416,6 +422,8 @@
       var openBtn = link
         ? '<a href="' + escapeHtml(link) + '" target="_blank" rel="noopener">Открыть</a>'
         : '<span class="cab-muted" title="страница вне легаси-нумерации">Открыть</span>';
+      var editBtn = '<a href="' + escapeHtml(editorLink(a.docId, a.pageNum, a.annId)) +
+        '" target="_blank" rel="noopener">Править</a>';
       var toggleLabel = a.status === 'draft' ? 'Опубликовать' : (a.status === 'published' ? 'В черновик' : '');
       var toggleBtn = toggleLabel
         ? '<button type="button" class="cab-remark-toggle" data-ann="' + escapeHtml(a.annId) + '" data-doc="' + escapeHtml(a.docId) +
@@ -435,7 +443,7 @@
         '<td>' + escapeHtml(a.authorName || '—') + '</td>' +
         '<td>' + escapeHtml(formatDate(a.updatedAt)) + '</td>' +
         '<td>' + escapeHtml((a.text || '').slice(0, 80)) + '</td>' +
-        '<td class="cab-row-actions">' + openBtn + toggleBtn + delBtn + histBtn + '</td>' +
+        '<td class="cab-row-actions">' + openBtn + editBtn + toggleBtn + delBtn + histBtn + '</td>' +
       '</tr>';
     }).join('');
 

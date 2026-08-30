@@ -36,9 +36,16 @@
     scaleTitles: {},  // name -> заголовок, для подписей в ленте
     timeline: [],     // ревизии, оценки и комментарии одним списком
     textOnly: false,  // фильтр ленты «только правки текста»
+    cardSha: null,    // serverPageSha страницы открытой карточки
     notes: [],
-    replyTo: null     // id корневого комментария, если пишем ответ
+    replyTo: null,    // id корневого комментария, если пишем ответ
+    // Экран страницы: скан с маркерами. sha — вход оптимистической блокировки,
+    // приходит из GET /api/editor/... и уезжает обратно в каждой мутации.
+    page: { docId: null, pageKey: null, remarks: [], sha: null,
+            placing: false, pendingCoords: null, selectedId: null }
   };
+
+  var markers = window.RedPenMarkers;
 
   // --- мелочи -------------------------------------------------------------
 
@@ -102,7 +109,7 @@
 
   //: Все экраны приложения. Показываем ровно один — так не приходится
   //: помнить, что спрятать при каждом переходе.
-  var VIEWS = ['view-sections', 'view-section', 'view-queue', 'app-main'];
+  var VIEWS = ['view-sections', 'view-section', 'view-queue', 'view-page', 'app-main'];
 
   function showView(id) {
     VIEWS.forEach(function (name) { el(name).hidden = name !== id; });
@@ -122,6 +129,14 @@
       };
     }
     if (/^#\/queue\b/.test(hash)) return { view: 'queue' };
+    var page = hash.match(/^#\/page\/([^/]+)\/([^/]+)$/);
+    if (page) {
+      return {
+        view: 'page',
+        docId: decodeURIComponent(page[1]),
+        pageKey: decodeURIComponent(page[2])
+      };
+    }
     var section = hash.match(/^#\/section\/([^/]+)\/(.+)$/);
     if (section) {
       return {
@@ -252,6 +267,10 @@
     if (summary) body.summary = summary;
     var ann = state.annotation;
     if (ann && ann.coordX != null && ann.coordY != null) body.coords = [ann.coordX, ann.coordY];
+    // Оптимистическая блокировка: без неё сервер принимает правку молча, и две
+    // одновременные сессии затирают друг друга (сервер это логирует как
+    // «clientPageSha missing»). Хеш читается вместе с карточкой.
+    if (state.cardSha) body.clientPageSha = state.cardSha;
     return body;
   }
 
@@ -504,7 +523,8 @@
       '<span><a href="#/">параграфы</a></span>' +
       '<span>' + escapeHtml(ref.docId) + '</span>' +
       '<span>' + sectionLink + '</span>' +
-      '<span>стр. ' + escapeHtml(label) + '</span>' +
+      '<span><a href="#/page/' + encodeURIComponent(ref.docId) + '/' +
+        encodeURIComponent(ref.pageKey) + '">стр. ' + escapeHtml(label) + '</a></span>' +
       '<code>' + escapeHtml(ref.annId) + '</code>';
   }
 
@@ -801,11 +821,22 @@
   async function loadCard(ref) {
     state.ref = ref;
     setReplyTo(null);
+    state.cardSha = null;
     var path = '/api/annotations/' + encodeURIComponent(ref.docId) + '/' +
                encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.annId);
     var data = await apiGet(path);
     state.annotation = data.annotation;
     fillForm(data.annotation);
+
+    // Хеш страницы для оптимистической блокировки. Отдельный запрос: карточка
+    // отдаёт одно замечание, а блокировка — про страницу целиком.
+    try {
+      var page = await apiGet('/api/editor/' + encodeURIComponent(ref.docId) + '/' +
+                              encodeURIComponent(ref.pageKey));
+      state.cardSha = page.serverPageSha || null;
+    } catch (e) {
+      state.cardSha = null;
+    }
 
     var label = await renderPreview(ref);
     await renderBreadcrumbs(ref, data.section, label);
@@ -869,6 +900,284 @@
     // но у iframe тот же адрес, и сам он не обновится.
     var frame = el('app-preview');
     frame.src = frame.src;
+  }
+
+  // --- экран страницы: скан с маркерами -----------------------------------
+  //
+  // До 2026-08-30 создать замечание и поставить маркер можно было только в
+  // старом SPA (document_index.html?editor=1) — редактор и просмотрщик там
+  // склеены одним DOM. Здесь то же самое, но данные берутся из API, а рисует
+  // маркеры общий с просмотрщиком redpen-markers.js, поэтому кружок в
+  // редакторе и кружок у читателя — это буквально один код.
+
+  function editorPageUrl(docId, pageKey) {
+    return '/api/editor/' + encodeURIComponent(docId) + '/' + encodeURIComponent(pageKey);
+  }
+
+  //: Тело PUT для существующего замечания. Отсутствие `tags` значит «не
+  //: трогать» — теги здесь не редактируются, и затирать их нельзя.
+  function remarkBody(ann, extra) {
+    var body = {
+      kind: markers.kindOf(ann),
+      text: ann.text || '',
+      status: ann.draft ? 'draft' : 'published',
+      category: ann.category || 'other',
+      coords: ann.coords,
+      clientPageSha: state.page.sha
+    };
+    Object.keys(extra || {}).forEach(function (k) { body[k] = extra[k]; });
+    return body;
+  }
+
+  async function loadPage(docId, pageKey) {
+    state.page.docId = docId;
+    state.page.pageKey = pageKey;
+    cancelPlacing();
+
+    var data = await apiGet(editorPageUrl(docId, pageKey));
+    state.page.remarks = data.remarks || [];
+    state.page.sha = data.serverPageSha || null;
+
+    var label = await pageLabel(docId, pageKey);
+    el('pg-where').innerHTML =
+      '<span><a href="#/">параграфы</a></span>' +
+      '<span>' + escapeHtml(docId) + '</span>' +
+      '<span>стр. ' + escapeHtml(label) + '</span>';
+    var withCoords = state.page.remarks.filter(markers.hasCoords).length;
+    el('pg-count').textContent = state.page.remarks.length + ' замечаний, ' +
+      withCoords + ' с маркером';
+
+    var image = el('pg-image');
+    var src = '../' + encodeURIComponent(docId) + '/images/page_' +
+              encodeURIComponent(pageKey) + '.png';
+    if (image.getAttribute('src') !== src) {
+      image.setAttribute('src', src);
+    } else {
+      drawPageMarkers();
+    }
+    renderPageList();
+  }
+
+  //: Порядок нумерации тот же, что у читателя: замечания идут как пришли, а
+  //: номер получают только те, у кого есть координата.
+  function numberedRemarks() {
+    return state.page.remarks.filter(markers.hasCoords);
+  }
+
+  function drawPageMarkers() {
+    var image = el('pg-image');
+    var overlay = el('pg-overlay');
+    if (!image.complete || !image.naturalWidth) return;
+
+    var scale = markers.scaleOf(image);
+    markers.fitOverlay(overlay, image);
+    overlay.innerHTML = '';
+
+    numberedRemarks().forEach(function (ann, index) {
+      var circle = markers.createCircle(ann, index + 1, scale);
+      if (ann.id === state.page.selectedId) circle.classList.add('is-selected');
+      circle.title = (ann.text || '').slice(0, 120);
+      wireMarkerDrag(circle, ann, image);
+      overlay.appendChild(circle);
+    });
+
+    if (state.page.pendingCoords) {
+      var ghost = markers.createCircle(
+        { id: '__new__', coords: state.page.pendingCoords, kind: el('pg-kind').value,
+          category: el('pg-category').value, draft: true },
+        '+', scale);
+      ghost.classList.add('is-selected');
+      overlay.appendChild(ghost);
+    }
+  }
+
+  /**
+   * Перетаскивание маркера. Правка уезжает только на mouseup и только если
+   * координата действительно изменилась: иначе обычный клик по маркеру писал
+   * бы в журнал ревизию «перенос маркера» без переноса.
+   */
+  function wireMarkerDrag(circle, ann, image) {
+    var dragging = false;
+    var moved = false;
+    var coords = null;
+
+    function onMove(event) {
+      if (!dragging) return;
+      var point = markers.pointToCoords(image, event.clientX, event.clientY);
+      if (!point) return;
+      moved = true;
+      coords = point;
+      var scale = markers.scaleOf(image);
+      var g = markers.geometry({ coords: coords, kind: markers.kindOf(ann) }, scale);
+      circle.style.left = g.cx + 'px';
+      circle.style.top = (g.cy - g.diameter / 2) + 'px';
+    }
+
+    async function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      if (!dragging) return;
+      dragging = false;
+      circle.classList.remove('is-dragging');
+      if (!moved || !coords) {
+        // Не перенос, а клик: открываем карточку.
+        openCard(ann.id);
+        return;
+      }
+      if (coords[0] === ann.coords[0] && coords[1] === ann.coords[1]) {
+        drawPageMarkers();
+        return;
+      }
+      try {
+        await saveCoords(ann, coords);
+      } catch (e) {
+        await loadPage(state.page.docId, state.page.pageKey);
+      }
+    }
+
+    circle.addEventListener('mousedown', function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      // В режиме выбора точки маркер не должен перехватывать клик: он лежит
+      // поверх скана, и попытка поставить новое замечание рядом с существующим
+      // иначе открывала бы чужую карточку вместо постановки.
+      if (state.page.placing) { onScanClick(event); return; }
+      dragging = true;
+      moved = false;
+      coords = null;
+      state.page.selectedId = ann.id;
+      circle.classList.add('is-dragging');
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
+
+  async function saveCoords(ann, coords) {
+    var path = editorPageUrl(state.page.docId, state.page.pageKey) + '/' +
+               encodeURIComponent(ann.id);
+    var res = await apiMutate('PUT', path, remarkBody(ann, {
+      coords: coords,
+      summary: 'перенос маркера'
+    }));
+    state.page.sha = res.serverPageSha || state.page.sha;
+    setStatus('Маркер перенесён.', false);
+    await loadPage(state.page.docId, state.page.pageKey);
+  }
+
+  function openCard(remarkId) {
+    window.location.hash = '#/ann/' + encodeURIComponent(state.page.docId) + '/' +
+      encodeURIComponent(state.page.pageKey) + '/' + encodeURIComponent(remarkId);
+  }
+
+  function renderPageList() {
+    var numbered = numberedRemarks();
+    var numberById = {};
+    numbered.forEach(function (ann, index) { numberById[ann.id] = index + 1; });
+
+    var html = state.page.remarks.map(function (ann) {
+      var num = numberById[ann.id];
+      var head = num
+        ? '<span class="app-page-num">' + num + '</span>'
+        : '<span class="app-page-nocoords">без маркера</span>';
+      return '<li class="app-page-item' + (ann.draft ? ' is-draft' : '') + '" data-id="' +
+        escapeHtml(ann.id) + '">' +
+        '<div class="app-page-item-head">' + head +
+        catDot(ann.category || 'other') +
+        '<span>' + escapeHtml(catTitle(ann.category || 'other')) + '</span>' +
+        '<span>' + (ann.draft ? 'черновик' : 'опубликовано') + '</span>' +
+        '</div>' +
+        '<div>' + escapeHtml((ann.text || '').slice(0, 200)) + '</div>' +
+        '</li>';
+    }).join('');
+    el('pg-list').innerHTML = html || '<li class="app-empty">На странице пока нет замечаний.</li>';
+  }
+
+  // --- создание замечания -------------------------------------------------
+
+  function cancelPlacing() {
+    state.page.placing = false;
+    state.page.pendingCoords = null;
+    el('pg-scan').classList.remove('is-placing');
+    el('pg-form').hidden = true;
+    el('pg-hint').textContent = '';
+  }
+
+  function startPlacing() {
+    state.page.placing = true;
+    state.page.pendingCoords = null;
+    el('pg-scan').classList.add('is-placing');
+    el('pg-hint').textContent = 'Щёлкните по скану там, где должен стоять маркер.';
+  }
+
+  function onScanClick(event) {
+    if (!state.page.placing) return;
+    var image = el('pg-image');
+    var coords = markers.pointToCoords(image, event.clientX, event.clientY);
+    if (!coords) return;
+    state.page.pendingCoords = coords;
+    el('pg-coords').textContent = 'Координаты: ' + coords[0] + ', ' + coords[1] +
+      ' (щёлкните ещё раз, чтобы передвинуть)';
+    el('pg-form').hidden = false;
+    el('pg-hint').textContent = '';
+    fillCategorySelect(el('pg-category'), 'other');
+    drawPageMarkers();
+    el('pg-text').focus();
+  }
+
+  async function createRemark() {
+    var coords = state.page.pendingCoords;
+    if (!coords) { setStatus('Сначала выберите точку на скане.', true); return; }
+    var text = el('pg-text').value.trim();
+    if (!text) { setStatus('Текст замечания пуст.', true); return; }
+
+    var res = await apiMutate('POST', editorPageUrl(state.page.docId, state.page.pageKey), {
+      kind: el('pg-kind').value,
+      text: text,
+      // Новое замечание всегда черновик: публикация — отдельное решение, и
+      // делается оно в карточке или в очереди приёмки.
+      status: 'draft',
+      category: el('pg-category').value,
+      coords: coords,
+      clientPageSha: state.page.sha,
+      summary: 'создано в редакторе'
+    });
+    state.page.sha = res.serverPageSha || state.page.sha;
+    el('pg-text').value = '';
+    cancelPlacing();
+    setStatus('Черновик создан.', false);
+    await loadPage(state.page.docId, state.page.pageKey);
+    if (res.id) openCard(res.id);
+  }
+
+  function wirePage() {
+    el('pg-image').addEventListener('load', drawPageMarkers);
+    el('pg-image').addEventListener('click', onScanClick);
+    el('pg-new').addEventListener('click', function () {
+      if (state.page.placing) { cancelPlacing(); return; }
+      startPlacing();
+    });
+    el('pg-cancel').addEventListener('click', function () {
+      el('pg-text').value = '';
+      cancelPlacing();
+      drawPageMarkers();
+    });
+    el('pg-reload').addEventListener('click', function () {
+      if (state.page.docId) loadPage(state.page.docId, state.page.pageKey).catch(function () {});
+    });
+    el('pg-form').addEventListener('submit', function (event) {
+      event.preventDefault();
+      createRemark().catch(function () {});
+    });
+    ['pg-kind', 'pg-category'].forEach(function (id) {
+      el(id).addEventListener('change', drawPageMarkers);
+    });
+    el('pg-list').addEventListener('click', function (event) {
+      var item = event.target.closest ? event.target.closest('.app-page-item') : null;
+      if (item && item.dataset.id) openCard(item.dataset.id);
+    });
+    window.addEventListener('resize', function () {
+      if (!el('view-page').hidden) drawPageMarkers();
+    });
   }
 
   // --- запуск -------------------------------------------------------------
@@ -963,6 +1272,9 @@
       } else if (ref.view === 'queue') {
         showView('view-queue');
         await loadQueue();
+      } else if (ref.view === 'page') {
+        showView('view-page');
+        await loadPage(ref.docId, ref.pageKey);
       } else if (ref.view === 'section') {
         showView('view-section');
         state.section = ref;
@@ -995,6 +1307,7 @@
   wireNotes();
   wireTimeline();
   wireQueue();
+  wirePage();
   window.addEventListener('resize', fitPreview);
   window.addEventListener('hashchange', function () { route().catch(function () {}); });
   wireForm();

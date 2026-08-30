@@ -55,6 +55,22 @@ python tests/manual/simple_test.py                        # смоук ренд�
 - `editor_mode_tests.py` — проверяет, что панель редактора (`.redpen-editor`)
   и `window.RedPenEditor.state.editorMode` появляются только с `?editor=1`.
   Работает против опубликованного `redpen-publish/medinsky11klass/`.
+- `manual/editor_app_stand.py` + `manual/editor_app_acceptance.py` — приёмка
+  экрана страницы в редакторе `/app/`: создание замечания кликом по скану,
+  перенос маркера, оптимистическая блокировка по `serverPageSha` и проверка,
+  что правка доезжает до читателя (JSON страницы и инлайновый
+  `redpen-page-data`). Стенд поднимает API на временной БД и статику на одном
+  источнике; ничего боевого не трогает.
+
+  ```bash
+  python scripts/build_website.py --skip-tests --skip-push --target-dir ./out
+  python tests/manual/editor_app_stand.py ./out &   # ждать строку READY
+  python tests/manual/editor_app_acceptance.py
+  ```
+
+  Стенд поднимает базу с нуля, поэтому для повторного прогона его надо
+  перезапустить: после приёмки в базе уже лежит созданное замечание.
+
 - `manual/simple_test.py`, `manual/reproduce_404.py` — отладочные скрипты,
   не тесты; там же `manual/offline_bundle_browser_test.py` и
   `manual/run_remark_tests.sh`.
