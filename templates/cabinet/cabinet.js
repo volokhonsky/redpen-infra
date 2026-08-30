@@ -492,7 +492,7 @@
       '<form id="cab-hist-filters" class="cab-filters">' +
         '<label>Документ<select name="docId">' + docOptionsHtml() + '</select></label>' +
         '<label>Автор<select name="authorId" id="cab-hist-author-filter"><option value="">Все авторы</option></select></label>' +
-        '<label>Действие<select name="action"><option value="">Любое</option><option value="create">create</option><option value="update">update</option><option value="delete">delete</option><option value="revert">revert</option></select></label>' +
+        '<label>Что изменилось<select name="changed">' + CHANGED_OPTIONS + '</select></label>' +
         '<button type="submit">Применить</button>' +
         '<button type="button" class="cab-btn-secondary" id="cab-hist-reset">Сбросить</button>' +
       '</form>' +
@@ -507,7 +507,9 @@
       state.hist.filters = {
         docId: f.get('docId') || undefined,
         authorId: f.get('authorId') || undefined,
-        action: f.get('action') || undefined
+        // Фильтр по составу изменения, а не по происхождению записи: «покажи
+        // только правки текста» — вопрос про changed, не про action.
+        changed: f.get('changed') || undefined
       };
       loadHistory(true);
     });
@@ -537,7 +539,23 @@
     renderHistoryList();
   }
 
-  var ACTION_LABELS = { create: 'создание', update: 'изменение', delete: 'удаление', revert: 'откат' };
+  //: Словарь действий живёт на сервере (scripts/api/remark_actions.py), оттуда
+  //: же приходит готовый ярлык каждой ревизии — здесь только значения фильтра.
+  var CHANGED_OPTIONS = [
+    ['', 'Любое'],
+    ['text', 'правка текста'],
+    ['coords', 'перенос маркера'],
+    ['kind', 'смена вида'],
+    ['publish', 'публикация'],
+    ['unpublish', 'возврат в черновики'],
+    ['delete', 'удаление'],
+    ['restore', 'восстановление'],
+    ['category', 'смена категории'],
+    ['tags', 'правка тегов'],
+    ['revert', 'откат']
+  ].map(function(pair){
+    return '<option value="' + pair[0] + '">' + pair[1] + '</option>';
+  }).join('');
 
   function renderHistoryList(){
     var note = document.getElementById('cab-hist-remark-filter-note');
@@ -559,8 +577,8 @@
       var snap = h.snapshot || {};
       return '<div class="cab-history-item">' +
         '<div class="cab-history-meta">' + escapeHtml(formatDate(h.createdAt)) + ' · ' + escapeHtml(h.authorName || '—') + ' · ' +
-          escapeHtml(ACTION_LABELS[h.action] || h.action) + ' · ' + escapeHtml(h.docId) + ' / ' +
-          escapeHtml(pageDisplay(h.docId, h.pageNum)) + ' / ' + escapeHtml(h.annId) +
+          escapeHtml(h.actionLabel || h.action) + ' · ' + escapeHtml(h.docId) + ' / ' +
+          escapeHtml(pageDisplay(h.docId, h.pageNum)) + ' / ' + escapeHtml(h.remarkId) +
         '</div>' +
         '<div class="cab-history-text">' + escapeHtml((snap.text || '').slice(0, 200)) + '</div>' +
         '<button type="button" class="cab-hist-revert" data-hist="' + h.id + '">Откатить к этому состоянию</button>' +

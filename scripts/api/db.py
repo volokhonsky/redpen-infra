@@ -26,6 +26,9 @@ import config
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import annotation_categories  # noqa: E402
 
+import rating_scales
+import remark_actions
+
 SESSION_TTL_SECONDS = 30 * 86400  # 30 days, matches the auth cookie max_age
 
 logger = logging.getLogger("redpen.api")
@@ -183,8 +186,54 @@ def init_db() -> None:
               rev_no INTEGER,
               parent_rev_id INTEGER,
               agent_run_id INTEGER,
-              summary TEXT
+              summary TEXT,
+              -- Состав изменения: JSON-массив токенов remark_actions.ACTIONS.
+              -- NULL означает «не вычислено» (ревизии до появления колонки).
+              changes TEXT
             );
+            -- Оценки и комментарии — рабочие данные редактора. Они не меняют
+            -- строку в remarks и потому не являются ревизиями: rev_no не должен
+            -- сдвигаться от того, что кто-то поставил оценку, иначе «версия 3»
+            -- перестанет быть ссылкой. В статику они не попадают никогда
+            -- (publisher._render_item перечисляет поля явно).
+            CREATE TABLE IF NOT EXISTS remark_ratings (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              doc_id TEXT NOT NULL,
+              page_num TEXT NOT NULL,
+              remark_id TEXT NOT NULL,
+              scale TEXT NOT NULL,
+              value INTEGER NOT NULL,
+              rater_id INTEGER NOT NULL REFERENCES users(id),
+              note TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              UNIQUE(doc_id, page_num, remark_id, scale, rater_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_remark_ratings_target
+              ON remark_ratings(doc_id, page_num, remark_id);
+            CREATE INDEX IF NOT EXISTS idx_remark_ratings_rater
+              ON remark_ratings(rater_id, id);
+            CREATE TABLE IF NOT EXISTS remark_notes (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              doc_id TEXT NOT NULL,
+              page_num TEXT NOT NULL,
+              remark_id TEXT NOT NULL,
+              author_id INTEGER NOT NULL REFERENCES users(id),
+              body TEXT NOT NULL,
+              -- Ответ в треде. NULL — корень треда; ответ на ответ запрещён
+              -- (см. add_note): один уровень покрывает рабочее обсуждение и не
+              -- требует рекурсивного рендера.
+              parent_id INTEGER REFERENCES remark_notes(id),
+              resolved_at TEXT,
+              resolved_by INTEGER REFERENCES users(id),
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              deleted_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_remark_notes_target
+              ON remark_notes(doc_id, page_num, remark_id, id);
+            CREATE INDEX IF NOT EXISTS idx_remark_notes_author
+              ON remark_notes(author_id, id);
             """
         )
         _migrate_schema(_conn)
@@ -331,6 +380,10 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         ("parent_rev_id", "parent_rev_id INTEGER"),
         ("agent_run_id", "agent_run_id INTEGER"),
         ("summary", "summary TEXT"),
+        # Состав изменения. Существующие строки остаются с NULL: заполняет их
+        # scripts/api/backfill_history_changes.py, а не старт API — на проде
+        # тысячи ревизий, и разовая операция не должна тормозить запуск.
+        ("changes", "changes TEXT"),
     ):
         if column not in hist:
             conn.execute(f"ALTER TABLE remark_history ADD COLUMN {ddl}")
@@ -1196,27 +1249,51 @@ def _insert_history(
 
     `rev_no` и `parent_rev_id` считаются здесь, а не триггером: нумерация ведётся
     в пределах одного замечания, а не всей таблицы, и должна быть непрерывной,
-    чтобы «версия 3» в ссылке означала то же самое завтра."""
+    чтобы «версия 3» в ссылке означала то же самое завтра.
+
+    Состав изменения (`changes`) вычисляется здесь же диффом со снимком
+    предыдущей ревизии: одно сохранение может менять несколько вещей сразу, а
+    направление перехода статуса (публикация против возврата в черновики) видно
+    только тому, кто знает оба состояния. Запрос за родителем всё равно нужен
+    ради нумерации — снимок берётся из него же, лишнего обращения не возникает.
+    """
     prev = conn.execute(
         """
-        SELECT id, rev_no FROM remark_history
+        SELECT id, rev_no, snapshot FROM remark_history
         WHERE doc_id = ? AND page_num = ? AND remark_id = ?
         ORDER BY id DESC LIMIT 1
         """,
         (doc_id, page_num, remark_id),
     ).fetchone()
+    prev_snapshot = None
+    unreadable_parent = False
+    if prev is not None:
+        try:
+            prev_snapshot = normalize_snapshot(json.loads(prev["snapshot"]))
+        except (TypeError, ValueError):
+            # Битый снимок в журнале не повод срывать правку, но и сравнивать с
+            # пустотой нельзя: вышло бы «изменилось всё». Состав остаётся
+            # невычисленным, как у ревизий до появления колонки.
+            unreadable_parent = True
+    if unreadable_parent:
+        changes = None
+    else:
+        changes = remark_actions.with_provenance(
+            action, remark_actions.diff_snapshots(prev_snapshot, snapshot)
+        )
     conn.execute(
         """
         INSERT INTO remark_history
           (doc_id, page_num, remark_id, action, snapshot, author_id, created_at,
-           rev_no, parent_rev_id, agent_run_id, summary)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           rev_no, parent_rev_id, agent_run_id, summary, changes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (doc_id, page_num, remark_id, action, json.dumps(snapshot, ensure_ascii=False),
          author_id, _now_iso(),
          (prev["rev_no"] or 0) + 1 if prev else 1,
          prev["id"] if prev else None,
-         agent_run_id, summary),
+         agent_run_id, summary,
+         json.dumps(changes, ensure_ascii=False) if changes is not None else None),
     )
 
 
@@ -1375,7 +1452,8 @@ def upsert_remark_db(
 
 def soft_delete_remark(doc_id: str, page_num: str, remark_id: str,
                            author_id: Optional[int] = None,
-                           summary: Optional[str] = None) -> bool:
+                           summary: Optional[str] = None,
+                           agent_run_id: Optional[int] = None) -> bool:
     """Mark a published remark as deleted and record history. Returns False
     if the remark doesn't exist or is already deleted."""
     conn = get_connection()
@@ -1397,10 +1475,109 @@ def soft_delete_remark(doc_id: str, page_num: str, remark_id: str,
         ).fetchone()
         ann = _remark_row_to_dict(row)
         ann["tags"] = _read_tags(conn, ann["rowidPk"])
+        # agent_run_id — чтобы удаление, сделанное агентом, привязывалось к
+        # прогону так же, как правка: иначе «откатить прогон целиком» его не
+        # увидит.
         _insert_history(conn, doc_id, page_num, remark_id, "delete", ann, author_id,
-                        summary=summary)
+                        summary=summary, agent_run_id=agent_run_id)
         conn.commit()
     return True
+
+
+def _head_snapshot(conn: sqlite3.Connection, doc_id: str, page_num: str,
+                   remark_id: str) -> Optional[Dict[str, Any]]:
+    """Снимок текущего состояния замечания. Вызывающий держит _lock."""
+    row = conn.execute(
+        "SELECT * FROM remarks WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
+        (doc_id, page_num, remark_id),
+    ).fetchone()
+    if row is None:
+        return None
+    ann = _remark_row_to_dict(row)
+    ann["tags"] = _read_tags(conn, ann["rowidPk"])
+    return ann
+
+
+# Узкие операции ниже существуют отдельно от upsert_remark_db по двум причинам.
+# Во-первых, upsert перечисляет все изменяемые колонки, и вызывающий, которому
+# нужна одна, вынужден присылать всё замечание целиком. Во-вторых, upsert
+# переписывает author_id на того, кто сохраняет: для правки текста это верно, а
+# для публикации чужого черновика или смены его категории — нет, чужая работа не
+# должна менять авторство. Кто принял решение о категории, помнит category_set_by.
+
+def set_status_db(doc_id: str, page_num: str, remark_id: str, status: str,
+                  author_id: Optional[int] = None, summary: Optional[str] = None,
+                  agent_run_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """Сменить статус замечания и записать ревизию. None — замечания нет."""
+    conn = get_connection()
+    now = _now_iso()
+    with _lock:
+        if _head_snapshot(conn, doc_id, page_num, remark_id) is None:
+            return None
+        conn.execute(
+            "UPDATE remarks SET status = ?, updated_at = ? "
+            "WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
+            (status, now, doc_id, page_num, remark_id),
+        )
+        ann = _head_snapshot(conn, doc_id, page_num, remark_id)
+        _insert_history(conn, doc_id, page_num, remark_id, "update", ann, author_id,
+                        summary=summary, agent_run_id=agent_run_id)
+        conn.commit()
+    return ann
+
+
+def set_category_db(doc_id: str, page_num: str, remark_id: str,
+                    category: Optional[str], category_source: Optional[str] = None,
+                    author_id: Optional[int] = None, summary: Optional[str] = None,
+                    action: str = "update",
+                    agent_run_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """Сменить категорию и записать ревизию.
+
+    `category=None` означает сброс в «Прочее» — здесь, в отличие от
+    upsert_remark_db, None не может значить «не трогать»: смена категории —
+    единственное, зачем эту функцию зовут.
+    """
+    category = annotation_categories.normalize_category(category)
+    category_source = normalize_category_source(category_source)
+    conn = get_connection()
+    now = _now_iso()
+    with _lock:
+        if _head_snapshot(conn, doc_id, page_num, remark_id) is None:
+            return None
+        conn.execute(
+            "UPDATE remarks SET category = ?, category_source = ?, category_set_by = ?, "
+            "updated_at = ? WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
+            (category, category_source, author_id, now, doc_id, page_num, remark_id),
+        )
+        ann = _head_snapshot(conn, doc_id, page_num, remark_id)
+        _insert_history(conn, doc_id, page_num, remark_id, action, ann, author_id,
+                        summary=summary, agent_run_id=agent_run_id)
+        conn.commit()
+    return ann
+
+
+def set_tags_db(doc_id: str, page_num: str, remark_id: str, tags: List[str],
+                author_id: Optional[int] = None, summary: Optional[str] = None,
+                agent_run_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """Заменить набор тегов и записать ревизию. Пустой список очищает теги."""
+    tags = normalize_tags(tags)
+    conn = get_connection()
+    now = _now_iso()
+    with _lock:
+        head = _head_snapshot(conn, doc_id, page_num, remark_id)
+        if head is None:
+            return None
+        _set_tags(conn, head["rowidPk"], tags)
+        conn.execute(
+            "UPDATE remarks SET updated_at = ? "
+            "WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
+            (now, doc_id, page_num, remark_id),
+        )
+        ann = _head_snapshot(conn, doc_id, page_num, remark_id)
+        _insert_history(conn, doc_id, page_num, remark_id, "update", ann, author_id,
+                        summary=summary, agent_run_id=agent_run_id)
+        conn.commit()
+    return ann
 
 
 def list_pages(doc_id: Optional[str] = None) -> List[Tuple[str, str]]:
@@ -1552,15 +1729,60 @@ def count_remarks(
     return row["n"]
 
 
+def _history_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    """Одна сериализация ревизии на всех читателей.
+
+    До этого `get_history_record` отдавала словарь уже, чем `list_history` (без
+    `revNo`, `parentRevId`, `agentRunId`, `summary`), и одна и та же ревизия
+    выглядела по-разному в зависимости от того, каким путём её запросили.
+    """
+    try:
+        snapshot = normalize_snapshot(json.loads(row["snapshot"]))
+    except (TypeError, ValueError):
+        snapshot = None
+    try:
+        changes = json.loads(row["changes"]) if row["changes"] else None
+    except (TypeError, ValueError):
+        changes = None
+    if changes is not None and not isinstance(changes, list):
+        changes = None
+    return {
+        "id": row["id"],
+        "docId": row["doc_id"],
+        "pageNum": row["page_num"],
+        "remarkId": row["remark_id"],
+        "action": row["action"],
+        "snapshot": snapshot,
+        "authorId": row["author_id"],
+        "authorName": row["author_name"],
+        "createdAt": row["created_at"],
+        "revNo": row["rev_no"],
+        "parentRevId": row["parent_rev_id"],
+        "agentRunId": row["agent_run_id"],
+        "summary": row["summary"],
+        "changes": changes,
+        # Ярлык считается на сервере, чтобы не заводить JS-двойник словаря
+        # действий (см. remark_actions).
+        "actionLabel": remark_actions.label(changes),
+    }
+
+
 def list_history(
     doc_id: Optional[str] = None,
     page_num: Optional[str] = None,
     remark_id: Optional[str] = None,
     author_id: Optional[int] = None,
     action: Optional[str] = None,
+    changed: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> List[Dict[str, Any]]:
+    """Ревизии, новые сверху.
+
+    `action` фильтрует по происхождению записи (create/update/import/...),
+    `changed` — по составу изменения (токен remark_actions.ACTIONS). Это разные
+    вопросы: «кто это записал» и «что при этом изменилось».
+    """
     clauses: List[str] = []
     params: List[Any] = []
     if doc_id is not None:
@@ -1578,6 +1800,13 @@ def list_history(
     if action is not None:
         clauses.append("h.action = ?")
         params.append(action)
+    if changed is not None:
+        # json_each по колонке: точное сравнение с элементом массива, в отличие
+        # от LIKE, который спутал бы 'text' с гипотетическим 'text-something'.
+        clauses.append(
+            "EXISTS (SELECT 1 FROM json_each(h.changes) WHERE json_each.value = ?)"
+        )
+        params.append(changed)
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
     conn = get_connection()
@@ -1593,30 +1822,7 @@ def list_history(
             """,
             params + [limit, offset],
         ).fetchall()
-    result = []
-    for row in rows:
-        try:
-            snapshot = normalize_snapshot(json.loads(row["snapshot"]))
-        except (TypeError, ValueError):
-            snapshot = None
-        result.append(
-            {
-                "id": row["id"],
-                "docId": row["doc_id"],
-                "pageNum": row["page_num"],
-                "remarkId": row["remark_id"],
-                "action": row["action"],
-                "snapshot": snapshot,
-                "authorId": row["author_id"],
-                "authorName": row["author_name"],
-                "createdAt": row["created_at"],
-                "revNo": row["rev_no"],
-                "parentRevId": row["parent_rev_id"],
-                "agentRunId": row["agent_run_id"],
-                "summary": row["summary"],
-            }
-        )
-    return result
+    return [_history_row_to_dict(row) for row in rows]
 
 
 def get_history_record(hist_id: int) -> Optional[Dict[str, Any]]:
@@ -1633,27 +1839,322 @@ def get_history_record(hist_id: int) -> Optional[Dict[str, Any]]:
         ).fetchone()
     if row is None:
         return None
-    try:
-        snapshot = normalize_snapshot(json.loads(row["snapshot"]))
-    except (TypeError, ValueError):
-        snapshot = None
-    return {
-        "id": row["id"],
-        "docId": row["doc_id"],
-        "pageNum": row["page_num"],
-        "remarkId": row["remark_id"],
-        "action": row["action"],
-        "snapshot": snapshot,
-        "authorId": row["author_id"],
-        "authorName": row["author_name"],
-        "createdAt": row["created_at"],
-    }
+    return _history_row_to_dict(row)
 
 
 # Ревью-подсистема (кворум рецензентов) была отсюда удалена 2026-08-21:
 # код существовал с этапа 3, но не был подключён ни к API, ни к кабинету,
 # ни к тестам. Таблица remark_reviews в init_db оставлена намеренно
 # (см. TODO там). Восстановить можно из git: scripts/api/db.py до этой даты.
+
+# ===== ОЦЕНКИ =====
+#
+# Одна оценка на (замечание, шкала, участник). Повторная оценка перезаписывает
+# прежнюю: журнала изменения оценок нет сознательно — история «было 2, стало 4»
+# удвоила бы объём без ясного применения. Если она понадобится, это отдельная
+# работа, а не побочный эффект этой.
+
+
+def _rating_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "id": row["id"],
+        "docId": row["doc_id"],
+        "pageNum": row["page_num"],
+        "remarkId": row["remark_id"],
+        "scale": row["scale"],
+        "value": row["value"],
+        "raterId": row["rater_id"],
+        "raterName": row["rater_name"] if "rater_name" in row.keys() else None,
+        "note": row["note"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def set_rating(doc_id: str, page_num: str, remark_id: str, scale: str, value: int,
+               rater_id: int, note: Optional[str] = None) -> Dict[str, Any]:
+    """Поставить или изменить свою оценку. Значения нормализует вызывающий
+    (rating_scales), сюда приходят уже проверенные."""
+    conn = get_connection()
+    now = _now_iso()
+    with _lock:
+        conn.execute(
+            """
+            INSERT INTO remark_ratings
+              (doc_id, page_num, remark_id, scale, value, rater_id, note,
+               created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(doc_id, page_num, remark_id, scale, rater_id) DO UPDATE SET
+              value = excluded.value,
+              note = excluded.note,
+              updated_at = excluded.updated_at
+            """,
+            (doc_id, page_num, remark_id, scale, value, rater_id, note, now, now),
+        )
+        row = conn.execute(
+            """
+            SELECT r.*, u.display_name AS rater_name
+            FROM remark_ratings r
+            LEFT JOIN users u ON u.id = r.rater_id
+            WHERE r.doc_id = ? AND r.page_num = ? AND r.remark_id = ?
+              AND r.scale = ? AND r.rater_id = ?
+            """,
+            (doc_id, page_num, remark_id, scale, rater_id),
+        ).fetchone()
+        conn.commit()
+    return _rating_row_to_dict(row)
+
+
+def clear_rating(doc_id: str, page_num: str, remark_id: str, scale: str,
+                 rater_id: int) -> bool:
+    """Снять свою оценку. False — её и не было."""
+    conn = get_connection()
+    with _lock:
+        cur = conn.execute(
+            "DELETE FROM remark_ratings WHERE doc_id = ? AND page_num = ? "
+            "AND remark_id = ? AND scale = ? AND rater_id = ?",
+            (doc_id, page_num, remark_id, scale, rater_id),
+        )
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def list_ratings(doc_id: str, page_num: str, remark_id: str) -> List[Dict[str, Any]]:
+    conn = get_connection()
+    with _lock:
+        rows = conn.execute(
+            """
+            SELECT r.*, u.display_name AS rater_name
+            FROM remark_ratings r
+            LEFT JOIN users u ON u.id = r.rater_id
+            WHERE r.doc_id = ? AND r.page_num = ? AND r.remark_id = ?
+            ORDER BY r.scale, r.id
+            """,
+            (doc_id, page_num, remark_id),
+        ).fetchall()
+    return [_rating_row_to_dict(row) for row in rows]
+
+
+def summarize_ratings(doc_id: str, page_num: str, remark_id: str,
+                      rater_id: Optional[int] = None) -> Dict[str, Any]:
+    """Сводка по шкалам: среднее, число оценивших и оценка спрашивающего.
+
+    Среднее округляется до одного знака — большая точность на трёх оценках
+    была бы обманом.
+    """
+    ratings = list_ratings(doc_id, page_num, remark_id)
+    by_scale: Dict[str, Dict[str, Any]] = {}
+    for scale in rating_scales.names():
+        values = [r["value"] for r in ratings if r["scale"] == scale]
+        mine = next((r for r in ratings
+                     if r["scale"] == scale and r["raterId"] == rater_id), None)
+        by_scale[scale] = {
+            "scale": scale,
+            "count": len(values),
+            "average": round(sum(values) / len(values), 1) if values else None,
+            "mine": mine["value"] if mine else None,
+            "myNote": mine["note"] if mine else None,
+        }
+    return by_scale
+
+
+# ===== КОММЕНТАРИИ УЧАСТНИКОВ =====
+#
+# Рабочее обсуждение замечания. Внутренние: в статику не рендерятся и через
+# читательские маршруты не отдаются. Свободный текст — единственное место в
+# системе, куда участник может вписать личные данные по своей воле
+# (docs/anonymity-model.md).
+
+#: Комментарий — обсуждение, а не второй текст замечания, но и не однострочное
+#: резюме правки: разбор источника занимает абзац-другой.
+MAX_NOTE_BODY = 4000
+
+#: Чем заменяется тело удалённого комментария. Мягкое удаление сохраняет строку
+#: ради связности треда, но «удалить» должно означать удалить.
+DELETED_NOTE_BODY = ""
+
+
+class NoteError(ValueError):
+    """Некорректный комментарий: пустой, слишком длинный или ответ на ответ."""
+
+
+def normalize_note_body(raw: Any) -> str:
+    body = str(raw or "").strip()
+    if not body:
+        raise NoteError("body must not be empty")
+    if len(body) > MAX_NOTE_BODY:
+        raise NoteError(f"body must be at most {MAX_NOTE_BODY} characters")
+    return body
+
+
+def _note_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    deleted = row["deleted_at"] is not None
+    return {
+        "id": row["id"],
+        "docId": row["doc_id"],
+        "pageNum": row["page_num"],
+        "remarkId": row["remark_id"],
+        "authorId": row["author_id"],
+        "authorName": row["author_name"] if "author_name" in row.keys() else None,
+        "body": row["body"],
+        "parentId": row["parent_id"],
+        "resolved": row["resolved_at"] is not None,
+        "resolvedAt": row["resolved_at"],
+        "resolvedBy": row["resolved_by"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "deleted": deleted,
+    }
+
+
+def add_note(doc_id: str, page_num: str, remark_id: str, author_id: int, body: str,
+             parent_id: Optional[int] = None) -> Dict[str, Any]:
+    """Добавить комментарий или ответ на него.
+
+    Тред ровно в один уровень: ответить можно только на корневой комментарий.
+    Глубже дерево пришлось бы рендерить рекурсивно, а обсуждение одного
+    замечания в такой глубине не нуждается.
+    """
+    body = normalize_note_body(body)
+    conn = get_connection()
+    now = _now_iso()
+    with _lock:
+        if parent_id is not None:
+            parent = conn.execute(
+                "SELECT id, parent_id, doc_id, page_num, remark_id, deleted_at "
+                "FROM remark_notes WHERE id = ?",
+                (parent_id,),
+            ).fetchone()
+            if parent is None:
+                raise NoteError("parent note not found")
+            if parent["parent_id"] is not None:
+                raise NoteError("replies are one level deep: reply to the root note")
+            if (parent["doc_id"], parent["page_num"], parent["remark_id"]) != \
+                    (doc_id, page_num, remark_id):
+                raise NoteError("parent note belongs to another remark")
+            if parent["deleted_at"] is not None:
+                raise NoteError("cannot reply to a deleted note")
+        cur = conn.execute(
+            """
+            INSERT INTO remark_notes
+              (doc_id, page_num, remark_id, author_id, body, parent_id,
+               created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (doc_id, page_num, remark_id, author_id, body, parent_id, now, now),
+        )
+        row = conn.execute(
+            "SELECT n.*, u.display_name AS author_name FROM remark_notes n "
+            "LEFT JOIN users u ON u.id = n.author_id WHERE n.id = ?",
+            (cur.lastrowid,),
+        ).fetchone()
+        conn.commit()
+    return _note_row_to_dict(row)
+
+
+def get_note(note_id: int) -> Optional[Dict[str, Any]]:
+    conn = get_connection()
+    with _lock:
+        row = conn.execute(
+            "SELECT n.*, u.display_name AS author_name FROM remark_notes n "
+            "LEFT JOIN users u ON u.id = n.author_id WHERE n.id = ?",
+            (note_id,),
+        ).fetchone()
+    return _note_row_to_dict(row) if row is not None else None
+
+
+def list_notes(doc_id: str, page_num: str, remark_id: str,
+               include_deleted: bool = False) -> List[Dict[str, Any]]:
+    """Комментарии замечания в порядке записи: корни и ответы вперемешку,
+    связь — через parentId. Порядок по id, а не по дате: метки времени огрублены
+    до дня (docs/anonymity-model.md), и сортировать по ним нечем."""
+    conn = get_connection()
+    where = "n.doc_id = ? AND n.page_num = ? AND n.remark_id = ?"
+    if not include_deleted:
+        where += " AND n.deleted_at IS NULL"
+    with _lock:
+        rows = conn.execute(
+            f"""
+            SELECT n.*, u.display_name AS author_name
+            FROM remark_notes n
+            LEFT JOIN users u ON u.id = n.author_id
+            WHERE {where}
+            ORDER BY n.id
+            """,
+            (doc_id, page_num, remark_id),
+        ).fetchall()
+    return [_note_row_to_dict(row) for row in rows]
+
+
+def count_open_notes(doc_id: str, page_num: str, remark_id: str) -> int:
+    """Сколько нерешённых тредов у замечания. Считаются корни: ответ закрывать
+    отдельно не нужно, тред решается целиком."""
+    conn = get_connection()
+    with _lock:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM remark_notes "
+            "WHERE doc_id = ? AND page_num = ? AND remark_id = ? "
+            "AND parent_id IS NULL AND deleted_at IS NULL AND resolved_at IS NULL",
+            (doc_id, page_num, remark_id),
+        ).fetchone()
+    return row["n"]
+
+
+def edit_note(note_id: int, body: str) -> Optional[Dict[str, Any]]:
+    """Поправить текст комментария. Права проверяет вызывающий."""
+    body = normalize_note_body(body)
+    conn = get_connection()
+    with _lock:
+        cur = conn.execute(
+            "UPDATE remark_notes SET body = ?, updated_at = ? "
+            "WHERE id = ? AND deleted_at IS NULL",
+            (body, _now_iso(), note_id),
+        )
+        conn.commit()
+    if cur.rowcount == 0:
+        return None
+    return get_note(note_id)
+
+
+def resolve_note(note_id: int, resolved: bool, actor_id: int) -> Optional[Dict[str, Any]]:
+    """Пометить тред решённым или снова открыть. Только корень треда."""
+    conn = get_connection()
+    with _lock:
+        row = conn.execute(
+            "SELECT parent_id, deleted_at FROM remark_notes WHERE id = ?",
+            (note_id,),
+        ).fetchone()
+        if row is None or row["deleted_at"] is not None:
+            return None
+        if row["parent_id"] is not None:
+            raise NoteError("only the root note of a thread can be resolved")
+        conn.execute(
+            "UPDATE remark_notes SET resolved_at = ?, resolved_by = ?, updated_at = ? "
+            "WHERE id = ?",
+            (_now_iso() if resolved else None,
+             actor_id if resolved else None,
+             _now_iso(), note_id),
+        )
+        conn.commit()
+    return get_note(note_id)
+
+
+def delete_note(note_id: int) -> Optional[Dict[str, Any]]:
+    """Мягко удалить комментарий: строка остаётся ради связности треда, тело
+    затирается. Права проверяет вызывающий."""
+    conn = get_connection()
+    now = _now_iso()
+    with _lock:
+        cur = conn.execute(
+            "UPDATE remark_notes SET deleted_at = ?, updated_at = ?, body = ? "
+            "WHERE id = ? AND deleted_at IS NULL",
+            (now, now, DELETED_NOTE_BODY, note_id),
+        )
+        conn.commit()
+    if cur.rowcount == 0:
+        return None
+    return get_note(note_id)
+
 
 def get_stats() -> Dict[str, Any]:
     conn = get_connection()

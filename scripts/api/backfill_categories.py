@@ -170,15 +170,17 @@ def main() -> int:
     # очередь приёмки отличает догадку по тегам от разбора агента.
     source = "tags-backfill" if args.from_tags else "agent"
     pages = set()
-    with db._lock:  # noqa: SLF001 — тот же приём, что в backfill_tags.py
-        for row, new in changes:
-            conn.execute(
-                "UPDATE remarks SET category = ?, category_source = ? "
-                "WHERE rowid_pk = ?",
-                (new, source, row["rowid_pk"]),
-            )
-            pages.add((row["doc_id"], row["page_num"]))
-        conn.commit()
+    # Раньше здесь был прямой UPDATE, и массовая переклассификация не оставляла
+    # ни одной ревизии: тысяча замечаний меняла категорию, а в журнале было
+    # пусто. Теперь идём через set_category_db — она пишет историю в той же
+    # транзакции и не трогает авторство.
+    for row, new in changes:
+        db.set_category_db(
+            row["doc_id"], row["page_num"], row["remark_id"],
+            new, category_source=source, action="backfill",
+            summary=f"массовая классификация ({source})",
+        )
+        pages.add((row["doc_id"], row["page_num"]))
     print(f"\n[+] записано изменений: {len(changes)} на {len(pages)} страницах")
 
     if args.no_publish:

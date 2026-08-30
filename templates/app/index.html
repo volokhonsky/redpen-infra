@@ -188,8 +188,37 @@
         </div>
       </form>
 
+      <section class="app-ratings">
+        <h3>Оценка</h3>
+        <p class="app-note">
+          Три шкалы вместо одного вердикта: интересен ли факт, важно ли его
+          предъявить и правомерно ли предъявлять именно так.
+        </p>
+        <div id="app-rating-scales" class="app-rating-scales"></div>
+      </section>
+
+      <section class="app-notes">
+        <h3>Обсуждение</h3>
+        <p class="app-note">
+          Рабочие комментарии участников. На сайт не попадают — но и личных
+          данных здесь быть не должно.
+        </p>
+        <ol id="app-note-list" class="app-note-list"></ol>
+        <form id="app-note-form" class="app-note-form">
+          <textarea id="n-body" rows="3" maxlength="4000"
+                    placeholder="Что смущает в этом замечании?"></textarea>
+          <button type="submit" id="n-send">Отправить</button>
+        </form>
+      </section>
+
       <section class="app-history">
-        <h3>История правок</h3>
+        <h3>Что происходило</h3>
+        <div class="app-timeline-filter">
+          <label>
+            <input type="checkbox" id="tl-text-only" />
+            только правки текста
+          </label>
+        </div>
         <ol id="app-revisions" class="app-revisions"></ol>
       </section>
     </section>

@@ -31,7 +31,13 @@
     manifest: {},     // docId -> {page_006: "6"}
     section: null,    // текущий параграф, чтобы перечитывать его по фильтрам
     queue: { items: [], index: 0, skipped: {} },
-    dirty: false
+    dirty: false,
+    scales: [],       // описание шкал оценки, приходит с сервера
+    scaleTitles: {},  // name -> заголовок, для подписей в ленте
+    timeline: [],     // ревизии, оценки и комментарии одним списком
+    textOnly: false,  // фильтр ленты «только правки текста»
+    notes: [],
+    replyTo: null     // id корневого комментария, если пишем ответ
   };
 
   // --- мелочи -------------------------------------------------------------
@@ -200,16 +206,21 @@
     fillCategorySelect(el('f-category'), selected);
   }
 
+  //: Теги, которые человеку показывают и разрешают править. Зеркальный тег
+  //: категории и `draft` производные — если дать их в поле, их попробуют
+  //: поправить и получат 400.
+  function visibleTags(ann) {
+    return (ann.tags || []).filter(function (t) {
+      return t.indexOf('cat:') !== 0 && t !== 'draft';
+    });
+  }
+
   function fillForm(ann) {
     el('f-text').value = ann.text || '';
     fillCategories(ann.category);
     el('f-anntype').value = ann.annType || 'comment';
     el('f-status').value = ann.status === 'published' ? 'published' : 'draft';
-    // Зеркальный тег категории производный — в поле его не показываем, иначе
-    // человек попробует его править (и получит 400).
-    el('f-tags').value = (ann.tags || []).filter(function (t) {
-      return t.indexOf('cat:') !== 0 && t !== 'draft';
-    }).join(', ');
+    el('f-tags').value = visibleTags(ann).join(', ');
     el('f-summary').value = '';
     setDirty(false);
     updateHint(ann);
@@ -244,34 +255,209 @@
     return body;
   }
 
-  // --- история ------------------------------------------------------------
+  // --- лента событий ------------------------------------------------------
+  //
+  // Ярлык действия приходит с сервера (см. scripts/api/remark_actions.py):
+  // держать здесь второй словарь значило бы синхронизировать его руками, как
+  // это уже приходится делать с категориями.
 
-  var ACTIONS = {
-    create: 'создан', update: 'правка', delete: 'удалён',
-    revert: 'откат', import: 'импорт'
-  };
+  //: Действия, означающие правку содержания. Совпадает с
+  //: remark_actions.CONTENT_ACTIONS — единственное, что здесь продублировано,
+  //: и только ради фильтра на клиенте.
+  var CONTENT_ACTIONS = ['text', 'coords', 'kind'];
 
-  function renderRevisions(items) {
+  function isContentEdit(actions) {
+    if (!actions || !actions.length) return false;
+    for (var i = 0; i < actions.length; i++) {
+      if (CONTENT_ACTIONS.indexOf(actions[i]) !== -1) return true;
+    }
+    return false;
+  }
+
+  function actorName(item) {
+    return item.actorName || (item.actorId ? 'Участник №' + item.actorId : 'без автора');
+  }
+
+  function timelineHead(item) {
+    var agent = item.agentRunId
+      ? ' <span class="app-agent">прогон #' + item.agentRunId + '</span>' : '';
+    return '<div class="app-rev-head">' +
+      (item.revNo ? '<span class="app-rev-no">№' + item.revNo + '</span>' : '') +
+      '<span class="app-rev-action">' + escapeHtml(item.actionLabel || '') + '</span>' +
+      '<span class="app-rev-who">' + escapeHtml(actorName(item)) + agent + '</span>' +
+      '<span class="app-rev-day">' + escapeHtml(formatDay(item.createdAt)) + '</span>' +
+    '</div>';
+  }
+
+  function renderTimelineItem(item) {
+    if (item.kind === 'rating') {
+      var scale = state.scaleTitles[item.scale] || item.scale;
+      return '<li class="app-rev app-rev--rating">' + timelineHead(item) +
+        '<div class="app-rev-text">' + escapeHtml(scale) + ': ' + item.value + ' из 5' +
+        (item.note ? ' — ' + escapeHtml(item.note) : '') + '</div>' +
+      '</li>';
+    }
+    if (item.kind === 'note') {
+      return '<li class="app-rev app-rev--note">' + timelineHead(item) +
+        '<div class="app-rev-text">' + escapeHtml((item.body || '').slice(0, 200)) + '</div>' +
+      '</li>';
+    }
+    return '<li class="app-rev">' + timelineHead(item) +
+      (item.summary ? '<div class="app-rev-summary">' + escapeHtml(item.summary) + '</div>' : '') +
+      '<div class="app-rev-text">' + escapeHtml((item.text || '').slice(0, 200)) + '</div>' +
+    '</li>';
+  }
+
+  function renderTimeline() {
     var host = el('app-revisions');
-    if (!items.length) { host.innerHTML = '<li class="app-empty">Правок пока нет.</li>'; return; }
+    var items = state.timeline || [];
+    if (state.textOnly) {
+      items = items.filter(function (item) {
+        return item.kind === 'revision' && isContentEdit(item.actions);
+      });
+    }
+    if (!items.length) {
+      host.innerHTML = '<li class="app-empty">' +
+        (state.textOnly ? 'Правок текста пока не было.' : 'Событий пока нет.') + '</li>';
+      return;
+    }
     // Старые сверху: историю читают сверху вниз, как она происходила.
-    host.innerHTML = items.slice().reverse().map(function (rev) {
-      var who = rev.authorName || (rev.authorId ? 'Участник №' + rev.authorId : 'без автора');
-      var agent = rev.agentRunId ? ' <span class="app-agent">прогон #' + rev.agentRunId + '</span>' : '';
-      var snap = rev.snapshot || {};
-      var cat = snap.category ? (cats && cats.TITLES && cats.TITLES[snap.category]) || snap.category : '';
-      return '<li class="app-rev">' +
-        '<div class="app-rev-head">' +
-          '<span class="app-rev-no">№' + (rev.revNo || '?') + '</span>' +
-          '<span class="app-rev-action">' + escapeHtml(ACTIONS[rev.action] || rev.action) + '</span>' +
-          '<span class="app-rev-who">' + escapeHtml(who) + agent + '</span>' +
-          '<span class="app-rev-day">' + escapeHtml(formatDay(rev.createdAt)) + '</span>' +
+    host.innerHTML = items.slice().reverse().map(renderTimelineItem).join('');
+  }
+
+  // --- оценки -------------------------------------------------------------
+
+  function renderRatings(summary) {
+    var host = el('app-rating-scales');
+    if (!state.scales.length) { host.innerHTML = ''; return; }
+    host.innerHTML = state.scales.map(function (scale) {
+      var row = (summary && summary[scale.name]) || {};
+      var buttons = '';
+      for (var v = scale.min; v <= scale.max; v++) {
+        buttons += '<button type="button" class="app-rating-btn' +
+          (row.mine === v ? ' is-mine' : '') + '" data-scale="' +
+          escapeHtml(scale.name) + '" data-value="' + v + '">' + v + '</button>';
+      }
+      var others = row.count
+        ? 'среднее ' + row.average + ' по ' + row.count
+        : 'ещё никто не оценил';
+      return '<div class="app-rating">' +
+        '<div class="app-rating-title" title="' + escapeHtml(scale.hint) + '">' +
+          escapeHtml(scale.title) + '</div>' +
+        '<div class="app-rating-scale">' + buttons +
+          (row.mine != null
+            ? '<button type="button" class="app-rating-clear" data-scale="' +
+              escapeHtml(scale.name) + '">снять</button>'
+            : '') +
         '</div>' +
-        (rev.summary ? '<div class="app-rev-summary">' + escapeHtml(rev.summary) + '</div>' : '') +
-        (cat ? '<div class="app-rev-cat">категория: ' + escapeHtml(cat) + '</div>' : '') +
-        '<div class="app-rev-text">' + escapeHtml((snap.text || '').slice(0, 200)) + '</div>' +
+        '<div class="app-rating-others">' + escapeHtml(others) + '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  function ratingsUrl(ref, scale) {
+    return '/api/remarks/' + encodeURIComponent(ref.docId) + '/' +
+      encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.annId) +
+      '/ratings' + (scale ? '/' + encodeURIComponent(scale) : '');
+  }
+
+  async function rate(scale, value) {
+    var ref = state.ref;
+    if (!ref) return;
+    var data = await apiMutate('PUT', ratingsUrl(ref, scale), { value: value });
+    renderRatings(data.summary);
+    await loadTimeline(ref);
+  }
+
+  async function unrate(scale) {
+    var ref = state.ref;
+    if (!ref) return;
+    var data = await apiMutate('DELETE', ratingsUrl(ref, scale));
+    renderRatings(data.summary);
+    await loadTimeline(ref);
+  }
+
+  // --- комментарии --------------------------------------------------------
+
+  function notesUrl(ref) {
+    return '/api/remarks/' + encodeURIComponent(ref.docId) + '/' +
+      encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.annId) + '/notes';
+  }
+
+  function renderNoteItem(note, replies) {
+    var head = '<div class="app-note-head">' +
+      '<span class="app-note-who">' +
+        escapeHtml(note.authorName || ('Участник №' + note.authorId)) + '</span>' +
+      '<span class="app-note-day">' + escapeHtml(formatDay(note.createdAt)) + '</span>' +
+      (note.resolved ? '<span class="app-note-done">решено</span>' : '') +
+    '</div>';
+    var body = '<div class="app-note-body">' + escapeHtml(note.body) + '</div>';
+    var actions = '<div class="app-note-actions">' +
+      '<button type="button" class="app-note-reply" data-id="' + note.id + '">ответить</button>' +
+      '<button type="button" class="app-note-resolve" data-id="' + note.id +
+        '" data-resolved="' + (note.resolved ? '1' : '0') + '">' +
+        (note.resolved ? 'открыть снова' : 'решено') + '</button>' +
+      '<button type="button" class="app-note-delete" data-id="' + note.id + '">удалить</button>' +
+    '</div>';
+    var children = replies.map(function (reply) {
+      return '<li class="app-note app-note--reply">' +
+        '<div class="app-note-head">' +
+          '<span class="app-note-who">' +
+            escapeHtml(reply.authorName || ('Участник №' + reply.authorId)) + '</span>' +
+          '<span class="app-note-day">' + escapeHtml(formatDay(reply.createdAt)) + '</span>' +
+        '</div>' +
+        '<div class="app-note-body">' + escapeHtml(reply.body) + '</div>' +
+        '<div class="app-note-actions">' +
+          '<button type="button" class="app-note-delete" data-id="' + reply.id + '">удалить</button>' +
+        '</div>' +
       '</li>';
     }).join('');
+    return '<li class="app-note' + (note.resolved ? ' is-resolved' : '') + '">' +
+      head + body + actions +
+      (children ? '<ol class="app-note-replies">' + children + '</ol>' : '') +
+    '</li>';
+  }
+
+  function renderNotes(items) {
+    var host = el('app-note-list');
+    var roots = items.filter(function (n) { return n.parentId == null; });
+    if (!roots.length) {
+      host.innerHTML = '<li class="app-empty">Обсуждения пока нет.</li>';
+      return;
+    }
+    host.innerHTML = roots.map(function (root) {
+      var replies = items.filter(function (n) { return n.parentId === root.id; });
+      return renderNoteItem(root, replies);
+    }).join('');
+  }
+
+  async function loadNotes(ref) {
+    var data = await apiGet(notesUrl(ref));
+    state.notes = data.items || [];
+    renderNotes(state.notes);
+  }
+
+  async function sendNote() {
+    var ref = state.ref;
+    if (!ref) return;
+    var body = el('n-body').value.trim();
+    if (!body) return;
+    var payload = { body: body };
+    if (state.replyTo) payload.parentId = state.replyTo;
+    await apiMutate('POST', notesUrl(ref), payload);
+    el('n-body').value = '';
+    setReplyTo(null);
+    await loadNotes(ref);
+    await loadTimeline(ref);
+  }
+
+  function setReplyTo(id) {
+    state.replyTo = id;
+    var field = el('n-body');
+    field.placeholder = id
+      ? 'Ответ в треде — Esc, чтобы отменить'
+      : 'Что смущает в этом замечании?';
+    if (id) field.focus();
   }
 
   // --- просмотр -----------------------------------------------------------
@@ -537,18 +723,26 @@
   async function queueAccept() {
     var item = state.queue.items[state.queue.index];
     if (!item) return;
-    var body = {
-      annType: item.annType,
-      text: item.text,
-      status: el('q-status').value,
-      category: el('q-category').value
-    };
-    if (item.coordX != null && item.coordY != null) body.coords = [item.coordX, item.coordY];
+    var path = '/api/editor/' + encodeURIComponent(item.docId) + '/' +
+               encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.annId);
     // Резюме проставляется само: приёмка — действие однотипное, и заставлять
     // писать его руками на каждое замечание значит не разобрать очередь.
-    body.summary = el('q-mode').value === 'drafts' ? 'приёмка черновика' : 'категория подтверждена';
-    await apiMutate('PUT', '/api/editor/' + encodeURIComponent(item.docId) + '/' +
-                    encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.annId), body);
+    var summary = el('q-mode').value === 'drafts' ? 'приёмка черновика' : 'категория подтверждена';
+    var status = el('q-status').value;
+    var category = el('q-category').value;
+
+    // Узкие операции вместо полного PUT: очередь не правит текст, и слать его
+    // целиком означало бы записывать в журнал правку, которой не было.
+    //
+    // Категория пишется и тогда, когда значение не изменилось: подтверждение
+    // догадки — это и есть работа очереди, оно переводит category_source в
+    // 'human'. Без этого подтверждённое замечание всплывало бы в очереди снова.
+    if (category !== item.category || item.categorySource !== 'human') {
+      await apiMutate('PATCH', path + '/category', { category: category, summary: summary });
+    }
+    if (status !== item.status) {
+      await apiMutate('PATCH', path + '/status', { status: status, summary: summary });
+    }
     setStatus('Принято: ' + item.annId, false);
     advance();
   }
@@ -588,8 +782,25 @@
 
   // --- загрузка карточки --------------------------------------------------
 
+  async function loadScales() {
+    if (state.scales.length) return;
+    var data = await apiGet('/api/rating-scales');
+    state.scales = data.scales || [];
+    state.scaleTitles = {};
+    state.scales.forEach(function (scale) { state.scaleTitles[scale.name] = scale.title; });
+  }
+
+  async function loadTimeline(ref) {
+    var data = await apiGet('/api/remarks/' + encodeURIComponent(ref.docId) + '/' +
+                            encodeURIComponent(ref.pageKey) + '/' +
+                            encodeURIComponent(ref.annId) + '/timeline?limit=100');
+    state.timeline = data.items || [];
+    renderTimeline();
+  }
+
   async function loadCard(ref) {
     state.ref = ref;
+    setReplyTo(null);
     var path = '/api/annotations/' + encodeURIComponent(ref.docId) + '/' +
                encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.annId);
     var data = await apiGet(path);
@@ -599,10 +810,40 @@
     var label = await renderPreview(ref);
     await renderBreadcrumbs(ref, data.section, label);
 
-    var hist = await apiGet('/api/history?docId=' + encodeURIComponent(ref.docId) +
-                            '&pageKey=' + encodeURIComponent(ref.pageKey) +
-                            '&annId=' + encodeURIComponent(ref.annId) + '&limit=50');
-    renderRevisions(hist.items || []);
+    await loadScales();
+    var ratings = await apiGet(ratingsUrl(ref));
+    renderRatings(ratings.summary);
+    await loadNotes(ref);
+    await loadTimeline(ref);
+  }
+
+  //: Что из формы едет узкой операцией, а что — общим PUT. Текст и координаты
+  //: правит только PUT: у них оптимистическая блокировка по sha страницы.
+  //: Остальное — отдельные действия, и в журнале они видны по отдельности.
+  async function saveSideChanges(ref, before, body) {
+    var editorPath = '/api/editor/' + encodeURIComponent(ref.docId) + '/' +
+                     encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.annId);
+    var summary = body.summary;
+
+    if (body.status !== (before.status === 'published' ? 'published' : 'draft')) {
+      await apiMutate('PATCH', editorPath + '/status',
+                      { status: body.status, summary: summary });
+    }
+    if (body.category !== before.category) {
+      await apiMutate('PATCH', editorPath + '/category',
+                      { category: body.category, summary: summary });
+    }
+    if (!sameTags(body.tags, visibleTags(before))) {
+      await apiMutate('PATCH', editorPath + '/tags',
+                      { tags: body.tags, summary: summary });
+    }
+  }
+
+  function sameTags(a, b) {
+    if (a.length !== b.length) return false;
+    var left = a.slice().sort().join('\u0000');
+    var right = b.slice().sort().join('\u0000');
+    return left === right;
   }
 
   async function save() {
@@ -610,8 +851,18 @@
     if (!ref) return;
     var body = collectForm();
     if (!body.text.trim()) { setStatus('Текст замечания пуст.', true); return; }
-    await apiMutate('PUT', '/api/editor/' + encodeURIComponent(ref.docId) + '/' +
-                    encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.annId), body);
+    var before = state.annotation || {};
+    var textChanged = body.text !== (before.text || '') ||
+                      body.annType !== (before.annType || 'comment');
+
+    if (textChanged) {
+      // Полный PUT: он несёт текст и координаты, а вместе с ними и всё
+      // остальное — узкие операции после него были бы холостыми.
+      await apiMutate('PUT', '/api/editor/' + encodeURIComponent(ref.docId) + '/' +
+                      encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.annId), body);
+    } else {
+      await saveSideChanges(ref, before, body);
+    }
     setStatus('Сохранено.', false);
     await loadCard(ref);
     // Просмотр перечитываем принудительно: страница уже перерисована на сервере,
@@ -649,6 +900,56 @@
       if (!state.dirty) return;
       event.preventDefault();
       event.returnValue = '';
+    });
+  }
+
+  function wireRatings() {
+    // Делегирование: кнопки шкал перерисовываются на каждую оценку, и вешать
+    // обработчики на каждую заново значило бы плодить их.
+    el('app-rating-scales').addEventListener('click', function (event) {
+      var target = event.target;
+      if (target.classList.contains('app-rating-btn')) {
+        rate(target.dataset.scale, parseInt(target.dataset.value, 10)).catch(function () {});
+      } else if (target.classList.contains('app-rating-clear')) {
+        unrate(target.dataset.scale).catch(function () {});
+      }
+    });
+  }
+
+  function wireNotes() {
+    el('app-note-form').addEventListener('submit', function (event) {
+      event.preventDefault();
+      sendNote().catch(function () {});
+    });
+    el('n-body').addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' && state.replyTo) setReplyTo(null);
+    });
+    el('app-note-list').addEventListener('click', function (event) {
+      var target = event.target;
+      var id = parseInt(target.dataset.id, 10);
+      if (!id) return;
+      if (target.classList.contains('app-note-reply')) {
+        setReplyTo(id);
+      } else if (target.classList.contains('app-note-resolve')) {
+        var resolved = target.dataset.resolved === '1';
+        apiMutate('PATCH', '/api/notes/' + id, { resolved: !resolved })
+          .then(function () { return loadNotes(state.ref); })
+          .then(function () { return loadTimeline(state.ref); })
+          .catch(function () {});
+      } else if (target.classList.contains('app-note-delete')) {
+        if (!window.confirm('Удалить комментарий?')) return;
+        apiMutate('DELETE', '/api/notes/' + id)
+          .then(function () { return loadNotes(state.ref); })
+          .then(function () { return loadTimeline(state.ref); })
+          .catch(function () {});
+      }
+    });
+  }
+
+  function wireTimeline() {
+    el('tl-text-only').addEventListener('change', function (event) {
+      state.textOnly = event.target.checked;
+      renderTimeline();
     });
   }
 
@@ -690,6 +991,9 @@
   }
 
   wireFilters();
+  wireRatings();
+  wireNotes();
+  wireTimeline();
   wireQueue();
   window.addEventListener('resize', fitPreview);
   window.addEventListener('hashchange', function () { route().catch(function () {}); });

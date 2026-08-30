@@ -266,6 +266,93 @@ body {
 }
 .app-queue-empty { margin: 40px auto; text-align: center; }
 
+/* --- оценки и обсуждение ------------------------------------------------ */
+
+.app-ratings, .app-notes {
+  margin-top: 20px;
+  border-top: 1px solid var(--app-line);
+  padding-top: 14px;
+}
+.app-ratings h3, .app-notes h3 { margin: 0 0 6px; font-size: 0.95rem; }
+.app-note {
+  font-size: 0.85rem;
+  color: var(--app-muted);
+  margin: 0 0 10px;
+}
+
+.app-rating { margin-bottom: 10px; }
+.app-rating-title { font-size: 0.88rem; font-weight: 600; }
+.app-rating-scale { display: flex; gap: 4px; align-items: center; margin: 4px 0 2px; }
+.app-rating-btn {
+  width: 28px;
+  height: 26px;
+  background: #fff;
+  border: 1px solid var(--app-line);
+  border-radius: 3px;
+  cursor: pointer;
+  font: inherit;
+}
+.app-rating-btn.is-mine { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+.app-rating-clear {
+  margin-left: 6px;
+  background: none;
+  border: none;
+  color: var(--app-muted);
+  cursor: pointer;
+  font-size: 0.8rem;
+  text-decoration: underline;
+}
+.app-rating-others { font-size: 0.8rem; color: var(--app-muted); }
+
+.app-note-list { list-style: none; margin: 0 0 10px; padding: 0; }
+.app-note-list > .app-note {
+  border-left: 2px solid var(--app-line);
+  padding: 6px 0 8px 10px;
+  color: inherit;
+  font-size: inherit;
+}
+.app-note-list > .app-note.is-resolved { opacity: 0.6; }
+.app-note-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 0.8rem;
+  color: var(--app-muted);
+}
+.app-note-day { margin-left: auto; }
+.app-note-done {
+  margin-left: 0;
+  background: #e8f3ec;
+  color: #1a6b3c;
+  border-radius: 3px;
+  padding: 0 6px;
+}
+.app-note-body { font-size: 0.88rem; margin: 3px 0; white-space: pre-wrap; }
+.app-note-actions { display: flex; gap: 10px; }
+.app-note-actions button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--app-muted);
+  cursor: pointer;
+  font-size: 0.8rem;
+  text-decoration: underline;
+}
+.app-note-replies { list-style: none; margin: 6px 0 0 14px; padding: 0; }
+.app-note-form { display: flex; flex-direction: column; gap: 6px; }
+.app-note-form textarea {
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--app-line);
+  border-radius: 4px;
+  resize: vertical;
+}
+.app-note-form button { align-self: flex-start; }
+
+.app-timeline-filter { font-size: 0.85rem; color: var(--app-muted); margin-bottom: 8px; }
+.app-rev--rating .app-rev-action { background: #eaf1fb; }
+.app-rev--note .app-rev-action { background: #f3eefa; }
+
 @media (max-width: 1100px) {
   .app-queue { grid-template-columns: 1fr; }
 }
