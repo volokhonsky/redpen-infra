@@ -187,7 +187,7 @@ sha256 (в `<details>`), и одной строкой «распакуйте и 
 - `tests/test_offline_bundle.py` — 12 тестов pytest на синтетическом сайте
   (состав архива, вырезание редакторских скриптов, порядок подключения
   скриптов, полнота `offline-data.js`, не-ASCII, режимы сжатия в zip, манифест);
-- `tests/offline_bundle_browser_test.py` — браузерная приёмка распакованного
+- `tests/manual/offline_bundle_browser_test.py` — браузерная приёмка распакованного
   архива через playwright (по образцу `annotation_position_tests.py`, pytest'ом
   не собирается).
 

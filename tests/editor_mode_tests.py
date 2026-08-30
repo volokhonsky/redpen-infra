@@ -3,23 +3,10 @@ import sys
 import time
 from contextlib import contextmanager
 
-# Reuse helpers from remark_position_tests if available
-# We rely on its HTTP server utilities to keep behavior consistent
+from tests._http_helpers import find_free_port, start_http_server
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 PUBLISH_DIR = os.path.join(BASE_DIR, 'redpen-publish')
-
-# We import lazily inside functions to avoid hard dependency at import time
-
-def find_free_port():
-    from tests import remark_position_tests as apt  # type: ignore
-    return apt.find_free_port()
-
-
-def start_http_server(root_dir, port):
-    from tests import remark_position_tests as apt  # type: ignore
-    return apt.start_http_server(root_dir, port)
-
 
 def document_url_base(port, target_dir=None):
     if target_dir:

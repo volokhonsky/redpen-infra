@@ -262,9 +262,9 @@ def _rename_legacy_to_remarks(conn: sqlite3.Connection) -> None:
     if "annotations" not in tables:
         return
 
-    # Ревью-подсистему удалили как неподключённую (TODO от 2026-08-21). Таблицу
-    # сносим только если она действительно пуста; иначе переименовываем и
-    # оставляем разбираться человеку.
+    # Ревью-подсистему удалили как неподключённую (2026-08-21), в DDL её нет.
+    # Таблицу сносим только если она действительно пуста; иначе переименовываем
+    # и оставляем разбираться человеку.
     reviews_rows = 0
     if "annotation_reviews" in tables:
         reviews_rows = conn.execute(
@@ -890,12 +890,6 @@ def _read_tags_batch(conn: sqlite3.Connection, pks: List[int]) -> Dict[int, List
     return out
 
 
-def get_remark_tags(remark_pk: int) -> List[str]:
-    conn = get_connection()
-    with _lock:
-        return _read_tags(conn, remark_pk)
-
-
 def list_all_tags(doc_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """[{tag, count}] over non-deleted remarks, most used first."""
     conn = get_connection()
@@ -920,6 +914,13 @@ def list_all_tags(doc_id: Optional[str] = None) -> List[Dict[str, Any]]:
 
 
 # ===== Agent runs (прогоны агентов) =====
+#
+# ВНИМАНИЕ: подсистема НЕ подключена к API. Ни один эндпоинт в main.py не
+# вызывает start_agent_run/finish_agent_run, поэтому agent_runs на проде пуста,
+# а agent_run_id во всех мутациях остаётся None. Живыми её держат только тесты
+# (tests/test_agent_runs.py). Это заготовка под §3 «Агенты как участники с
+# авторством» плана docs/editor-app-plan-2026-08.md; удалять до его исполнения
+# не нужно, но и считать работающей — тоже.
 
 
 def _agent_run_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
@@ -980,13 +981,6 @@ def finish_agent_run(run_id: int, status: str = "done",
             (status, _now_iso(), notes, run_id),
         )
         conn.commit()
-        row = conn.execute("SELECT * FROM agent_runs WHERE id = ?", (run_id,)).fetchone()
-    return _agent_run_row_to_dict(row) if row else None
-
-
-def get_agent_run(run_id: int) -> Optional[Dict[str, Any]]:
-    conn = get_connection()
-    with _lock:
         row = conn.execute("SELECT * FROM agent_runs WHERE id = ?", (run_id,)).fetchone()
     return _agent_run_row_to_dict(row) if row else None
 
@@ -1844,8 +1838,10 @@ def get_history_record(hist_id: int) -> Optional[Dict[str, Any]]:
 
 # Ревью-подсистема (кворум рецензентов) была отсюда удалена 2026-08-21:
 # код существовал с этапа 3, но не был подключён ни к API, ни к кабинету,
-# ни к тестам. Таблица remark_reviews в init_db оставлена намеренно
-# (см. TODO там). Восстановить можно из git: scripts/api/db.py до этой даты.
+# ни к тестам. Восстановить можно из git: scripts/api/db.py до этой даты.
+# В DDL init_db таблицы нет; remark_reviews может существовать только в базе,
+# приехавшей из-под старого имени с непустым annotation_reviews — см.
+# _rename_legacy_to_remarks().
 
 # ===== ОЦЕНКИ =====
 #

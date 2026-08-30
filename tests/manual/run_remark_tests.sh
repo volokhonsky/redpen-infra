@@ -3,7 +3,7 @@
 # Run remark positioning tests for RedPen
 
 # Change to the project root directory
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 echo "=== RedPen Remark Positioning Tests ==="
 echo ""

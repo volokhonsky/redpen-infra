@@ -523,9 +523,6 @@ def publish_website_data(target_dir=None, document=None, specific_folders=None):
 
                 print(f"[+] Copied document index template to {document_index} with updated timestamp")
 
-            # No need for redirect HTML file anymore as we're using the document directory directly
-            # create_redirect_html(doc_output_dir, f"i/{document}")
-
             # Clean up only the old nested structure
             old_dirs = ['i']
             for old_dir in old_dirs:
@@ -601,9 +598,6 @@ def publish_website_data(target_dir=None, document=None, specific_folders=None):
 
                     print(f"[+] Copied document index template to {document_index} with updated timestamp")
                     print(f"[+] Also created document_index.html at {document_index_html} (SPA + editor host)")
-
-                # No need for redirect HTML file anymore as we're using the document directory directly
-                # create_redirect_html(doc_output_dir, f"i/{doc}")
 
                 # Clean up only the old nested structure
                 old_dirs = ['i']
@@ -913,7 +907,6 @@ def create_index_page(target_dir=None, specific_folders=None):
   <meta property="og:description" content="Антимифы к единому учебнику истории: постраничный разбор с фактчеком, разбором манипуляций и умолчаний прямо поверх страниц оригинала."/>
   <meta property="og:url" content="https://medinsky.net/"/>
   <link rel="stylesheet" href="css/main.css">
-  <link rel="stylesheet" href="css/components.css">
   <link rel="stylesheet" href="css/landing.css">
   <link rel="stylesheet" href="css/blog.css">
   <link rel="stylesheet" href="css/responsive.css">
@@ -1239,33 +1232,6 @@ def create_index_page(target_dir=None, specific_folders=None):
                 print(f"[!] Error removing directory {old_path}: {e}")
 
     return True
-
-def create_redirect_html(directory, target_path):
-    """Create an HTML file that redirects to the target path"""
-    print(f"Creating redirect from {directory} to {target_path}")
-
-    # Create the redirect HTML content
-    redirect_html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta http-equiv="refresh" content="0;url={target_path}/index.html">
-    <title>Redirecting...</title>
-</head>
-<body>
-    <p>Redirecting to <a href="{target_path}/index.html">{target_path}/index.html</a>...</p>
-    <script>
-        window.location.href = "{target_path}/index.html";
-    </script>
-</body>
-</html>
-"""
-
-    # Write the redirect HTML to a file
-    redirect_path = os.path.join(directory, "index.html")
-    with open(redirect_path, "w") as f:
-        f.write(redirect_html)
-
-    print(f"[+] Created redirect file at {redirect_path}")
 
 def push_to_submodule(target_dir=None):
     """Commit and push changes to the redpen-publish repository"""

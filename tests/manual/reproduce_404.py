@@ -20,27 +20,8 @@ from urllib.error import HTTPError, URLError
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(project_root)
 
-def find_free_port():
-    """Find a free port on localhost"""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(('', 0))
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return s.getsockname()[1]
-
-def start_http_server(directory, port):
-    """Start a simple HTTP server in a separate thread"""
-    handler = http.server.SimpleHTTPRequestHandler
-    httpd = socketserver.TCPServer(("", port), handler)
-
-    # Change to the specified directory
-    os.chdir(directory)
-
-    # Start the server in a separate thread
-    server_thread = threading.Thread(target=httpd.serve_forever)
-    server_thread.daemon = True
-    server_thread.start()
-
-    return httpd
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+from tests._http_helpers import find_free_port, start_http_server
 
 def check_url(url):
     """Check if a URL is accessible"""

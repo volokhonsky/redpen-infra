@@ -45,7 +45,7 @@ python -m playwright install chromium
 python tests/remark_position_tests.py         # позиционирование кружков
 python tests/remark_position_tests.py --update-baseline
 python tests/editor_mode_tests.py                 # режим редактора (?editor=1)
-python tests/simple_test.py                        # смоук рендера страницы
+python tests/manual/simple_test.py                        # смоук рендера страницы
 ```
 
 - `remark_position_tests.py` — измеряет позиции элементов `.circle` при
@@ -55,7 +55,9 @@ python tests/simple_test.py                        # смоук рендера �
 - `editor_mode_tests.py` — проверяет, что панель редактора (`.redpen-editor`)
   и `window.RedPenEditor.state.editorMode` появляются только с `?editor=1`.
   Работает против опубликованного `redpen-publish/medinsky11klass/`.
-- `simple_test.py`, `reproduce_404.py` — отладочные скрипты, не тесты.
+- `manual/simple_test.py`, `manual/reproduce_404.py` — отладочные скрипты,
+  не тесты; там же `manual/offline_bundle_browser_test.py` и
+  `manual/run_remark_tests.sh`.
 
 `build_website.py` вызывает часть этих e2e-проверок автоматически на шаге сборки;
 пропустить их можно флагом `--skip-tests`.

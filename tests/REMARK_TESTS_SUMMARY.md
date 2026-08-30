@@ -16,7 +16,7 @@ The implementation consists of:
    - Compares positions against baseline values
    - Takes screenshots for visual verification
 
-2. **A shell script** (`tests/run_remark_tests.sh`) that:
+2. **A shell script** (`tests/manual/run_remark_tests.sh`) that:
    - Installs dependencies
    - Runs the tests
    - Provides options to update baseline positions
@@ -40,7 +40,7 @@ To run the tests and establish a baseline:
 
 1. Run the tests with the update baseline flag:
    ```bash
-   ./tests/run_remark_tests.sh --update-baseline
+   ./tests/manual/run_remark_tests.sh --update-baseline
    ```
 
 2. This will:
@@ -51,7 +51,7 @@ To run the tests and establish a baseline:
 
 3. For future runs, simply use:
    ```bash
-   ./tests/run_remark_tests.sh
+   ./tests/manual/run_remark_tests.sh
    ```
 
 4. This will:

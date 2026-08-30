@@ -214,20 +214,12 @@ async def require_csrf(request: Request, user: Dict[str, str] = Depends(require_
 #: тогда, когда основную массу текста стали производить агенты: публикация —
 #: единственное по-настоящему доверенное действие, и его отделяют от «писать».
 EDITOR_ROLES = ("editor", "reviewer", "admin")
-REVIEWER_ROLES = ("reviewer", "admin")
 
 
 async def require_editor(user: Dict[str, Any] = Depends(require_csrf)) -> Dict[str, Any]:
     """FastAPI dependency: authenticated + CSRF-checked + editor role or above."""
     if user.get("role") not in EDITOR_ROLES:
         raise HTTPException(status_code=403, detail="editor role required")
-    return user
-
-
-async def require_reviewer(user: Dict[str, Any] = Depends(require_csrf)) -> Dict[str, Any]:
-    """FastAPI dependency: authenticated + CSRF-checked + reviewer role or above."""
-    if user.get("role") not in REVIEWER_ROLES:
-        raise HTTPException(status_code=403, detail="reviewer role required")
     return user
 
 
@@ -643,6 +635,15 @@ async def admin_publish_all(user: Dict[str, Any] = Depends(require_admin_csrf)):
     logger.info("admin: publish-all pages=%d failed=%d by=%s",
                 result["pages"], result["failed"], user["userId"])
     return result
+
+
+# ===== Инбокс этапа 0: /api/hello, /api/store-raw, /api/store =====
+#
+# ВНИМАНИЕ: клиентов нет. Ни просмотрщик, ни /app/, ни кабинет, ни content-sync
+# к этим трём эндпоинтам не обращаются — они остались от этапа 0, когда правки
+# складывались в файлы инбокса до появления SQLite-канона. Вместе с ними жив
+# модуль scripts/api/storage.py, существующий только ради них. Оставлены
+# намеренно (решение 2026-08-30), но работающей частью системы не являются.
 
 
 @app.get("/api/hello")
