@@ -361,6 +361,7 @@ def render_page(
 
 {_page_data_blob(remarks)}
   <script src="{root}js/redpen-categories.js"></script>
+  <script src="{root}js/redpen-markers.js"></script>
   <script src="{root}js/page-view.js"></script>
 </body>
 </html>
