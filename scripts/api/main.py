@@ -215,6 +215,12 @@ async def require_csrf(request: Request, user: Dict[str, str] = Depends(require_
 #: единственное по-настоящему доверенное действие, и его отделяют от «писать».
 EDITOR_ROLES = ("editor", "reviewer", "admin")
 
+MAX_SUMMARY_LENGTH = 200
+REMARK_STATUSES = ("published", "draft", "deleted")
+# "general" ушёл: см. docs/general-migration-map.json. Строки со status='deleted'
+# могут по-прежнему иметь kind='general' — их никто не читает, кроме истории.
+REMARK_KINDS = ("major", "minor")
+
 
 async def require_editor(user: Dict[str, Any] = Depends(require_csrf)) -> Dict[str, Any]:
     """FastAPI dependency: authenticated + CSRF-checked + editor role or above."""
@@ -1145,11 +1151,6 @@ async def patch_remark_tags(docId: str, pageNum: str, remarkId: str, request: Re
 # ===== CABINET (stage 3) =====
 
 #: Резюме правки: одна строка, а не второй текст замечания.
-MAX_SUMMARY_LENGTH = 200
-REMARK_STATUSES = ("published", "draft", "deleted")
-# "general" ушёл: см. docs/general-migration-map.json. Строки со status='deleted'
-# могут по-прежнему иметь kind='general' — их никто не читает, кроме истории.
-REMARK_KINDS = ("major", "minor")
 
 
 async def require_editor_read(user: Dict[str, Any] = Depends(require_user)) -> Dict[str, Any]:

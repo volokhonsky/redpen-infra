@@ -1499,25 +1499,42 @@ def _head_snapshot(conn: sqlite3.Connection, doc_id: str, page_num: str,
 # для публикации чужого черновика или смены его категории — нет, чужая работа не
 # должна менять авторство. Кто принял решение о категории, помнит category_set_by.
 
+def _set_field_db(doc_id: str, page_num: str, remark_id: str, apply,
+                  action: str = "update", author_id: Optional[int] = None,
+                  summary: Optional[str] = None,
+                  agent_run_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """Общий каркас узких правок: проверить, что замечание есть → применить
+    изменение → перечитать голову → записать ревизию, всё в одной транзакции.
+
+    `apply(conn, head, now)` вносит собственно правку; различаются три
+    вызывающих только ею. Возврат None означает «замечания нет».
+    """
+    conn = get_connection()
+    now = _now_iso()
+    with _lock:
+        head = _head_snapshot(conn, doc_id, page_num, remark_id)
+        if head is None:
+            return None
+        apply(conn, head, now)
+        ann = _head_snapshot(conn, doc_id, page_num, remark_id)
+        _insert_history(conn, doc_id, page_num, remark_id, action, ann, author_id,
+                        summary=summary, agent_run_id=agent_run_id)
+        conn.commit()
+    return ann
+
+
 def set_status_db(doc_id: str, page_num: str, remark_id: str, status: str,
                   author_id: Optional[int] = None, summary: Optional[str] = None,
                   agent_run_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """Сменить статус замечания и записать ревизию. None — замечания нет."""
-    conn = get_connection()
-    now = _now_iso()
-    with _lock:
-        if _head_snapshot(conn, doc_id, page_num, remark_id) is None:
-            return None
+    def apply(conn, head, now):
         conn.execute(
             "UPDATE remarks SET status = ?, updated_at = ? "
             "WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
             (status, now, doc_id, page_num, remark_id),
         )
-        ann = _head_snapshot(conn, doc_id, page_num, remark_id)
-        _insert_history(conn, doc_id, page_num, remark_id, "update", ann, author_id,
-                        summary=summary, agent_run_id=agent_run_id)
-        conn.commit()
-    return ann
+    return _set_field_db(doc_id, page_num, remark_id, apply, author_id=author_id,
+                         summary=summary, agent_run_id=agent_run_id)
 
 
 def set_category_db(doc_id: str, page_num: str, remark_id: str,
@@ -1531,47 +1548,34 @@ def set_category_db(doc_id: str, page_num: str, remark_id: str,
     upsert_remark_db, None не может значить «не трогать»: смена категории —
     единственное, зачем эту функцию зовут.
     """
-    category = annotation_categories.normalize_category(category)
-    category_source = normalize_category_source(category_source)
-    conn = get_connection()
-    now = _now_iso()
-    with _lock:
-        if _head_snapshot(conn, doc_id, page_num, remark_id) is None:
-            return None
+    norm_category = annotation_categories.normalize_category(category)
+    norm_source = normalize_category_source(category_source)
+
+    def apply(conn, head, now):
         conn.execute(
             "UPDATE remarks SET category = ?, category_source = ?, category_set_by = ?, "
             "updated_at = ? WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
-            (category, category_source, author_id, now, doc_id, page_num, remark_id),
+            (norm_category, norm_source, author_id, now, doc_id, page_num, remark_id),
         )
-        ann = _head_snapshot(conn, doc_id, page_num, remark_id)
-        _insert_history(conn, doc_id, page_num, remark_id, action, ann, author_id,
-                        summary=summary, agent_run_id=agent_run_id)
-        conn.commit()
-    return ann
+    return _set_field_db(doc_id, page_num, remark_id, apply, action=action,
+                         author_id=author_id, summary=summary, agent_run_id=agent_run_id)
 
 
 def set_tags_db(doc_id: str, page_num: str, remark_id: str, tags: List[str],
                 author_id: Optional[int] = None, summary: Optional[str] = None,
                 agent_run_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """Заменить набор тегов и записать ревизию. Пустой список очищает теги."""
-    tags = normalize_tags(tags)
-    conn = get_connection()
-    now = _now_iso()
-    with _lock:
-        head = _head_snapshot(conn, doc_id, page_num, remark_id)
-        if head is None:
-            return None
-        _set_tags(conn, head["rowidPk"], tags)
+    norm_tags = normalize_tags(tags)
+
+    def apply(conn, head, now):
+        _set_tags(conn, head["rowidPk"], norm_tags)
         conn.execute(
             "UPDATE remarks SET updated_at = ? "
             "WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
             (now, doc_id, page_num, remark_id),
         )
-        ann = _head_snapshot(conn, doc_id, page_num, remark_id)
-        _insert_history(conn, doc_id, page_num, remark_id, "update", ann, author_id,
-                        summary=summary, agent_run_id=agent_run_id)
-        conn.commit()
-    return ann
+    return _set_field_db(doc_id, page_num, remark_id, apply, author_id=author_id,
+                         summary=summary, agent_run_id=agent_run_id)
 
 
 def list_pages(doc_id: Optional[str] = None) -> List[Tuple[str, str]]:

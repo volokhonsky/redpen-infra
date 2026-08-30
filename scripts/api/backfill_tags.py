@@ -20,7 +20,6 @@ This script never publishes -- run publish_all() (or restart the API) after.
 
 import argparse
 import os
-import re
 import sys
 from typing import Dict, List, Optional
 
@@ -28,23 +27,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import db  # noqa: E402
+import page_files  # noqa: E402
 from remark_converter import parse_markdown_remark  # noqa: E402
 
-PAGE_MD_RE = re.compile(r"^page_(-?\d+)\.md$")
-
-
 def iter_page_files(md_dir: str) -> List[tuple]:
-    """[(page_num, path), ...] -- page_num verbatim from the filename, so
-    "000"/"-01" survive. Service files (_report_*, _typical_remarks) are
-    skipped by the pattern."""
-    if not os.path.isdir(md_dir):
-        return []
-    out = []
-    for name in sorted(os.listdir(md_dir)):
-        m = PAGE_MD_RE.match(name)
-        if m:
-            out.append((m.group(1), os.path.join(md_dir, name)))
-    return out
+    """[(page_num, path), ...] -- ключ страницы дословно из имени файла."""
+    return page_files.iter_page_files(md_dir, page_files.PAGE_MD_RE)
 
 
 def run(md_dir: str, doc_id: str, apply: bool, overwrite: bool) -> Dict[str, int]:

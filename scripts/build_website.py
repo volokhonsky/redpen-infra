@@ -26,6 +26,7 @@ import sys
 import argparse
 import subprocess
 import importlib.util
+import json
 import shutil
 import glob
 import datetime
@@ -210,51 +211,21 @@ def convert_remarks(target_dir=None, document=None, specific_folders=None):
     """
     print(f"\n=== Converting Markdown Remarks to JSON for {document or (', '.join(specific_folders) if specific_folders else 'all documents')} ===")
 
-    # If document is specified, only convert that document's remarks
-    if document:
-        md_dir = os.path.join(project_root, 'redpen-content', document, 'remarks')
+    documents = [document] if document else get_document_folders(specific_folders)
+    publish_root = target_dir or os.path.join(project_root, 'redpen-publish')
+    success = True
 
-        # Use target_dir if provided, otherwise use default redpen-publish
-        if target_dir:
-            # Place remarks directly in the document directory
-            json_dir = os.path.join(target_dir, document, 'remarks')
-        else:
-            json_dir = os.path.join(project_root, 'redpen-publish', document, 'remarks')
-
-        # Create the directory if it doesn't exist
+    for doc in documents:
+        md_dir = os.path.join(project_root, 'redpen-content', doc, 'remarks')
+        json_dir = os.path.join(publish_root, doc, 'remarks')
         os.makedirs(json_dir, exist_ok=True)
-
         try:
             remark_converter.md_to_json(md_dir, json_dir)
-            return True
         except Exception as e:
-            print(f"Error converting remarks for {document}: {e}")
-            return False
-    else:
-        # Convert remarks for all documents or specific folders
-        documents = get_document_folders(specific_folders)
-        success = True
+            print(f"Error converting remarks for {doc}: {e}")
+            success = False
 
-        for doc in documents:
-            md_dir = os.path.join(project_root, 'redpen-content', doc, 'remarks')
-
-            # Use target_dir if provided, otherwise use default redpen-publish
-            if target_dir:
-                # Place remarks directly in the document directory
-                json_dir = os.path.join(target_dir, doc, 'remarks')
-            else:
-                json_dir = os.path.join(project_root, 'redpen-publish', doc, 'remarks')
-
-            # Create the directory if it doesn't exist
-            os.makedirs(json_dir, exist_ok=True)
-
-            try:
-                remark_converter.md_to_json(md_dir, json_dir)
-            except Exception as e:
-                print(f"Error converting remarks for {doc}: {e}")
-                success = False
-
-        return success
+    return success
 
 def generate_page_manifests(target_dir=None, document=None, specific_folders=None):
     """
@@ -448,6 +419,59 @@ def run_editor_mode_tests(target_dir=None):
         print(f"Error running editor mode tests: {e}")
         return False
 
+def _publish_one_document(doc, output_dir, templates_dir):
+    """Опубликовать содержимое одного документа в <output_dir>/<doc>/."""
+    content_root = os.path.join(project_root, 'redpen-content', doc)
+    images_dir = os.path.join(content_root, 'images')
+    text_dir = os.path.join(content_root, 'text')
+    # Замечания не трогаем: канон — БД, в publish их кладёт API (publisher.py).
+    remarks_dir = None
+
+    doc_output_dir = os.path.join(output_dir, doc)
+    os.makedirs(doc_output_dir, exist_ok=True)
+
+    publish_data.publish_data(images_dir, text_dir, remarks_dir, doc_output_dir)
+
+    # Иллюстрации, если они есть, ложатся в тот же images/
+    illustrations_dir = os.path.join(content_root, 'illustrations')
+    if os.path.exists(illustrations_dir) and os.path.isdir(illustrations_dir):
+        images_output = os.path.join(doc_output_dir, "images")
+        publish_data.copy_files(illustrations_dir, images_output, "*")
+        print(f"[+] Published illustrations from {illustrations_dir} to {images_output}")
+
+    meta_json_path = os.path.join(content_root, 'meta.json')
+    metadata_json_path = os.path.join(doc_output_dir, 'metadata.json')
+    if os.path.exists(meta_json_path):
+        shutil.copy2(meta_json_path, metadata_json_path)
+        print(f"[+] Copied meta.json to {metadata_json_path}")
+
+    document_template = os.path.join(templates_dir, 'document_index.html')
+    if not os.path.exists(document_template):
+        return
+
+    with open(document_template, 'r', encoding='utf-8') as f:
+        template_content = f.read()
+    current_timestamp = datetime.datetime.now().strftime('%d.%m.%Y')
+    template_content = template_content.replace(
+        'Последнее обновление: 15.05.2023 14:30',
+        f'Последнее обновление: {current_timestamp}')
+    content = page_html.AUTO_HEADER + template_content
+
+    # ВНИМАНИЕ: <doc>/index.html ниже перезаписывается оглавлением на шаге 3.6
+    # (page_html.build_pages). Вторая копия, <doc>/document_index.html, --
+    # единственное место, где на проде живёт старый SPA, а вместе с ним и режим
+    # редактора (?editor=1). Удалять её можно только вместе с переездом
+    # редактора в отдельное приложение -- см. docs/refactoring-plan-2026-08.md.
+    document_index = os.path.join(doc_output_dir, 'index.html')
+    document_index_html = os.path.join(doc_output_dir, 'document_index.html')
+    for path in (document_index, document_index_html):
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+    print(f"[+] Copied document index template to {document_index} with updated timestamp")
+    print(f"[+] Also created document_index.html at {document_index_html} (SPA + editor host)")
+
+
 def publish_website_data(target_dir=None, document=None, specific_folders=None):
     """
     Publish data to the target directory
@@ -472,143 +496,14 @@ def publish_website_data(target_dir=None, document=None, specific_folders=None):
     os.makedirs(output_dir, exist_ok=True)
 
     try:
-        # If document is specified, only publish that document's data
-        if document:
-            images_dir = os.path.join(project_root, 'redpen-content', document, 'images')
-            text_dir = os.path.join(project_root, 'redpen-content', document, 'text')
-            # Skip remarks as they're already converted and in the right place
-            remarks_dir = None
+        # Одна ветка на любое число документов: раньше «один документ» и «все
+        # документы» были двумя копиями одного блока, и они успели разойтись —
+        # копия для одного документа не писала document_index.html, то есть
+        # сборка с --document молча оставляла документ без носителя редактора.
+        documents = [document] if document else get_document_folders(specific_folders)
 
-            # Create document-specific output directory
-            doc_output_dir = os.path.join(output_dir, document)
-            os.makedirs(doc_output_dir, exist_ok=True)
-
-            # Use the document directory directly for content
-            doc_content_dir = doc_output_dir
-
-            # Publish content data directly to the document directory
-            publish_data.publish_data(images_dir, text_dir, remarks_dir, doc_content_dir)
-
-            # Check if illustrations folder exists and publish its content to images folder
-            illustrations_dir = os.path.join(project_root, 'redpen-content', document, 'illustrations')
-            if os.path.exists(illustrations_dir) and os.path.isdir(illustrations_dir):
-                images_output = os.path.join(doc_content_dir, "images")
-                publish_data.copy_files(illustrations_dir, images_output, "*")
-                print(f"[+] Published illustrations from {illustrations_dir} to {images_output}")
-
-            # Copy meta.json to the document directory as metadata.json
-            meta_json_path = os.path.join(project_root, 'redpen-content', document, 'meta.json')
-            metadata_json_path = os.path.join(doc_content_dir, 'metadata.json')
-            if os.path.exists(meta_json_path):
-                shutil.copy2(meta_json_path, metadata_json_path)
-                print(f"[+] Copied meta.json to {metadata_json_path}")
-
-            # Copy document index template to the document directory with updated timestamp
-            document_template = os.path.join(templates_dir, 'document_index.html')
-            document_index = os.path.join(doc_content_dir, 'index.html')
-            if os.path.exists(document_template):
-                # Read the template content
-                with open(document_template, 'r', encoding='utf-8') as f:
-                    template_content = f.read()
-
-                # Replace the timestamp with current date and time
-                current_timestamp = datetime.datetime.now().strftime('%d.%m.%Y')
-                template_content = template_content.replace('Последнее обновление: 15.05.2023 14:30', f'Последнее обновление: {current_timestamp}')
-
-                # Prepend autogenerated notice
-                auto_hdr = page_html.AUTO_HEADER
-                # Write the modified content to the output file
-                with open(document_index, 'w', encoding='utf-8') as f:
-                    f.write(auto_hdr + template_content)
-
-                print(f"[+] Copied document index template to {document_index} with updated timestamp")
-
-            # Clean up only the old nested structure
-            old_dirs = ['i']
-            for old_dir in old_dirs:
-                old_path = os.path.join(doc_output_dir, old_dir)
-                if os.path.exists(old_path) and os.path.isdir(old_path):
-                    try:
-                        shutil.rmtree(old_path)
-                        print(f"[+] Removed old directory: {old_path}")
-                    except Exception as e:
-                        print(f"[!] Error removing directory {old_path}: {e}")
-        else:
-            # Publish data for all documents or specific folders
-            documents = get_document_folders(specific_folders)
-
-            for doc in documents:
-                images_dir = os.path.join(project_root, 'redpen-content', doc, 'images')
-                text_dir = os.path.join(project_root, 'redpen-content', doc, 'text')
-                # Skip remarks as they're already converted and in the right place
-                remarks_dir = None
-
-                # Create document-specific output directory
-                doc_output_dir = os.path.join(output_dir, doc)
-                os.makedirs(doc_output_dir, exist_ok=True)
-
-                # Use the document directory directly for content
-                doc_content_dir = doc_output_dir
-
-                # Publish content data directly to the document directory
-                publish_data.publish_data(images_dir, text_dir, remarks_dir, doc_content_dir)
-
-                # Check if illustrations folder exists and publish its content to images folder
-                illustrations_dir = os.path.join(project_root, 'redpen-content', doc, 'illustrations')
-                if os.path.exists(illustrations_dir) and os.path.isdir(illustrations_dir):
-                    images_output = os.path.join(doc_content_dir, "images")
-                    publish_data.copy_files(illustrations_dir, images_output, "*")
-                    print(f"[+] Published illustrations from {illustrations_dir} to {images_output}")
-
-                # Copy meta.json to the document directory as metadata.json
-                meta_json_path = os.path.join(project_root, 'redpen-content', doc, 'meta.json')
-                metadata_json_path = os.path.join(doc_content_dir, 'metadata.json')
-                if os.path.exists(meta_json_path):
-                    shutil.copy2(meta_json_path, metadata_json_path)
-                    print(f"[+] Copied meta.json to {metadata_json_path}")
-
-                # Copy document index template to the document directory with updated timestamp
-                document_template = os.path.join(templates_dir, 'document_index.html')
-                document_index = os.path.join(doc_content_dir, 'index.html')
-                document_index_html = os.path.join(doc_content_dir, 'document_index.html')
-                if os.path.exists(document_template):
-                    # Read the template content
-                    with open(document_template, 'r', encoding='utf-8') as f:
-                        template_content = f.read()
-
-                    # Replace the timestamp with current date and time
-                    current_timestamp = datetime.datetime.now().strftime('%d.%m.%Y')
-                    template_content = template_content.replace('Последнее обновление: 15.05.2023 14:30', f'Последнее обновление: {current_timestamp}')
-
-                    # Prepend autogenerated notice
-                    auto_hdr = page_html.AUTO_HEADER
-                    # Write the modified content to the output files
-                    with open(document_index, 'w', encoding='utf-8') as f:
-                        f.write(auto_hdr + template_content)
-
-                    # ВНИМАНИЕ: <doc>/index.html ниже перезаписывается оглавлением
-                    # на шаге 3.6 (page_html.build_pages). Эта вторая копия,
-                    # <doc>/document_index.html, -- единственное место, где на
-                    # проде живёт старый SPA, а вместе с ним и режим редактора
-                    # (?editor=1). Удалять её можно только вместе с переездом
-                    # редактора в отдельное приложение -- см.
-                    # docs/refactoring-plan-2026-08.md, раздел 5.
-                    with open(document_index_html, 'w', encoding='utf-8') as f:
-                        f.write(auto_hdr + template_content)
-
-                    print(f"[+] Copied document index template to {document_index} with updated timestamp")
-                    print(f"[+] Also created document_index.html at {document_index_html} (SPA + editor host)")
-
-                # Clean up only the old nested structure
-                old_dirs = ['i']
-                for old_dir in old_dirs:
-                    old_path = os.path.join(doc_output_dir, old_dir)
-                    if os.path.exists(old_path) and os.path.isdir(old_path):
-                        try:
-                            shutil.rmtree(old_path)
-                            print(f"[+] Removed old directory: {old_path}")
-                        except Exception as e:
-                            print(f"[!] Error removing directory {old_path}: {e}")
+        for doc in documents:
+            _publish_one_document(doc, output_dir, templates_dir)
 
         # Copy template files (CSS, JS, HTML, etc.)
         print("\n=== Copying Template Files ===")
@@ -660,43 +555,52 @@ def _document_subtitle(meta_data):
     return ' · '.join(parts)
 
 
+def _iter_published_pages(doc_output_dir):
+    """Опубликованные замечания постранично: (имя файла, [замечание, ...]).
+
+    Один обход <doc>/remarks/ на всех, кто считает статистику публикации.
+    Черновики лежат в тех же page_NNN.json под флагом draft и не считаются:
+    без ?showDrafts=1 читатель их не видит. Легаси-компаньоны
+    page_NNN.drafts.json пропускаются по той же причине. Страницы без единого
+    опубликованного замечания не выдаются вовсе.
+    """
+    ann_dir = os.path.join(doc_output_dir, 'remarks')
+    if not os.path.isdir(ann_dir):
+        return
+    for name in sorted(os.listdir(ann_dir)):
+        if not name.startswith('page_') or not name.endswith('.json'):
+            continue
+        if name.endswith('.drafts.json'):
+            continue
+        try:
+            with open(os.path.join(ann_dir, name), 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if not isinstance(data, list):
+            continue
+        published = [a for a in data if isinstance(a, dict) and not a.get('draft')]
+        if published:
+            yield name, published
+
+
 def _methods_density(doc_output_dirs):
     """
     Числа для абзаца «Перед вами учебник пропаганды» на титульной.
 
-    Считаем только то, что читатель реально видит: черновики (draft) исключены,
-    как и в _count_published_remarks. `method_pages` — страницы, где есть
-    хотя бы одно замечание-приём, то есть категория не «Прочее»; именно на этом
-    числе держится фраза «почти на каждой». Категория берётся из общей таблицы
+    Считаем только то, что читатель реально видит: черновики исключены обходом
+    _iter_published_pages. `method_pages` — страницы, где есть хотя бы одно
+    замечание-приём, то есть категория не «Прочее»; именно на этом числе
+    держится фраза «почти на каждой». Категория берётся из общей таблицы
     scripts/annotation_categories.py — той же, по которой красится просмотрщик.
     """
-    import json
-
     import annotation_categories
 
     pages = 0
     method_pages = 0
     remarks = 0
     for doc_output_dir in doc_output_dirs:
-        ann_dir = os.path.join(doc_output_dir, 'remarks')
-        if not os.path.isdir(ann_dir):
-            continue
-        for name in sorted(os.listdir(ann_dir)):
-            if not name.startswith('page_') or not name.endswith('.json'):
-                continue
-            if name.endswith('.drafts.json'):
-                continue
-            try:
-                with open(os.path.join(ann_dir, name), 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-            except Exception:
-                continue
-            if not isinstance(data, list):
-                continue
-            published = [a for a in data
-                         if isinstance(a, dict) and not a.get('draft')]
-            if not published:
-                continue
+        for _name, published in _iter_published_pages(doc_output_dir):
             pages += 1
             remarks += len(published)
             if any(annotation_categories.category_for(a) != annotation_categories.OTHER
@@ -733,37 +637,14 @@ def _count_published_remarks(doc_output_dir):
     """
     Count published remarks in a built document directory.
 
-    Returns {'remarks': N, 'pages': M} — M is the number of pages that
-    actually carry at least one remark. Drafts share page_NNN.json with the
-    published ones now (each flagged draft/tagged 'draft') and are deliberately
-    not counted: they are invisible without ?showDrafts=1. Legacy
-    page_NNN.drafts.json companions are skipped for the same reason.
+    Returns {'remarks': N, 'pages': M} — M is the number of pages that actually
+    carry at least one remark. Drafts are excluded by _iter_published_pages.
     """
-    import json
-
     result = {'remarks': 0, 'pages': 0}
-    ann_dir = os.path.join(doc_output_dir, 'remarks')
-    if not os.path.isdir(ann_dir):
-        return result
-
-    for name in sorted(os.listdir(ann_dir)):
-        if not name.startswith('page_') or not name.endswith('.json'):
-            continue
-        if name.endswith('.drafts.json'):
-            continue
-        try:
-            with open(os.path.join(ann_dir, name), 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except Exception:
-            continue
-        if not isinstance(data, list):
-            continue
-        published = [a for a in data if not (isinstance(a, dict) and a.get('draft'))]
-        if published:
-            result['remarks'] += len(published)
-            result['pages'] += 1
+    for _name, published in _iter_published_pages(doc_output_dir):
+        result['remarks'] += len(published)
+        result['pages'] += 1
     return result
-
 
 def _plural_ru(n, one, few, many):
     """Russian plural: 1 замечание / 2 замечания / 5 замечаний."""
@@ -811,7 +692,6 @@ def create_index_page(target_dir=None, specific_folders=None):
         meta_json_path = os.path.join(project_root, 'redpen-content', doc_id, 'meta.json')
         if os.path.exists(meta_json_path):
             try:
-                import json
                 with open(meta_json_path, 'r', encoding='utf-8') as f:
                     meta_data = json.load(f)
                     if 'title' in meta_data:
