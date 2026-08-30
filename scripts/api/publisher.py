@@ -102,7 +102,7 @@ def render_page_static(doc_id: str, page_num: str) -> List[Dict[str, Any]]:
     "draft": true (kept for older viewers) and a leading "draft" tag.
 
     The viewer hides drafts by default and reveals them per URL parameter; see
-    getTagFilter() in templates/js/main.js."""
+    the tag filter in templates/js/page-view.js."""
     rendered = [
         _render_item(ann, draft=False)
         for ann in db.list_page_remarks(doc_id, page_num, include_deleted=False)
