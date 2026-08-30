@@ -19,8 +19,11 @@ import json
 import glob
 import re
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import remark_kinds  # noqa: E402
+
 #: Прежние значения вида замечания (до 2026-08-29).
-LEGACY_KINDS = {"main": "major", "comment": "minor"}
+LEGACY_KINDS = remark_kinds.LEGACY_KINDS
 
 def convert_json_to_md(json_file_path):
     """

@@ -25,6 +25,7 @@ import config
 # (см. Dockerfile: COPY . /app/), поэтому добавляем каталог scripts/ руками.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import annotation_categories  # noqa: E402
+import remark_kinds  # noqa: E402
 
 import rating_scales
 import remark_actions
@@ -243,7 +244,7 @@ def init_db() -> None:
 
 
 #: Значения вида замечания до переименования сущности (2026-08-29).
-LEGACY_KINDS = {"main": "major", "comment": "minor"}
+LEGACY_KINDS = remark_kinds.LEGACY_KINDS
 
 
 def _rename_legacy_to_remarks(conn: sqlite3.Connection) -> None:

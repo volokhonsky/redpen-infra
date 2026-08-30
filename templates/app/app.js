@@ -1,18 +1,10 @@
-/*
- * ВНИМАНИЕ (переименование сущности, 2026-08-29). Этот файл — клиент API, и он
- * ещё говорит прежними именами: путь `/api/annotations`, поля `annId`/`annType`
- * со значениями `main`/`comment`. Так и задумано: статика выкладывается раньше
- * API, а на новые имена клиенты редактора переводятся отдельной выкладкой —
- * уже после того, как API начнёт их понимать (он принимает и отдаёт оба
- * набора). Читательская часть переведена сразу, см. page-view.js.
- */
 (function () {
   'use strict';
 
   /**
    * Карточка замечания: история правок, форма и живой просмотр рядом.
    *
-   * Адрес: /app/#/ann/<docId>/<pageKey>/<annId>
+   * Адрес: /app/#/ann/<docId>/<pageKey>/<remarkId>
    *
    * Просмотр — iframe на ту же страницу, которую видит читатель, с ?only=<id>.
    * Это намеренно: второй реализации рендера маркеров не будет, и «как оно
@@ -26,8 +18,8 @@
 
   var state = {
     user: null,
-    ref: null,        // {docId, pageKey, annId}
-    annotation: null,
+    ref: null,        // {docId, pageKey, remarkId}
+    remark: null,
     manifest: {},     // docId -> {page_006: "6"}
     section: null,    // текущий параграф, чтобы перечитывать его по фильтрам
     queue: { items: [], index: 0, skipped: {} },
@@ -125,7 +117,7 @@
         view: 'ann',
         docId: decodeURIComponent(ann[1]),
         pageKey: decodeURIComponent(ann[2]),
-        annId: decodeURIComponent(ann[3])
+        remarkId: decodeURIComponent(ann[3])
       };
     }
     if (/^#\/queue\b/.test(hash)) return { view: 'queue' };
@@ -233,7 +225,7 @@
   function fillForm(ann) {
     el('f-text').value = ann.text || '';
     fillCategories(ann.category);
-    el('f-anntype').value = ann.annType || 'comment';
+    el('f-kind').value = ann.kind || 'minor';
     el('f-status').value = ann.status === 'published' ? 'published' : 'draft';
     el('f-tags').value = visibleTags(ann).join(', ');
     el('f-summary').value = '';
@@ -257,7 +249,7 @@
     var tags = el('f-tags').value.split(',').map(function (t) { return t.trim().toLowerCase(); })
       .filter(Boolean);
     var body = {
-      annType: el('f-anntype').value,
+      kind: el('f-kind').value,
       text: el('f-text').value,
       status: el('f-status').value,
       category: el('f-category').value,
@@ -265,7 +257,7 @@
     };
     var summary = el('f-summary').value.trim();
     if (summary) body.summary = summary;
-    var ann = state.annotation;
+    var ann = state.remark;
     if (ann && ann.coordX != null && ann.coordY != null) body.coords = [ann.coordX, ann.coordY];
     // Оптимистическая блокировка: без неё сервер принимает правку молча, и две
     // одновременные сессии затирают друг друга (сервер это логирует как
@@ -376,7 +368,7 @@
 
   function ratingsUrl(ref, scale) {
     return '/api/remarks/' + encodeURIComponent(ref.docId) + '/' +
-      encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.annId) +
+      encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.remarkId) +
       '/ratings' + (scale ? '/' + encodeURIComponent(scale) : '');
   }
 
@@ -400,7 +392,7 @@
 
   function notesUrl(ref) {
     return '/api/remarks/' + encodeURIComponent(ref.docId) + '/' +
-      encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.annId) + '/notes';
+      encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.remarkId) + '/notes';
   }
 
   function renderNoteItem(note, replies) {
@@ -507,7 +499,7 @@
   async function renderPreview(ref) {
     var label = await pageLabel(ref.docId, ref.pageKey);
     var url = '../' + encodeURIComponent(ref.docId) + '/pages/' +
-              encodeURIComponent(label) + '/?only=' + encodeURIComponent(ref.annId);
+              encodeURIComponent(label) + '/?only=' + encodeURIComponent(ref.remarkId);
     el('app-preview').src = url;
     el('app-preview-link').href = url;
     fitPreview();
@@ -525,7 +517,7 @@
       '<span>' + sectionLink + '</span>' +
       '<span><a href="#/page/' + encodeURIComponent(ref.docId) + '/' +
         encodeURIComponent(ref.pageKey) + '">стр. ' + escapeHtml(label) + '</a></span>' +
-      '<code>' + escapeHtml(ref.annId) + '</code>';
+      '<code>' + escapeHtml(ref.remarkId) + '</code>';
   }
 
   // --- список параграфов --------------------------------------------------
@@ -598,19 +590,19 @@
     if (category) params.push('category=' + encodeURIComponent(category));
     if (source) params.push('categorySource=' + encodeURIComponent(source));
 
-    var data = await apiGet('/api/annotations?' + params.join('&'));
+    var data = await apiGet('/api/remarks?' + params.join('&'));
     var items = data.items || [];
     el('sec-count').textContent = 'показано ' + items.length + ' из ' + (data.total || 0);
 
     // Сортируем по странице: параграф читают подряд, а не по времени правки.
     items.sort(function (a, b) {
-      if (a.pageNum === b.pageNum) return String(a.annId).localeCompare(String(b.annId));
+      if (a.pageNum === b.pageNum) return String(a.remarkId).localeCompare(String(b.remarkId));
       return String(a.pageNum).localeCompare(String(b.pageNum));
     });
 
     el('sec-rows').innerHTML = items.map(function (a) {
       var href = '#/ann/' + encodeURIComponent(a.docId) + '/' +
-                 encodeURIComponent(a.pageNum) + '/' + encodeURIComponent(a.annId);
+                 encodeURIComponent(a.pageNum) + '/' + encodeURIComponent(a.remarkId);
       var todo = a.categorySource === 'default' || a.categorySource === 'tags-backfill';
       return '<tr>' +
         '<td class="app-nowrap"><a href="' + href + '">' + escapeHtml(a.pageNum) + '</a></td>' +
@@ -652,19 +644,19 @@
 
   async function fetchQueueItems(mode, sectionId) {
     if (mode === 'drafts') {
-      var data = await apiGet('/api/annotations?' + queueParams(mode, sectionId).join('&'));
+      var data = await apiGet('/api/remarks?' + queueParams(mode, sectionId).join('&'));
       return data.items || [];
     }
     var sources = ['default', 'tags-backfill', 'agent'];
     var batches = await Promise.all(sources.map(function (source) {
       var params = queueParams(mode, sectionId).concat(['categorySource=' + source]);
-      return apiGet('/api/annotations?' + params.join('&'));
+      return apiGet('/api/remarks?' + params.join('&'));
     }));
     var seen = {};
     var items = [];
     batches.forEach(function (batch) {
       (batch.items || []).forEach(function (item) {
-        var key = item.docId + '/' + item.pageNum + '/' + item.annId;
+        var key = item.docId + '/' + item.pageNum + '/' + item.remarkId;
         if (seen[key]) return;
         seen[key] = true;
         items.push(item);
@@ -692,7 +684,7 @@
     // Отложенные уходят в конец, а не исчезают: «отложить» — это «не сейчас».
     var skipped = state.queue.skipped;
     items.sort(function (a, b) {
-      var sa = skipped[a.annId] ? 1 : 0, sb = skipped[b.annId] ? 1 : 0;
+      var sa = skipped[a.remarkId] ? 1 : 0, sb = skipped[b.remarkId] ? 1 : 0;
       if (sa !== sb) return sa - sb;
       return String(a.pageNum).localeCompare(String(b.pageNum));
     });
@@ -720,13 +712,13 @@
 
     pageLabel(item.docId, item.pageNum).then(function (label) {
       var url = '../' + encodeURIComponent(item.docId) + '/pages/' +
-                encodeURIComponent(label) + '/?only=' + encodeURIComponent(item.annId);
+                encodeURIComponent(label) + '/?only=' + encodeURIComponent(item.remarkId);
       el('q-preview').src = url;
       el('q-preview-link').href = url;
       fitFrame('q-preview-fit', 'q-preview');
       el('q-where').innerHTML = '<span>' + escapeHtml(item.docId) + '</span>' +
         '<span>стр. ' + escapeHtml(label) + '</span>' +
-        '<code>' + escapeHtml(item.annId) + '</code>';
+        '<code>' + escapeHtml(item.remarkId) + '</code>';
     });
   }
 
@@ -744,7 +736,7 @@
     var item = state.queue.items[state.queue.index];
     if (!item) return;
     var path = '/api/editor/' + encodeURIComponent(item.docId) + '/' +
-               encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.annId);
+               encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.remarkId);
     // Резюме проставляется само: приёмка — действие однотипное, и заставлять
     // писать его руками на каждое замечание значит не разобрать очередь.
     var summary = el('q-mode').value === 'drafts' ? 'приёмка черновика' : 'категория подтверждена';
@@ -763,17 +755,17 @@
     if (status !== item.status) {
       await apiMutate('PATCH', path + '/status', { status: status, summary: summary });
     }
-    setStatus('Принято: ' + item.annId, false);
+    setStatus('Принято: ' + item.remarkId, false);
     advance();
   }
 
   async function queueReject() {
     var item = state.queue.items[state.queue.index];
     if (!item) return;
-    if (!window.confirm('Отклонить замечание ' + item.annId + '? Оно будет удалено (мягко).')) return;
+    if (!window.confirm('Отклонить замечание ' + item.remarkId + '? Оно будет удалено (мягко).')) return;
     await apiMutate('DELETE', '/api/editor/' + encodeURIComponent(item.docId) + '/' +
-                    encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.annId));
-    setStatus('Отклонён: ' + item.annId, false);
+                    encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.remarkId));
+    setStatus('Отклонён: ' + item.remarkId, false);
     advance();
   }
 
@@ -789,14 +781,14 @@
     el('q-reject').addEventListener('click', function () { queueReject().catch(function () {}); });
     el('q-skip').addEventListener('click', function () {
       var item = state.queue.items[state.queue.index];
-      if (item) state.queue.skipped[item.annId] = true;
+      if (item) state.queue.skipped[item.remarkId] = true;
       advance();
     });
     el('q-edit').addEventListener('click', function () {
       var item = state.queue.items[state.queue.index];
       if (!item) return;
       window.location.hash = '#/ann/' + encodeURIComponent(item.docId) + '/' +
-        encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.annId);
+        encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.remarkId);
     });
   }
 
@@ -813,7 +805,7 @@
   async function loadTimeline(ref) {
     var data = await apiGet('/api/remarks/' + encodeURIComponent(ref.docId) + '/' +
                             encodeURIComponent(ref.pageKey) + '/' +
-                            encodeURIComponent(ref.annId) + '/timeline?limit=100');
+                            encodeURIComponent(ref.remarkId) + '/timeline?limit=100');
     state.timeline = data.items || [];
     renderTimeline();
   }
@@ -822,11 +814,11 @@
     state.ref = ref;
     setReplyTo(null);
     state.cardSha = null;
-    var path = '/api/annotations/' + encodeURIComponent(ref.docId) + '/' +
-               encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.annId);
+    var path = '/api/remarks/' + encodeURIComponent(ref.docId) + '/' +
+               encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.remarkId);
     var data = await apiGet(path);
-    state.annotation = data.annotation;
-    fillForm(data.annotation);
+    state.remark = data.remark;
+    fillForm(data.remark);
 
     // Хеш страницы для оптимистической блокировки. Отдельный запрос: карточка
     // отдаёт одно замечание, а блокировка — про страницу целиком.
@@ -853,7 +845,7 @@
   //: Остальное — отдельные действия, и в журнале они видны по отдельности.
   async function saveSideChanges(ref, before, body) {
     var editorPath = '/api/editor/' + encodeURIComponent(ref.docId) + '/' +
-                     encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.annId);
+                     encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.remarkId);
     var summary = body.summary;
 
     if (body.status !== (before.status === 'published' ? 'published' : 'draft')) {
@@ -882,15 +874,15 @@
     if (!ref) return;
     var body = collectForm();
     if (!body.text.trim()) { setStatus('Текст замечания пуст.', true); return; }
-    var before = state.annotation || {};
+    var before = state.remark || {};
     var textChanged = body.text !== (before.text || '') ||
-                      body.annType !== (before.annType || 'comment');
+                      body.kind !== (before.kind || 'minor');
 
     if (textChanged) {
       // Полный PUT: он несёт текст и координаты, а вместе с ними и всё
       // остальное — узкие операции после него были бы холостыми.
       await apiMutate('PUT', '/api/editor/' + encodeURIComponent(ref.docId) + '/' +
-                      encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.annId), body);
+                      encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.remarkId), body);
     } else {
       await saveSideChanges(ref, before, body);
     }
@@ -1194,7 +1186,7 @@
     el('app-preview').addEventListener('load', function () {
       fitFrame('app-preview-fit', 'app-preview');
     });
-    ['f-text', 'f-category', 'f-anntype', 'f-status', 'f-tags', 'f-summary'].forEach(function (id) {
+    ['f-text', 'f-category', 'f-kind', 'f-status', 'f-tags', 'f-summary'].forEach(function (id) {
       el(id).addEventListener('input', function () { setDirty(true); });
       el(id).addEventListener('change', function () { setDirty(true); });
     });

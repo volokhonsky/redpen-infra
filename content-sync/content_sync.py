@@ -160,11 +160,12 @@ def publish_from_parent(parent: Path, public_dir: Path, staging_dir: Path, api_b
     # API's publisher.py writes page_NNN.json straight into public_dir). Without
     # --delete-excluded, excluding it from --delete also protects it from being
     # wiped by this sync -- only the API and import_remarks.py write there.
-    # */annotations/ is the pre-rename name of the same directory and stays
-    # excluded while the publisher double-writes there.
-    run(["rsync", "-a", "--delete", "--exclude", ".git", "--exclude", "/*/annotations/", "--exclude", "/*/remarks/", f"{src}/", f"{staging_dir}/"])
+    # Исключение для */annotations/ (прежнее имя того же каталога) снято в
+    # фазе 6 переименования 2026-08-30: publisher туда больше не пишет, и
+    # первый прогон после выкладки уносит каталог с тома. Это и есть уборка.
+    run(["rsync", "-a", "--delete", "--exclude", ".git", "--exclude", "/*/remarks/", f"{src}/", f"{staging_dir}/"])
     mutate_staging(staging_dir, api_base_url)
-    run(["rsync", "-a", "--delete", "--exclude", "/*/annotations/", "--exclude", "/*/remarks/", f"{staging_dir}/", f"{public_dir}/"])
+    run(["rsync", "-a", "--delete", "--exclude", "/*/remarks/", f"{staging_dir}/", f"{public_dir}/"])
     _ensure_api_owned_dirs(public_dir)
     try:
         (public_dir / ".published_by_sync").write_text(str(int(time.time())), encoding="utf-8")
@@ -177,13 +178,11 @@ def publish_from_parent(parent: Path, public_dir: Path, staging_dir: Path, api_b
 #: восстанавливается здесь, после публикации.
 #:
 #: `remarks` — канон публикации, его владелец API с этапа 2.
-#: `annotations` — прежнее имя того же каталога; остаётся в списке, пока
-#: publisher дублирует запись туда.
 #: `pages` — HTML читателя. У него два писателя: сборка (через git и rsync) и
 #: API, который перерисовывает затронутую страницу на каждую правку. Просмотрщик
 #: читает замечания не из JSON, а из инлайнового блока внутри этого HTML, так что
 #: без права записи сюда правка через редактор до читателя не доезжает.
-_API_OWNED_DIRS = ("annotations", "remarks", "pages")
+_API_OWNED_DIRS = ("remarks", "pages")
 
 
 def _ensure_api_owned_dirs(public_dir: Path) -> None:

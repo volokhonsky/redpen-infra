@@ -264,16 +264,12 @@ def _check_optimistic_lock(body: Dict[str, Any], server_sha: str, docId: str, pa
 def _parse_remark_body(body: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="body must be a JSON object")
-    # `annType` — имя ключа до переименования сущности в «замечание». Клиенты
-    # редактора статические и обновляются отдельной выкладкой, поэтому приём
-    # старого имени и старых значений живёт до фазы 6 переименования.
-    remark_kind = body.get("kind", body.get("annType"))
+    remark_kind = body.get("kind")
     text = body.get("text")
     coords = body.get("coords", None)
 
     if not isinstance(remark_kind, str) or remark_kind.strip() == "":
         raise HTTPException(status_code=400, detail="kind must be a string")
-    remark_kind = db.LEGACY_KINDS.get(remark_kind, remark_kind)
     # "general" (общее замечание к странице) is retired: it had no anchor on
     # the scan, and with per-page addresses every comment needs one. Rejected
     # rather than silently accepted so old clients fail loudly.
@@ -881,17 +877,20 @@ async def get_editor_page(docId: str, pageNum: str, user: Optional[Dict[str, Any
         item["category"] = annotation_categories.normalize_category(
             category_by_id.get(item["id"])
         )
-        # render_page() заморожен в легаси-именах: он вход оптимистической
-        # блокировки (см. его docstring). Обогащение идёт уже после подсчёта
-        # sha, поэтому текущее имя вида добавляем здесь.
+        # render_page() заморожен в легаси-именах НАВСЕГДА: он вход
+        # оптимистической блокировки, и сдвиг хеша выдал бы 409 всем открытым
+        # сессиям редактора (см. его docstring). Наружу этот массив не отдаётся,
+        # поэтому здесь, уже после подсчёта sha, вид переводится в текущее имя,
+        # а прежнее из выдачи убирается.
         item["kind"] = db.LEGACY_KINDS.get(item.get("annType"), item.get("annType"))
+        item.pop("annType", None)
         remarks.append(item)
 
     if user is not None and user.get("role") in EDITOR_ROLES:
         for ann in db.list_remarks(doc_id=docId, page_num=page_num_str, status="draft", limit=1000):
             item: Dict[str, Any] = {
                 "id": ann["remarkId"], "text": ann["text"], "kind": ann["kind"],
-                "annType": publisher.legacy_kind(ann["kind"]), "draft": True,
+                "draft": True,
             }
             if ann["coordX"] is not None and ann["coordY"] is not None:
                 item["coords"] = [ann["coordX"], ann["coordY"]]
@@ -905,9 +904,6 @@ async def get_editor_page(docId: str, pageNum: str, user: Optional[Dict[str, Any
         "pageId": f"{docId}_page_{page_num_str}",
         "serverPageSha": sha,
         "remarks": remarks,
-        # Прежнее имя ключа: клиенты редактора переключаются отдельной
-        # выкладкой статики, уже после этого деплоя. Снимается в фазе 6.
-        "annotations": remarks,
     }
 
 
@@ -1160,21 +1156,6 @@ async def require_editor_read(user: Dict[str, Any] = Depends(require_user)) -> D
     return user
 
 
-def _with_legacy_keys(item: Dict[str, Any]) -> Dict[str, Any]:
-    """Продублировать поля замечания прежними именами.
-
-    Кабинет и `/app/` — статика: они переезжают на `remarkId`/`kind` отдельной
-    выкладкой, уже после этого деплоя. Снимается в фазе 6 переименования."""
-    if not isinstance(item, dict):
-        return item
-    out = dict(item)
-    if "remarkId" in out:
-        out["annId"] = out["remarkId"]
-    if "kind" in out:
-        out["annType"] = publisher.legacy_kind(out["kind"])
-    return out
-
-
 def _validate_list_params(
     docId: Optional[str], pageKey: Optional[str], kind: Optional[str],
     status: Optional[str], limit: int, offset: int, q: Optional[str],
@@ -1189,7 +1170,6 @@ def _validate_list_params(
     if status is not None and status not in REMARK_STATUSES:
         raise HTTPException(status_code=400, detail="invalid status")
     if kind is not None:
-        kind = db.LEGACY_KINDS.get(kind, kind)
         if kind not in REMARK_KINDS:
             raise HTTPException(status_code=400, detail="invalid kind")
     if limit < 1 or limit > 200:
@@ -1201,16 +1181,11 @@ def _validate_list_params(
     return {"pageKey": page_num_str, "kind": kind}
 
 
-# `/api/annotations` — прежний адрес тех же двух ручек. Живёт, пока клиенты
-# редактора (статика) не переехали на новый; снимается в фазе 6.
 @app.get("/api/remarks")
-@app.get("/api/annotations")
 async def list_remarks(
     docId: Optional[str] = None,
     pageKey: Optional[str] = None,
     kind: Optional[str] = None,
-    # Прежнее имя того же параметра: кабинет шлёт его до своей выкладки.
-    annType: Optional[str] = None,
     status: Optional[str] = None,
     authorId: Optional[int] = None,
     q: Optional[str] = None,
@@ -1222,7 +1197,7 @@ async def list_remarks(
     offset: int = 0,
     user: Dict[str, Any] = Depends(require_editor_read),
 ):
-    validated = _validate_list_params(docId, pageKey, kind or annType,
+    validated = _validate_list_params(docId, pageKey, kind,
                                       status, limit, offset, q)
     if tag is not None:
         try:
@@ -1242,11 +1217,11 @@ async def list_remarks(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
     kind = validated["kind"]
-    items = [_with_legacy_keys(item) for item in db.list_remarks(
+    items = db.list_remarks(
         doc_id=docId, page_num=validated["pageKey"], kind=kind, status=status,
         author_id=authorId, q=q, limit=limit, offset=offset, tag=tag,
         category=category, category_source=categorySource, section_id=section,
-    )]
+    )
     total = db.count_remarks(
         doc_id=docId, page_num=validated["pageKey"], kind=kind, status=status,
         author_id=authorId, q=q, tag=tag,
@@ -1256,7 +1231,6 @@ async def list_remarks(
 
 
 @app.get("/api/remarks/{docId}/{pageKey}/{remarkId}")
-@app.get("/api/annotations/{docId}/{pageKey}/{remarkId}")
 async def get_one_remark(docId: str, pageKey: str, remarkId: str,
                              user: Dict[str, Any] = Depends(require_editor_read)):
     """Одно замечание целиком — вход карточки в редакторе.
@@ -1270,8 +1244,7 @@ async def get_one_remark(docId: str, pageKey: str, remarkId: str,
     if ann is None:
         raise HTTPException(status_code=404, detail="remark not found")
     section = db.find_section_for_page(docId, page_num_str)
-    ann = _with_legacy_keys(ann)
-    return {"remark": ann, "annotation": ann, "section": section}
+    return {"remark": ann, "section": section}
 
 
 # ===== ОЦЕНКИ И КОММЕНТАРИИ =====
@@ -1522,8 +1495,6 @@ async def list_history(
     docId: Optional[str] = None,
     pageKey: Optional[str] = None,
     remarkId: Optional[str] = None,
-    # Прежнее имя того же параметра: кабинет шлёт его до своей выкладки.
-    annId: Optional[str] = None,
     authorId: Optional[int] = None,
     action: Optional[str] = None,
     # Состав изменения: `action` отвечает, кто и чем записал ревизию, `changed`
@@ -1539,7 +1510,7 @@ async def list_history(
             status_code=400,
             detail=f"changed must be one of: {', '.join(remark_actions.ACTIONS)}")
     items = db.list_history(
-        doc_id=docId, page_num=validated["pageKey"], remark_id=remarkId or annId,
+        doc_id=docId, page_num=validated["pageKey"], remark_id=remarkId,
         author_id=authorId,
         action=action, changed=changed, limit=limit, offset=offset,
     )

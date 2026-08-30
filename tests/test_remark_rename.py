@@ -203,14 +203,13 @@ def test_converter_writes_only_the_current_names(tmp_path):
     assert "kind: major" in md and "type:" not in md
 
 
-def test_page_blob_carries_both_key_names():
-    """Страницы перерисовываются по одной: в момент выкладки часть их читает
-    ещё не обновлённый JS."""
+def test_page_blob_carries_only_the_current_key_name():
+    """Фаза 6: второй ключ из блока страницы убран."""
     blob = page_html._page_data_blob(
         [{"id": "a-1", "text": "т", "kind": "major", "coords": [1, 2]}])
     payload = json.loads(blob.split(">", 1)[1].rsplit("<", 1)[0])
     assert payload[0]["kind"] == "major"
-    assert payload[0]["annType"] == "main"
+    assert "annType" not in payload[0]
 
 
 def test_page_blob_reads_the_legacy_key():
