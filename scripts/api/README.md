@@ -30,7 +30,9 @@ nginx (301), сам каталог удалён в фазе 6 переимено
 | `LOG_LEVEL` | `INFO` | Уровень логирования |
 | `CORS_ALLOW_ORIGINS` | `_` (→ `*`) | Список origin через запятую; `_`/`*` = разрешить все |
 | `AGENT_TOKENS` | (пусто) | Токены входа агентов: `token1:agent1,token2:agent2`. Пусто = вход по токену отключён. `EDITOR_TOKENS` — прежнее имя, читается для совместимости |
-| `DB_PATH` | `/var/redpen-db/redpen.db` | SQLite-файл: users/sessions/invites + remarks/remark_history/sections/agent_runs. Не должен лежать в `STORAGE_DIR` |
+| `DB_PATH` | `/var/redpen-db/redpen.db` | SQLite-файл: users/sessions/invites + remarks/remark_history/remark_tags/remark_ratings/remark_notes/sections/agent_runs + rating_pool/survey_respondents/survey_ratings. Не должен лежать в `STORAGE_DIR` |
+| `RATE_LIMIT_PER_MINUTE` / `RATE_LIMIT_BURST` | `240` / `60` | Общее ведро для `/api/*` (кроме `/api/health`) |
+| `RATE_LIMIT_AUTH_PER_MINUTE` / `RATE_LIMIT_AUTH_BURST` | `12` / `6` | Жёсткое ведро для входа и записи опроса: `/api/auth/google`, `/api/auth/login`, `/api/survey/session`, `/api/survey/ratings` |
 | `PUBLISH_DIR` | (пусто) | Куда `publisher.py` пишет `<docId>/remarks/page_NNN.json`. Пусто = публикация отключена (тесты, dev без volume) |
 | `GOOGLE_CLIENT_ID` | (пусто) | OAuth client id для верификации Google ID-token. Пусто = `POST /api/auth/google` отвечает 503 |
 | `IDENTITY_PEPPER` | (пусто) | **Обязателен.** Перец для `HMAC(перец, google_sub)`. Пусто = `POST /api/auth/google` отвечает 503. Только в `.env.secrets`, никогда в git и в БД — см. `docs/anonymity-model.md` |
@@ -56,10 +58,16 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 
 ## Эндпоинты
 
-> 🔒 = требует сессию с ролью `editor`/`admin` + заголовок `X-CSRF-Token`
-> (иначе `401`/`403`). ⛔ = требует роль `admin` (⛔🔒 дополнительно требует
-> CSRF). Читающие эндпоинты остаются публичными. Роли:
-> `viewer < editor < reviewer < admin` — см. раздел «Роли» ниже.
+> 🔒 = требует сессию с ролью `editor`/`admin` + заголовок
+> `X-CSRF-Token` (иначе `401`/`403`). 📖 = та же роль, но чтение: CSRF не
+> нужен. ⛔ = требует роль `admin` (⛔🔒 дополнительно требует CSRF).
+> Роли: `viewer < editor < admin` — см. раздел «Роли» ниже.
+>
+> **Публичны только** `GET /api/health`, `GET /api/hello`,
+> `GET /api/pages/{pageId}` и `GET /api/editor/{docId}/{pageNum}` (последний
+> отдаёт черновики лишь редакторской сессии). Всё остальное чтение —
+> редакторское: до 2026-08-31 легенда обещала обратное, и это была ошибка
+> описания, а не кода.
 
 Служебные:
 - `GET /api/health` → `{"status":"ok"}`
@@ -120,29 +128,40 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 не передан, запрос принимается, но в лог пишется предупреждение. Клиенты
 редактора шлют его всегда: и экран страницы, и карточка.
 
-Кабинет (`/cabinet/`, стадия 3) — списки/история/статистика поверх той же
-таблицы `remarks`/`remark_history`:
-- 🔒 `GET /api/remarks?docId&pageKey&kind&status&authorId&q&limit&offset`
-  (роль `editor`/`admin`, CSRF не требуется — чтение) → `{items, total, limit, offset}`.
+Рабочее место (`/work/`) — списки, история и статистика поверх той же
+таблицы `remarks`/`remark_history`. До 2026-08-31 эти ручки делили между собой
+два приложения, `/app/` и `/cabinet/`; теперь они питают одни и те же экраны:
+- 📖 `GET /api/remarks?docId&pageKey&kind&status&authorId&q&tag&category&categorySource&section&inPool&limit&offset`
+  → `{items, total, limit, offset}`.
   `items[]` — как `_remark_row_to_dict` + `authorName` (псевдоним автора;
-  `null` для импортированных). Дополнительные фильтры: `category` (один из семи
-  слагов) и `categorySource` (`default`/`tags-backfill`/`agent`/`human`) — вход
-  очереди приёмки. Валидация: `docId`/`pageKey` — как в
+  `null` для импортированных) + `tags` + **`inPool`/`poolAnswers`** (лежит ли
+  замечание в пуле опроса и сколько ответов на него получено). Фильтры:
+  `tag` — один тег; `category` (один из семи слагов) и `categorySource`
+  (`default`/`tags-backfill`/`agent`/`human`) — вход очереди приёмки;
+  `section` — параграф (выводится из диапазона страниц, отдельной колонки
+  нет); `inPool=true|false` — членство в пуле опроса. Валидация: `docId`/`pageKey` — как в
   `/api/editor/...`; `status ∈ {published,draft,deleted}`;
   `kind ∈ {major,minor}`; `limit ≤ 200` (по умолчанию 50);
   `offset ≥ 0`; `len(q) ≤ 200` — иначе `400`.
-- 🔒 `GET /api/tags?docId` (роль `editor`/`admin`, чтение) →
+- 📖 `GET /api/remarks/{docId}/{pageKey}/{remarkId}` → `{remark, section}` —
+  одно замечание целиком, вход карточки в редакторе (список для этого не
+  годится: карточке нужен адрес, а не страница выдачи). `remark` несёт те же
+  поля, что элемент списка, включая `inPool`/`poolAnswers`.
+- 📖 `GET /api/tags?docId` (роль `editor`/`admin`, чтение) →
   `{"tags": [{tag, count}, …]}` (по убыванию частоты, без удалённых замечаний) — словарь тегов для фильтра в кабинете.
-- 🔒 `GET /api/history?docId&pageKey&remarkId&authorId&action&limit&offset`
-  (та же защита) → `{items, hasMore, limit, offset}`; `items[].snapshot` —
-  распарсенное состояние замечания на момент записи.
+- 📖 `GET /api/history?docId&pageKey&remarkId&authorId&action&changed&limit&offset`
+  → `{items, hasMore, limit, offset}`; `items[].snapshot` —
+  распарсенное состояние замечания на момент записи. `action` фильтрует по
+  происхождению записи (`create`/`update`/`import`/…), `changed` — по составу
+  изменения (токен `remark_actions.ACTIONS`): это разные вопросы, «кто это
+  записал» и «что при этом изменилось».
 - `GET /api/stats` (любая роль, включая `viewer`, требует только сессию) →
   `{"docs": [{"docId","published","draft","deleted"}, …], "recentActivity": […]}`.
 - 🔒 `POST /api/history/{histId}/revert` — восстанавливает замечание в
   состояние из снапшота истории (включая его `status` — откат к записи
   `action='delete'` повторно удаляет) и республикует страницу. `404`, если
   записи нет. Ответ: `{remarkId, docId, pageNum, serverPageSha, published}`.
-- 🔒 `GET /api/sections?docId` (роль `editor` и выше, чтение) →
+- 📖 `GET /api/sections?docId` →
   `{"sections": [{sectionId, chapterId, chapterTitle, title, pageStart, pageEnd,
   counts: {total, published, draft, unclassified}, lastActivity}, …]}` — доска
   работ по параграфам. Заливается `scripts/api/import_sections.py` из
@@ -197,11 +216,15 @@ CSRF, а токен, недоступный чужому сайту, снима�
 - `PUT /api/survey/ratings` `{docId, pageKey, remarkId, interest?, importance?,
   admissibility?}` (токен) → `{saved, docId, pageNum, remarkId}`. Все шкалы
   одним вызовом; пустой ответ — 400; замечание вне пула — 403.
-- ⛔ `GET /api/survey/pool?docId&limit&offset` → `{items, total, limit, offset}`
+Пулом ведает **редактор**, сводкой ответов — **админ** (с 2026-08-31).
+Вынести замечание на оценку решает тот, кто его читает, — это обычная
+редакторская работа; агрегированные мнения анонимных респондентов ближе к
+персональным данным, чем к содержанию разбора.
+- 📖 `GET /api/survey/pool?docId&limit&offset` → `{items, total, limit, offset}`
   (с текстом замечания и числом полученных ответов)
-- ⛔🔒 `POST /api/survey/pool` `{docId, pageKey, remarkId}` → `{item}`
+- 🔒 `POST /api/survey/pool` `{docId, pageKey, remarkId}` → `{item}`
   (повтор — не ошибка)
-- ⛔🔒 `DELETE /api/survey/pool/{docId}/{pageKey}/{remarkId}` → `{removed}`.
+- 🔒 `DELETE /api/survey/pool/{docId}/{pageKey}/{remarkId}` → `{removed}`.
   Ответы при этом остаются: снять вопрос с раздачи и стереть ответы — разные
   действия.
 - ⛔ `GET /api/survey/results?docId&limit&offset` → `{items, total, limit,
@@ -226,12 +249,21 @@ CSRF, а токен, недоступный чужому сайту, снима�
 
 ### Роли
 
-Лестница: `viewer` < `editor` < `reviewer` < `admin`.
+Лестница: `viewer` < `editor` < `admin`. Это единственная ось разграничения:
+рабочее место одно (`/work/`), и роль решает, какие его экраны показывать.
 
-- `viewer` — читает, не пишет;
-- `editor` — пишет черновики и правит;
-- `reviewer` — плюс к этому принимает чужие черновики и предложения категорий;
-- `admin` — плюс приглашения, роли и служебные операции.
+- `viewer` — приглашён, права ещё не выданы: своя учётная запись и больше
+  ничего. Все данные разбора закрыты;
+- `editor` — весь разбор: замечания, черновики, публикация, категории, теги,
+  очередь приёмки, история и откат, оценки, тред и **пул опроса**;
+- `admin` — плюс приглашения, роли участников и отставка, перепубликация,
+  логи и **сводка ответов опроса**.
+
+Роль `reviewer` **упразднена 2026-08-31**. Она обещала отделить «принимать
+чужое» от «писать», но ни одна ветка кода этого не делала: в API она была
+равна `editor`, а кабинет её не пускал вовсе. Существующие строки переводит
+`db._retire_reviewer_role` при старте; запросить эту роль в приглашении или в
+смене роли теперь — `400`.
 
 **Круг участников закрыт.** Роль выдаётся приглашением при первом входе и
 хранится в `users.role`; она не пересчитывается при каждом входе, а меняется
@@ -296,7 +328,7 @@ curl -s -b /tmp/redpen.cookies -X POST http://localhost:8080/api/store \
   -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d '{"hello":"world"}'
 curl -s -b /tmp/redpen.cookies -X POST http://localhost:8080/api/editor/medinsky11klass/7 \
   -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" \
-  -d '{"kind":"comment","text":"Текст","coords":[100,200]}'
+  -d '{"kind":"minor","text":"Текст","coords":[100,200]}'
 ```
 
 ## Тесты

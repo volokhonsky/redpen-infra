@@ -108,10 +108,17 @@ def test_build_produces_per_document_layout(synthetic_project, tmp_path):
     assert (target / "favicon.svg").is_file()
     assert (target / "index.html").is_file()
 
-    # Cabinet page (stage 3, C.10): copied alongside css/js.
-    assert (target / "cabinet" / "index.html").is_file()
-    assert (target / "cabinet" / "cabinet.js").is_file()
-    assert (target / "cabinet" / "cabinet.css").is_file()
+    # Рабочее место (`/work/`, слияние /app/ и /cabinet/, 2026-08-31):
+    # копируется рядом с css/js.
+    for name in ("index.html", "work.css", "core.js", "pages.js", "remarks.js", "admin.js"):
+        assert (target / "work" / name).is_file(), name
+
+    # Старые адреса остаются заглушками-редиректами: ссылки на конкретные
+    # замечания вида /app/#/ann/... разошлись по переписке.
+    for old_app in ("app", "cabinet"):
+        stub = target / old_app / "index.html"
+        assert stub.is_file()
+        assert "../work/" in stub.read_text(encoding="utf-8")
 
     # Блог: архив + страница записи, стили каркаса и блога.
     assert (target / "blog" / "index.html").is_file()

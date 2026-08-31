@@ -2428,3 +2428,94 @@ content-sync`, в логе `Publish complete`.
 Проверено: на томе `pages/`+`remarks/` остались ровно у двух книг, обе под
 10001; `/`, `/survey/`, `/js/page-view.js`, `pages/17/`,
 `remarks/page_017.json` — 200.
+
+## 2026-08-31 — рабочее место `/work/`: слияние `/app/` и `/cabinet/`, пул опроса, упразднение `reviewer`
+
+Одна выкладка вместо двух, запланированных в `docs/stage-4-progress-log.md`.
+Причина: пул (шаг 1) и слияние (шаг 2) оказались готовы одновременно, а
+статику шага 1 было уже не выложить отдельно — правленые `cabinet.js`/`app.js`
+шагом 2 удалены. Порядок поэтому обычный для «у API прибавляется»: **сначала
+API, потом статика**. Здесь он вдобавок обязателен: новый фронтенд ходит узкими
+`PATCH`, а до этой выкладки они не проходили предварительный OPTIONS (см. ниже).
+
+**Бэкап перед выкладкой:** `VACUUM INTO` →
+`/root/backups/redpen-db/redpen-pre-work-merge-20260831T124937Z.db` (6,8 МБ).
+Прежние версии правленых файлов — `/root/backups/infra-pre-work-merge/`.
+
+### API
+
+scp девяти файлов (`scripts/api/{main,db,dev_seed,remark_actions}.py`,
+`scripts/{analytics,sitemap,build_website,make_offline_bundle}.py`,
+`scripts/api/README.md`) плюс `templates/` (в образ едет `COPY . /app/`;
+на сервере `templates/` никем не читается, копия — для полноты), затем
+`docker compose up -d --build api`. На старте `publish_all pages=315 failed=0`.
+
+Что приехало:
+
+- **`inPool`/`poolAnswers` в `GET /api/remarks` и в одиночном чтении**, фильтр
+  `?inPool=true|false`. Проставляет `db._attach_pool` — отдельный шаг чтения,
+  который публикация не вызывает;
+- **пул опроса стал редакторским** (`POST`/`DELETE`/`GET /api/survey/pool`),
+  сводка ответов (`GET /api/survey/results`) осталась админской;
+- **`PATCH` добавлен в `allow_methods` CORS.** Список писался до появления
+  узких операций и за ними не поехал: браузер получал 400 на предварительный
+  OPTIONS, и `PATCH .../status|category|tags` до сервера **не доходил вовсе** —
+  то есть узкие операции в `/app/` на проде не работали с самого их появления.
+  Ни один тест этого не ловил: проверка CORS собирала собственный `app` со
+  своим списком методов. Теперь она идёт против настоящего приложения;
+- **роль `reviewer` упразднена**, `EDITOR_ROLES = ("editor", "admin")`.
+  Миграция `db._retire_reviewer_role` вызывается из `_migrate_schema`, то есть
+  **после** `executescript` (не путать с `_rename_legacy_to_remarks`, который
+  обязан идти строго до);
+- `/work/` добавлен в исключения аналитики и по пути, и по `Referer`.
+
+**Замер до и после совпал.** Роль `reviewer` на проде не была ни у кого
+(0 строк в `users`, 0 в `invites`) — миграция вышла пустой, и это ровно тот
+случай, ради которого её стоило замерить, а не предположить. Остальное без
+изменений: users 1 admin + 1 editor, remarks 225 published / 1047 draft /
+3 deleted, пул 9, ревизий 2526, ответов опроса 0.
+
+`compute_page_sha` не сдвинулся: 84 страницы с опубликованными замечаниями,
+все хеши совпали с замером от 2026-08-29 (`/root/backups/page-shas-post-remark.json`
+против `page-shas-post-work-merge.json`, расхождений 0).
+
+### Статика
+
+`build_website.py --skip-push`, затем коммит и push в `redpen-publish`
+(`4bc468c`), `docker restart redpen-content-sync-1`, в логе `Publish complete`.
+
+Осиротевшие `app/app.{js,css}` и `cabinet/cabinet.{js,css}` **удалены из
+репозитория руками**: сборка только копирует и сама их не убирает. С тома их
+снёс `rsync -a --delete` в `content-sync/entrypoint.sh` — проверено, оба адреса
+отдают 404.
+
+### Проверено на проде
+
+- предварительный OPTIONS с `Access-Control-Request-Method: PATCH` → 204 и
+  `access-control-allow-methods: GET, POST, PUT, PATCH, DELETE, OPTIONS`;
+- `/api/survey/pool`, `/api/survey/results`, `/api/remarks?inPool=true`
+  анонимно → 401;
+- `/work/` открывается, `REDPEN_API_BASE` = `https://api.medinsky.net`,
+  все экраны скрыты до входа (правка `[hidden] { display: none !important }` —
+  до неё `#app-main{display:grid}` пересиливал скрытие), в консоли только
+  ожидаемый 401 на `/api/auth/me`;
+- `/app/#/ann/medinsky11klass/017/ann-p017-1` уводит в
+  `/work/#/ann/medinsky11klass/017/ann-p017-1` — адрес карточки переносится
+  один в один; `/cabinet/` → `/work/#/remarks`;
+- `grep -rl "inPool\|poolAnswers" /srv/public` — пусто; в
+  `remarks/page_017.json` следов пула нет;
+- читатель цел: `/`, обе книги, `pages/17/`, `/survey/`, `/blog/` — 200,
+  `redpen-page-data` и `redpen-markers.js` на месте;
+- `robots.txt` запрещает `/work/` (и по-прежнему `/app/`, `/cabinet/`);
+- `scripts/ops/redpen_stats.py report` отрабатывает — кроны аналитики целы.
+
+**Вход под живой учётной записью не проверялся:** это требует Google-входа
+владельца. Всё, что проверяемо анонимно, проверено; экраны под тремя ролями
+пройдены браузером на локальном стенде (`docs/stage-4-progress-log.md`).
+
+### Что осталось
+
+Заглушки `/app/` и `/cabinet/` снять отдельной работой после привыкания.
+`GET /api/auth/me` стоит отдавать с `Cache-Control: no-store`: браузер его
+кэширует, и смена роли применяется только после перезагрузки (права сервер
+проверяет на каждом запросе, так что это косметика).

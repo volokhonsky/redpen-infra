@@ -86,21 +86,7 @@
     <p class="sv-hint"><a href="../index.html">Вернуться к разбору учебников</a></p>
   </section>
 
-  <script>
-    // На localhost опросник говорит с локальным API, а не с продом: иначе
-    // локальный стенд молча пишет в боевые данные. Порт задаётся ?api=<порт>
-    // либо берётся по умолчанию (8080).
-    (function(){
-      if (window.REDPEN_API_BASE) return;
-      var host = window.location.hostname;
-      if (host === 'localhost' || host === '127.0.0.1') {
-        var port = new URLSearchParams(window.location.search).get('api') || '8080';
-        window.REDPEN_API_BASE = 'http://' + host + ':' + port;
-        return;
-      }
-      window.REDPEN_API_BASE = 'https://api.medinsky.net';
-    })();
-  </script>
+  <script src="../js/redpen-config.js"></script>
   <script src="../js/redpen-preview.js"></script>
   <script src="survey.js"></script>
 </body>

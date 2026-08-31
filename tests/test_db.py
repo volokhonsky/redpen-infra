@@ -101,8 +101,8 @@ def test_revoke_only_works_on_unused_invites():
 
 
 def test_invite_records_who_used_it():
-    code = db.create_invite(role="reviewer")[0]
-    user = db.login_with_google_sub("reviewer-1", invite_code=code)
+    code = db.create_invite(role="editor")[0]
+    user = db.login_with_google_sub("invited-1", invite_code=code)
     entry = db.list_invites()[0]
     assert entry["usedBy"] == user["id"]
     assert entry["usedAt"] is not None

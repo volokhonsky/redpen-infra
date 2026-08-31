@@ -84,7 +84,7 @@ def main() -> int:
     parser.add_argument("--pages", default="6-40",
                         help="диапазоны страниц, например '6-20,100'. Пусто = все")
     parser.add_argument("--role", default="admin",
-                        choices=("viewer", "editor", "reviewer", "admin"))
+                        choices=("viewer", "editor", "admin"))
     parser.add_argument("--name", default="Локальный админ", help="псевдоним участника")
     args = parser.parse_args()
 

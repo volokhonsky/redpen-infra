@@ -40,9 +40,11 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 # в тексте, а не наши хосты: список именно из наших.
 FORBIDDEN_HOSTS = ('api.medinsky.net', 'cdn.jsdelivr.net', 'accounts.google.com')
 
-# Скрипты редактора: офлайн они бесполезны и как раз они умеют ходить в API.
+# Скрипты рабочего места: офлайн они бесполезны и как раз они умеют ходить в
+# API. `redpen-config.js` вдобавок содержит адрес `api.medinsky.net` — то есть
+# без изъятия он один валит проверку «никаких наших хостов».
 # Остальные («редакторская панель», «бутстрап») удалены вместе с SPA.
-EDITOR_SCRIPTS = ('redpen-auth.js',)
+EDITOR_SCRIPTS = ('redpen-auth.js', 'redpen-api.js', 'redpen-config.js')
 
 # --------------------------------------------------------------------------
 # сбор данных

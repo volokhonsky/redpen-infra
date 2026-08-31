@@ -456,6 +456,35 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         "ON remark_history(agent_run_id, id)"
     )
     _backfill_revision_numbers(conn)
+    _retire_reviewer_role(conn)
+
+
+def _retire_reviewer_role(conn: sqlite3.Connection) -> None:
+    """Упразднить роль `reviewer` (2026-08-31).
+
+    Роль обещала «принимает чужие черновики и предложения категорий», но ни
+    одна ветка кода никогда не давала ей ничего сверх редакторских прав, а
+    кабинет её и вовсе не пускал: `viewer < editor < reviewer < admin` была
+    лестницей на бумаге. Оставлять значение, которое ничего не значит, — способ
+    однажды выдать его человеку и удивиться.
+
+    Идёт после `executescript`: колонка `role` к этому моменту уже есть. Не
+    путать с `_rename_legacy_to_remarks`, который обязан идти строго до.
+    """
+    # Колонки проверяем: сюда попадают и базы старше самой роли, где `role`
+    # ещё нет (её добавляет DDL выше только для новых таблиц).
+    def has_role(table):
+        return any(row["name"] == "role"
+                   for row in conn.execute("PRAGMA table_info(%s)" % table))
+
+    if has_role("users"):
+        conn.execute("UPDATE users SET role = 'editor' WHERE role = 'reviewer'")
+    # Невыбранные приглашения тоже: код уже у человека на руках, и войти по
+    # нему он должен редактором, а не получить 400.
+    if has_role("invites"):
+        conn.execute(
+            "UPDATE invites SET role = 'editor' WHERE role = 'reviewer' AND used_at IS NULL"
+        )
 
 
 def _backfill_revision_numbers(conn: sqlite3.Connection) -> None:
@@ -563,7 +592,7 @@ def create_invite(role: str = "editor", note: Optional[str] = None,
 
     Код возвращается ровно один раз — в БД лежит только его хеш. Потерянный код
     не восстанавливается, выписывается новый."""
-    if role not in ("viewer", "editor", "reviewer", "admin"):
+    if role not in ("viewer", "editor", "admin"):
         raise ValueError(f"unknown role {role!r}")
     code = code or generate_invite_code()
     conn = get_connection()
@@ -678,7 +707,7 @@ def set_display_name(user_id: int, display_name: Optional[str]) -> Optional[Dict
 
 
 def set_user_role(user_id: int, role: str) -> Optional[Dict[str, Any]]:
-    if role not in ("viewer", "editor", "reviewer", "admin"):
+    if role not in ("viewer", "editor", "admin"):
         raise ValueError(f"unknown role {role!r}")
     conn = get_connection()
     with _lock:
@@ -1282,6 +1311,54 @@ def _attach_tags(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> List[
     return items
 
 
+def _pool_state_batch(conn: sqlite3.Connection,
+                      keys: List[Tuple[str, str, str]]) -> Dict[Tuple[str, str, str], int]:
+    """Членство в пуле опроса и число полученных ответов — одним запросом на
+    всю выдачу, а не по запросу на замечание.
+
+    Ключ составной, поэтому склеиваем его через `\n`: перевод строки не может
+    попасть ни в docId, ни в ключ страницы, ни в id замечания (все три
+    проверяются регекспами на входе API). Индекс при этом не работает, но пул —
+    сотни строк по замыслу: это список вопросов для человека, а не таблица
+    данных.
+    """
+    if not keys:
+        return {}
+    joined = ["\n".join(k) for k in keys]
+    placeholders = ",".join("?" for _ in joined)
+    rows = conn.execute(
+        f"""
+        SELECT p.doc_id, p.page_num, p.remark_id,
+               (SELECT COUNT(DISTINCT s.respondent_id) FROM survey_ratings s
+                 WHERE s.doc_id = p.doc_id AND s.page_num = p.page_num
+                   AND s.remark_id = p.remark_id) AS answers
+        FROM rating_pool p
+        WHERE p.doc_id || char(10) || p.page_num || char(10) || p.remark_id
+              IN ({placeholders})
+        """,
+        joined,
+    ).fetchall()
+    return {(r["doc_id"], r["page_num"], r["remark_id"]): r["answers"] for r in rows}
+
+
+def _attach_pool(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Проставить `inPool`/`poolAnswers` каждому замечанию. Caller holds _lock.
+
+    Вызывается только из редакторских чтений и никогда — из тех, что питают
+    публикацию: пул не является свойством замечания для читателя и в статику
+    попадать не должен (`rating_pool` для того и заведена отдельной таблицей,
+    а не тегом).
+    """
+    state = _pool_state_batch(
+        conn, [(i["docId"], i["pageNum"], i["remarkId"]) for i in items]
+    )
+    for item in items:
+        key = (item["docId"], item["pageNum"], item["remarkId"])
+        item["inPool"] = key in state
+        item["poolAnswers"] = state.get(key, 0)
+    return items
+
+
 def _insert_history(
     conn: sqlite3.Connection,
     doc_id: str,
@@ -1389,7 +1466,11 @@ def list_page_drafts(doc_id: str, page_num: str) -> List[Dict[str, Any]]:
         return _attach_tags(conn, [_remark_row_to_dict(row) for row in rows])
 
 
-def get_remark(doc_id: str, page_num: str, remark_id: str) -> Optional[Dict[str, Any]]:
+def get_remark(doc_id: str, page_num: str, remark_id: str,
+               with_pool: bool = False) -> Optional[Dict[str, Any]]:
+    """Одно замечание. `with_pool` — по требованию, а не всегда: эту функцию
+    зовут и импорт, и бэкфилл, и проверки существования, которым лишний запрос
+    в пул ни к чему, а сведения о нём — тем более."""
     conn = get_connection()
     with _lock:
         row = conn.execute(
@@ -1398,7 +1479,10 @@ def get_remark(doc_id: str, page_num: str, remark_id: str) -> Optional[Dict[str,
         ).fetchone()
         if row is None:
             return None
-        return _attach_tags(conn, [_remark_row_to_dict(row)])[0]
+        items = _attach_tags(conn, [_remark_row_to_dict(row)])
+        if with_pool:
+            _attach_pool(conn, items)
+        return items[0]
 
 
 def upsert_remark_db(
@@ -1674,6 +1758,7 @@ def _remark_filters(
     category: Optional[str] = None,
     category_source: Optional[str] = None,
     section_id: Optional[str] = None,
+    in_pool: Optional[bool] = None,
 ) -> Tuple[str, List[Any]]:
     clauses: List[str] = []
     params: List[Any] = []
@@ -1716,6 +1801,14 @@ def _remark_filters(
             "EXISTS (SELECT 1 FROM remark_tags t WHERE t.remark_pk = a.rowid_pk AND t.tag = ?)"
         )
         params.append(tag.strip().lower())
+    if in_pool is not None:
+        # EXISTS/NOT EXISTS, а не JOIN: count_remarks иначе потребовал бы
+        # DISTINCT — та же причина, что и у тегов выше.
+        clauses.append(
+            ("" if in_pool else "NOT ")
+            + "EXISTS (SELECT 1 FROM rating_pool p WHERE p.doc_id = a.doc_id "
+            "AND p.page_num = a.page_num AND p.remark_id = a.remark_id)"
+        )
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     return where, params
 
@@ -1733,9 +1826,15 @@ def list_remarks(
     category: Optional[str] = None,
     category_source: Optional[str] = None,
     section_id: Optional[str] = None,
+    in_pool: Optional[bool] = None,
+    with_pool: bool = False,
 ) -> List[Dict[str, Any]]:
+    """`with_pool` не включён по умолчанию: этой же выборкой пользуется
+    отрисовка страницы редактора (GET /api/editor/...), которая соседствует с
+    публикацией — там сведений о пуле быть не должно."""
     where, params = _remark_filters(doc_id, page_num, kind, status, author_id, q,
-                                        tag, category, category_source, section_id)
+                                        tag, category, category_source, section_id,
+                                        in_pool)
     conn = get_connection()
     with _lock:
         rows = conn.execute(
@@ -1756,7 +1855,10 @@ def list_remarks(
             # authorEmail не отдаётся: email в системе больше нет
             # (docs/anonymity-model.md).
             result.append(item)
-        return _attach_tags(conn, result)
+        _attach_tags(conn, result)
+        if with_pool:
+            _attach_pool(conn, result)
+        return result
 
 
 def count_remarks(
@@ -1770,9 +1872,11 @@ def count_remarks(
     category: Optional[str] = None,
     category_source: Optional[str] = None,
     section_id: Optional[str] = None,
+    in_pool: Optional[bool] = None,
 ) -> int:
     where, params = _remark_filters(doc_id, page_num, kind, status, author_id, q,
-                                        tag, category, category_source, section_id)
+                                        tag, category, category_source, section_id,
+                                        in_pool)
     conn = get_connection()
     with _lock:
         row = conn.execute(

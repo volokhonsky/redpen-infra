@@ -2,77 +2,21 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
-  <title>Мединский.нет — кабинет</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <link rel="stylesheet" href="../css/main.css">
-  <link rel="stylesheet" href="cabinet.css">
-  <link rel="icon" href="../favicon.svg">
+  <title>Мединский.нет — переезд в /work/</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <meta name="robots" content="noindex,nofollow" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
 </head>
 <body>
-  <header>
-    <a href="../index.html" class="cab-home-link" title="Вернуться к выбору документов">⌂</a>
-    Мединский.нет — кабинет
-  </header>
-
-  <div id="cab-status" class="cab-status" style="display:none;"></div>
-
-  <div id="cab-offline-notice" class="cab-notice cab-notice-error" style="display:none;">
-    Нет соединения с сервером
-  </div>
-
-  <div id="cab-login-screen" class="cab-card" style="display:none;">
-    <h2>Вход</h2>
-    <div id="cab-google-btn"></div>
-    <!-- Код нужен только при первом входе: круг участников закрыт, и код
-         передаётся вне системы. Дальше вход идёт без него. -->
-    <label class="cab-invite-field">
-      <span>Код приглашения — только при первом входе</span>
-      <input id="cab-invite-input" type="text" placeholder="0000-0000-0000-0000"
-             autocomplete="off" spellcheck="false" />
-    </label>
-    <div id="cab-token-login" style="display:none;">
-      <input id="cab-token-input" type="text" placeholder="Личный токен" />
-      <button id="cab-token-submit">Войти токеном</button>
-    </div>
-    <div id="cab-login-error" class="cab-error"></div>
-  </div>
-
-  <div id="cab-app" style="display:none;">
-    <div id="cab-profile" class="cab-profile"></div>
-    <div id="cab-viewer-notice" class="cab-notice" style="display:none;">
-      Нет прав редактора. Обратитесь к администратору.
-    </div>
-
-    <nav id="cab-tabs" class="cab-tabs" style="display:none;">
-      <button type="button" class="cab-tab-btn is-active" data-tab="remarks">Замечания</button>
-      <button type="button" class="cab-tab-btn" data-tab="history">История</button>
-      <button type="button" class="cab-tab-btn" id="cab-tab-survey-btn" data-tab="survey" style="display:none;">Опрос</button>
-      <button type="button" class="cab-tab-btn" id="cab-tab-admin-btn" data-tab="admin" style="display:none;">Админ</button>
-    </nav>
-
-    <section id="cab-tab-remarks" class="cab-tab-panel"></section>
-    <section id="cab-tab-history" class="cab-tab-panel" style="display:none;"></section>
-    <section id="cab-tab-survey" class="cab-tab-panel" style="display:none;"></section>
-    <section id="cab-tab-admin" class="cab-tab-panel" style="display:none;"></section>
-  </div>
-
+  <p>Кабинет переехал в <a id="go" href="../work/#/remarks">рабочее место</a>.</p>
   <script>
-    // На localhost кабинет говорит с локальным API, а не с продом: иначе
-    // локальный стенд молча правит боевые данные. Порт задаётся
-    // ?api=<порт> либо берётся по умолчанию (8080).
-    (function(){
-      if (window.REDPEN_API_BASE) return;
-      var host = window.location.hostname;
-      if (host === 'localhost' || host === '127.0.0.1') {
-        var port = new URLSearchParams(window.location.search).get('api') || '8080';
-        window.REDPEN_API_BASE = 'http://' + host + ':' + port;
-        return;
-      }
-      window.REDPEN_API_BASE = 'https://api.medinsky.net';
+    // Вкладки кабинета в адресе не отражались, переносить нечего: ведём на
+    // сквозной список замечаний — с него кабинет и открывался.
+    (function () {
+      var target = '../work/' + window.location.search + '#/remarks';
+      document.getElementById('go').href = target;
+      window.location.replace(target);
     })();
-    window.REDPEN_GOOGLE_CLIENT_ID = window.REDPEN_GOOGLE_CLIENT_ID || '679121872329-tl9fk0aq6i1rjf6jgdb1460p0pvn50md.apps.googleusercontent.com';
   </script>
-  <script src="../js/redpen-auth.js"></script>
-  <script src="cabinet.js"></script>
 </body>
 </html>

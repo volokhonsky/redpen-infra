@@ -83,7 +83,10 @@ def render_robots(base_url: str) -> str:
     return (
         "User-agent: *\n"
         "Allow: /\n"
-        # The editor and the cabinet are behind auth and have nothing to index.
+        # Рабочее место за входом, индексировать в нём нечего. `/app/` и
+        # `/cabinet/` с 2026-08-31 — заглушки-редиректы на него, но адреса
+        # разошлись по закладкам, и запрет с них не снимается.
+        "Disallow: /work/\n"
         "Disallow: /cabinet/\n"
         "Disallow: /app/\n"
         "Disallow: /*?editor=\n"

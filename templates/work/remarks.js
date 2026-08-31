@@ -2,201 +2,27 @@
   'use strict';
 
   /**
-   * Карточка замечания: история правок, форма и живой просмотр рядом.
+   * remarks.js — всё, что делается с отдельным замечанием: карточка (правка,
+   * оценки, тред, лента событий, пул опроса), очередь приёмки и сквозной
+   * поиск по всем книгам.
    *
-   * Адрес: /app/#/ann/<docId>/<pageKey>/<remarkId>
-   *
-   * Просмотр — iframe на ту же страницу, которую видит читатель, с ?only=<id>.
-   * Это намеренно: второй реализации рендера маркеров не будет, и «как оно
-   * выглядит» означает ровно то, что увидит читатель, включая цвет категории.
-   * Просмотрщик при этом остаётся полностью статическим — редактор к нему не
-   * прикасается, только открывает по ссылке.
+   * Сквозной поиск — слияние двух списков, которые до 2026-08-31 жили в
+   * разных приложениях и ни один не был полным: фильтры по документу,
+   * странице, виду, автору, тегу и тексту были только в кабинете, а по
+   * категории, источнику категории и параграфу — только в редакторе.
    */
 
-  var auth = window.RedPenAuth;
-  var cats = window.RedPenCategories;
-
-  var state = {
-    user: null,
-    ref: null,        // {docId, pageKey, remarkId}
-    remark: null,
-    section: null,    // текущий параграф, чтобы перечитывать его по фильтрам
-    queue: { items: [], index: 0, skipped: {} },
-    dirty: false,
-    scales: [],       // описание шкал оценки, приходит с сервера
-    scaleByName: {},  // name -> описание шкалы, для подписей в ленте
-    timeline: [],     // ревизии, оценки и комментарии одним списком
-    textOnly: false,  // фильтр ленты «только правки текста»
-    cardSha: null,    // serverPageSha страницы открытой карточки
-    notes: [],
-    replyTo: null,    // id корневого комментария, если пишем ответ
-    // Экран страницы: скан с маркерами. sha — вход оптимистической блокировки,
-    // приходит из GET /api/editor/... и уезжает обратно в каждой мутации.
-    page: { docId: null, pageKey: null, remarks: [], sha: null,
-            placing: false, pendingCoords: null, selectedId: null }
-  };
-
-  var markers = window.RedPenMarkers;
-  var preview = window.RedPenPreview;
-
-  // --- мелочи -------------------------------------------------------------
-
-  function el(id) { return document.getElementById(id); }
-
-  function setStatus(text, isError) {
-    var host = el('app-status');
-    host.textContent = text || '';
-    host.hidden = !text;
-    host.classList.toggle('is-error', !!isError);
-  }
-
-  function escapeHtml(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-    });
-  }
-
-  function formatDay(value) {
-    if (!value) return '';
-    // Метки времени в журнале ревизий — с точностью до дня (см.
-    // docs/anonymity-model.md); показываем ровно то, что есть.
-    return String(value).slice(0, 10).split('-').reverse().join('.');
-  }
-
-  function apiUrl(path) {
-    return (window.REDPEN_API_BASE || '') + path;
-  }
-
-  async function apiGet(path) {
-    var res = await fetch(apiUrl(path), { credentials: 'include' });
-    if (res.status === 401) { showLogin(); throw new Error('unauthorized'); }
-    if (!res.ok) { setStatus('Ошибка запроса: ' + res.status, true); throw new Error('http ' + res.status); }
-    return res.json();
-  }
-
-  async function apiMutate(method, path, body, isRetry) {
-    var csrf = await auth.getCsrf(!!isRetry);
-    var res = await fetch(apiUrl(path), {
-      method: method,
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf.csrfToken },
-      body: body ? JSON.stringify(body) : undefined,
-      credentials: 'include'
-    });
-    // Токен CSRF перевыписывается на каждый GET /api/auth/csrf, поэтому две
-    // вкладки гасят друг друга; один тихий повтор это лечит.
-    if (res.status === 403 && !isRetry) return apiMutate(method, path, body, true);
-    if (res.status === 401) { showLogin(); throw new Error('unauthorized'); }
-    if (res.status === 409) {
-      setStatus('Страницу успели изменить в другом месте. Нажмите «Перечитать».', true);
-      throw new Error('conflict');
-    }
-    if (!res.ok) {
-      var detail = '';
-      try { detail = (await res.json()).detail || ''; } catch (e) {}
-      setStatus('Не сохранено: ' + (detail || res.status), true);
-      throw new Error('http ' + res.status);
-    }
-    return res.json();
-  }
-
-  //: Все экраны приложения. Показываем ровно один — так не приходится
-  //: помнить, что спрятать при каждом переходе.
-  var VIEWS = ['view-sections', 'view-section', 'view-queue', 'view-page', 'app-main'];
-
-  function showView(id) {
-    VIEWS.forEach(function (name) { el(name).hidden = name !== id; });
-  }
-
-  // --- адрес --------------------------------------------------------------
-
-  function parseHash() {
-    var hash = window.location.hash || '';
-    var ann = hash.match(/^#\/ann\/([^/]+)\/([^/]+)\/(.+)$/);
-    if (ann) {
-      return {
-        view: 'ann',
-        docId: decodeURIComponent(ann[1]),
-        pageKey: decodeURIComponent(ann[2]),
-        remarkId: decodeURIComponent(ann[3])
-      };
-    }
-    if (/^#\/queue\b/.test(hash)) return { view: 'queue' };
-    var page = hash.match(/^#\/page\/([^/]+)\/([^/]+)$/);
-    if (page) {
-      return {
-        view: 'page',
-        docId: decodeURIComponent(page[1]),
-        pageKey: decodeURIComponent(page[2])
-      };
-    }
-    var section = hash.match(/^#\/section\/([^/]+)\/(.+)$/);
-    if (section) {
-      return {
-        view: 'section',
-        docId: decodeURIComponent(section[1]),
-        sectionId: decodeURIComponent(section[2])
-      };
-    }
-    return { view: 'sections' };
-  }
-
-  function pageLabel(docId, pageKey) {
-    return preview.pageLabel(docId, pageKey);
-  }
-
-  // --- вход ---------------------------------------------------------------
-
-  function showLogin() {
-    el('app-main').hidden = true;
-    el('app-login').hidden = false;
-    auth.renderGoogleButton(el('app-google-btn'), function (user, error) {
-      var errEl = el('app-login-error');
-      if (error && error.message === 'invite_required') {
-        errEl.textContent = 'Нужен код приглашения. Получите его у администратора.';
-        return;
-      }
-      if (error || !user) { errEl.textContent = 'Не удалось войти через Google'; return; }
-      errEl.textContent = '';
-      start();
-    }, function () {
-      var input = el('app-invite-input');
-      return input ? (input.value || '').trim() : null;
-    });
-  }
-
-  function renderProfile() {
-    var u = state.user;
-    if (!u) { el('app-profile').innerHTML = ''; return; }
-    var roles = { viewer: 'читатель', editor: 'редактор', reviewer: 'приёмщик', admin: 'админ' };
-    el('app-profile').innerHTML =
-      '<span class="app-who">' + escapeHtml(u.displayName || u.username || '') + '</span>' +
-      '<span class="app-role">' + escapeHtml(roles[u.role] || u.role) + '</span>' +
-      '<button type="button" id="app-logout">Выйти</button>';
-    el('app-logout').addEventListener('click', async function () {
-      await auth.logout();
-      state.user = null;
-      showLogin();
-    });
-  }
+  var W = window.RedPenWork;
+  var state = W.state;
+  var el = W.el, escapeHtml = W.escapeHtml, formatDay = W.formatDay;
+  var setStatus = W.setStatus, apiGet = W.apiGet, apiMutate = W.apiMutate;
+  var catTitle = W.catTitle, catDot = W.catDot, pageLabel = W.pageLabel;
+  var cats = W.cats, preview = W.preview;
+  var fillCategorySelect = W.fillCategorySelect, SOURCE_LABELS = W.SOURCE_LABELS;
+  var fitFrame = W.fitFrame, renderPreview = W.renderPreview;
+  var renderBreadcrumbs = W.renderBreadcrumbs, qs = W.qs;
 
   // --- форма --------------------------------------------------------------
-
-  //: Подпись «откуда взялась категория» — одна на все экраны.
-  var SOURCE_LABELS = {
-    'default': 'категорию никто не назначал',
-    'tags-backfill': 'категория угадана по тегам, требует проверки',
-    'agent': 'категорию предложил агент, ждёт приёмки',
-    'human': 'категорию выбрал человек'
-  };
-
-  function fillCategorySelect(select, selected) {
-    var order = (cats && cats.PRECEDENCE ? cats.PRECEDENCE.slice() : []).concat(['other']);
-    select.innerHTML = order.map(function (slug) {
-      var title = (cats && cats.TITLES && cats.TITLES[slug]) || slug;
-      return '<option value="' + escapeHtml(slug) + '">' + escapeHtml(title) + '</option>';
-    }).join('');
-    select.value = selected || 'other';
-  }
 
   function fillCategories(selected) {
     fillCategorySelect(el('f-category'), selected);
@@ -480,139 +306,6 @@
     if (id) field.focus();
   }
 
-  // --- просмотр -----------------------------------------------------------
-
-  function fitFrame(fitId, frameId) {
-    preview.fitFrame(fitId, frameId);
-  }
-
-  function fitPreview() {
-    fitFrame('app-preview-fit', 'app-preview');
-    fitFrame('q-preview-fit', 'q-preview');
-  }
-
-  async function renderPreview(ref) {
-    var label = await pageLabel(ref.docId, ref.pageKey);
-    var url = preview.remarkUrl(ref.docId, label, ref.remarkId);
-    el('app-preview').src = url;
-    el('app-preview-link').href = url;
-    fitPreview();
-    return label;
-  }
-
-  async function renderBreadcrumbs(ref, section, label) {
-    var sectionLink = section
-      ? '<a href="#/section/' + encodeURIComponent(ref.docId) + '/' +
-        encodeURIComponent(section.sectionId) + '">' + escapeHtml(section.title) + '</a>'
-      : 'вне параграфа';
-    el('app-breadcrumbs').innerHTML =
-      '<span><a href="#/">параграфы</a></span>' +
-      '<span>' + escapeHtml(ref.docId) + '</span>' +
-      '<span>' + sectionLink + '</span>' +
-      '<span><a href="#/page/' + encodeURIComponent(ref.docId) + '/' +
-        encodeURIComponent(ref.pageKey) + '">стр. ' + escapeHtml(label) + '</a></span>' +
-      '<code>' + escapeHtml(ref.remarkId) + '</code>';
-  }
-
-  // --- список параграфов --------------------------------------------------
-
-  function catTitle(slug) {
-    return (cats && cats.TITLES && cats.TITLES[slug]) || slug || '';
-  }
-
-  function catDot(slug) {
-    var color = (cats && cats.COLORS && cats.COLORS[slug]) || '#546E7A';
-    return '<span class="app-dot" style="background:' + color + '"></span>';
-  }
-
-  async function loadDocs() {
-    var select = el('s-doc');
-    if (select.options.length) return select.value;
-    var stats = await apiGet('/api/stats');
-    var docs = (stats.docs || []).map(function (d) { return d.docId; });
-    if (!docs.length) docs = ['medinsky11klass'];
-    select.innerHTML = docs.map(function (d) {
-      return '<option value="' + escapeHtml(d) + '">' + escapeHtml(d) + '</option>';
-    }).join('');
-    select.addEventListener('change', function () { loadSections().catch(function () {}); });
-    return select.value;
-  }
-
-  async function loadSections() {
-    var docId = await loadDocs();
-    var data = await apiGet('/api/sections?docId=' + encodeURIComponent(docId));
-    var rows = (data.sections || []).map(function (s) {
-      var c = s.counts || {};
-      // «Не разобрано» — главный столбец этого экрана: он показывает, где
-      // работа, а не сколько её сделано.
-      var todo = c.unclassified || 0;
-      return '<tr>' +
-        '<td><a href="#/section/' + encodeURIComponent(docId) + '/' +
-          encodeURIComponent(s.sectionId) + '">§' + escapeHtml(s.sectionId) + '</a></td>' +
-        '<td>' + escapeHtml(s.title) + '</td>' +
-        '<td class="app-nowrap">' + escapeHtml(s.pageStart + '–' + s.pageEnd) + '</td>' +
-        '<td class="num">' + (c.total || 0) + '</td>' +
-        '<td class="num">' + (c.published || 0) + '</td>' +
-        '<td class="num">' + (c.draft || 0) + '</td>' +
-        '<td class="num' + (todo ? ' is-todo' : '') + '">' + todo + '</td>' +
-      '</tr>';
-    }).join('');
-    el('s-rows').innerHTML = rows || '<tr><td colspan="7">Параграфов нет. ' +
-      'Залейте их из манифеста: scripts/api/import_sections.py</td></tr>';
-  }
-
-  // --- один параграф ------------------------------------------------------
-
-  function fillCategoryFilter() {
-    var select = el('sec-category');
-    if (select.options.length > 1) return;
-    var order = (cats && cats.PRECEDENCE ? cats.PRECEDENCE.slice() : []).concat(['other']);
-    select.innerHTML = '<option value="">любая</option>' + order.map(function (slug) {
-      return '<option value="' + escapeHtml(slug) + '">' + escapeHtml(catTitle(slug)) + '</option>';
-    }).join('');
-  }
-
-  async function loadSection(ref) {
-    fillCategoryFilter();
-    var params = ['docId=' + encodeURIComponent(ref.docId),
-                  'section=' + encodeURIComponent(ref.sectionId),
-                  'limit=200'];
-    var status = el('sec-status').value;
-    var category = el('sec-category').value;
-    var source = el('sec-source').value;
-    if (status) params.push('status=' + encodeURIComponent(status));
-    if (category) params.push('category=' + encodeURIComponent(category));
-    if (source) params.push('categorySource=' + encodeURIComponent(source));
-
-    var data = await apiGet('/api/remarks?' + params.join('&'));
-    var items = data.items || [];
-    el('sec-count').textContent = 'показано ' + items.length + ' из ' + (data.total || 0);
-
-    // Сортируем по странице: параграф читают подряд, а не по времени правки.
-    items.sort(function (a, b) {
-      if (a.pageNum === b.pageNum) return String(a.remarkId).localeCompare(String(b.remarkId));
-      return String(a.pageNum).localeCompare(String(b.pageNum));
-    });
-
-    el('sec-rows').innerHTML = items.map(function (a) {
-      var href = '#/ann/' + encodeURIComponent(a.docId) + '/' +
-                 encodeURIComponent(a.pageNum) + '/' + encodeURIComponent(a.remarkId);
-      var todo = a.categorySource === 'default' || a.categorySource === 'tags-backfill';
-      return '<tr>' +
-        '<td class="app-nowrap"><a href="' + href + '">' + escapeHtml(a.pageNum) + '</a></td>' +
-        '<td class="app-nowrap' + (todo ? ' is-todo' : '') + '">' +
-          catDot(a.category) + escapeHtml(catTitle(a.category)) + '</td>' +
-        '<td>' + (a.status === 'draft' ? 'черновик' : 'опубликован') + '</td>' +
-        '<td><a href="' + href + '">' + escapeHtml((a.text || '').slice(0, 120)) + '</a></td>' +
-        '<td class="app-nowrap">' + escapeHtml(formatDay(a.updatedAt)) + '</td>' +
-      '</tr>';
-    }).join('') || '<tr><td colspan="5">В этом параграфе замечаний нет.</td></tr>';
-
-    var section = (await apiGet('/api/sections?docId=' + encodeURIComponent(ref.docId))).sections
-      .filter(function (s) { return s.sectionId === ref.sectionId; })[0];
-    el('sec-title').textContent = section ? section.title : ('§' + ref.sectionId);
-  }
-
   // --- очередь приёмки ----------------------------------------------------
   //
   // Разбирать приходится две разные вещи, и смешивать их нельзя:
@@ -670,7 +363,7 @@
   }
 
   async function loadQueue() {
-    var docId = await loadDocs();
+    var docId = await W.loadDocs();
     await fillSectionFilter(docId);
     var mode = el('q-mode').value;
     var sectionId = el('q-section').value;
@@ -803,6 +496,52 @@
     renderTimeline();
   }
 
+  //: Пул опроса — это «показать ли замечание человеку снаружи закрытого
+  //: круга». Решение принимается при чтении замечания, поэтому тумблер стоит
+  //: здесь, рядом с оценками, а не только в общем списке.
+  function renderPool(remark) {
+    var btn = el('f-pool');
+    var note = el('f-pool-note');
+    if (!btn) return;
+    var pooled = !!(remark && remark.inPool);
+    btn.textContent = pooled ? 'Убрать из опроса' : 'Вынести на опрос';
+    btn.classList.toggle('is-pooled', pooled);
+    btn.dataset.pooled = pooled ? '1' : '';
+    var answers = (remark && remark.poolAnswers) || 0;
+    note.textContent = pooled
+      ? (answers ? 'В опросе, ответов: ' + answers : 'В опросе, ответов пока нет')
+      : (answers ? 'Не в опросе; полученных ранее ответов: ' + answers : '');
+  }
+
+  //: Один переключатель на карточку и на строку списка. Возвращает, удалось
+  //: ли: вызывающему остаётся только поправить у себя признак.
+  async function togglePoolFor(docId, pageKey, remarkId, pooled) {
+    try {
+      if (pooled) {
+        // Ответы при этом остаются: снять вопрос с раздачи и стереть ответы —
+        // разные действия.
+        await apiMutate('DELETE', '/api/survey/pool/' + encodeURIComponent(docId) + '/' +
+                        encodeURIComponent(pageKey) + '/' + encodeURIComponent(remarkId));
+        setStatus('Убрано из опроса.', false);
+      } else {
+        await apiMutate('POST', '/api/survey/pool',
+                        { docId: docId, pageKey: pageKey, remarkId: remarkId });
+        setStatus('Вынесено на опрос.', false);
+      }
+    } catch (e) { return false; }
+    state.survey.ready = false;   // таблицу пула перечитаем при следующем заходе
+    return true;
+  }
+
+  async function togglePool() {
+    var ref = state.ref;
+    var remark = state.remark;
+    if (!ref || !remark) return;
+    if (!(await togglePoolFor(ref.docId, ref.pageKey, ref.remarkId, remark.inPool))) return;
+    remark.inPool = !remark.inPool;
+    renderPool(remark);
+  }
+
   async function loadCard(ref) {
     state.ref = ref;
     setReplyTo(null);
@@ -812,6 +551,7 @@
     var data = await apiGet(path);
     state.remark = data.remark;
     fillForm(data.remark);
+    renderPool(data.remark);
 
     // Хеш страницы для оптимистической блокировки. Отдельный запрос: карточка
     // отдаёт одно замечание, а блокировка — про страницу целиком.
@@ -887,292 +627,214 @@
     frame.src = frame.src;
   }
 
-  // --- экран страницы: скан с маркерами -----------------------------------
+  // --- сквозной поиск -----------------------------------------------------
   //
-  // До 2026-08-30 создать замечание и поставить маркер можно было только в
-  // старом SPA (document_index.html?editor=1) — редактор и просмотрщик там
-  // склеены одним DOM. Здесь то же самое, но данные берутся из API, а рисует
-  // маркеры общий с просмотрщиком redpen-markers.js, поэтому кружок в
-  // редакторе и кружок у читателя — это буквально один код.
+  // Один список вместо двух. До слияния фильтры были поделены между
+  // приложениями по случайности истории: документ, страница, вид, автор, тег и
+  // текст — в кабинете, категория, источник категории и параграф — в
+  // редакторе. Ни один из двух списков не был полным.
 
-  function editorPageUrl(docId, pageKey) {
-    return '/api/editor/' + encodeURIComponent(docId) + '/' + encodeURIComponent(pageKey);
-  }
+  function searchShell() {
+    el('view-remarks').innerHTML =
+      '<div class="app-listhead"><h2>Замечания</h2></div>' +
+      '<form id="sr-filters" class="app-filters">' +
+        '<label>Документ<select name="docId">' + W.docOptions() + '</select></label>' +
+        '<label>Страница<input type="text" name="pageKey" placeholder="напр. 6" /></label>' +
+        '<label>Вид<select name="kind"><option value="">Любой</option>' +
+          '<option value="major">major</option><option value="minor">minor</option></select></label>' +
+        '<label>Статус<select name="status"><option value="">Любой</option>' +
+          '<option value="published">опубликован</option><option value="draft">черновик</option>' +
+          '<option value="deleted">удалён</option></select></label>' +
+        '<label>Категория<select name="category" id="sr-category"></select></label>' +
+        '<label>Разметка<select name="categorySource"><option value="">любая</option>' +
+          '<option value="default">не разобрано</option>' +
+          '<option value="tags-backfill">угадана по тегам</option>' +
+          '<option value="agent">предложил агент</option>' +
+          '<option value="human">выбрал человек</option></select></label>' +
+        '<label>Автор<select name="authorId" id="sr-author"><option value="">Все авторы</option></select></label>' +
+        '<label>Тег<select name="tag" id="sr-tag"><option value="">Любой</option></select></label>' +
+        '<label>Опрос<select name="inPool"><option value="">Любые</option>' +
+          '<option value="true">В опросе</option><option value="false">Не в опросе</option></select></label>' +
+        '<label>Поиск<input type="text" name="q" placeholder="текст" /></label>' +
+        '<button type="submit">Применить</button>' +
+        '<button type="button" class="app-btn-secondary" id="sr-reset">Сбросить</button>' +
+      '</form>' +
+      '<table class="app-table"><thead><tr>' +
+        '<th>Документ</th><th>Стр.</th><th>Вид</th><th>Статус</th><th>Категория</th>' +
+        '<th>Автор</th><th>Изменено</th><th>Текст</th><th>Действия</th>' +
+      '</tr></thead><tbody id="sr-rows"></tbody></table>' +
+      '<div id="sr-empty" hidden>Ничего не найдено.</div>' +
+      '<button type="button" id="sr-more" class="app-load-more" hidden>Показать ещё</button>';
 
-  //: Тело PUT для существующего замечания. Отсутствие `tags` значит «не
-  //: трогать» — теги здесь не редактируются, и затирать их нельзя.
-  function remarkBody(ann, extra) {
-    var body = {
-      kind: markers.kindOf(ann),
-      text: ann.text || '',
-      status: ann.draft ? 'draft' : 'published',
-      category: ann.category || 'other',
-      coords: ann.coords,
-      clientPageSha: state.page.sha
-    };
-    Object.keys(extra || {}).forEach(function (k) { body[k] = extra[k]; });
-    return body;
-  }
+    fillCategorySelect(el('sr-category'), '');
+    el('sr-category').insertAdjacentHTML('afterbegin', '<option value="" selected>любая</option>');
+    el('sr-category').value = '';
 
-  async function loadPage(docId, pageKey) {
-    state.page.docId = docId;
-    state.page.pageKey = pageKey;
-    cancelPlacing();
-
-    var data = await apiGet(editorPageUrl(docId, pageKey));
-    state.page.remarks = data.remarks || [];
-    state.page.sha = data.serverPageSha || null;
-
-    var label = await pageLabel(docId, pageKey);
-    el('pg-where').innerHTML =
-      '<span><a href="#/">параграфы</a></span>' +
-      '<span>' + escapeHtml(docId) + '</span>' +
-      '<span>стр. ' + escapeHtml(label) + '</span>';
-    var withCoords = state.page.remarks.filter(markers.hasCoords).length;
-    el('pg-count').textContent = state.page.remarks.length + ' замечаний, ' +
-      withCoords + ' с маркером';
-
-    var image = el('pg-image');
-    var src = '../' + encodeURIComponent(docId) + '/images/page_' +
-              encodeURIComponent(pageKey) + '.png';
-    if (image.getAttribute('src') !== src) {
-      image.setAttribute('src', src);
-    } else {
-      drawPageMarkers();
-    }
-    renderPageList();
-  }
-
-  //: Порядок нумерации тот же, что у читателя: замечания идут как пришли, а
-  //: номер получают только те, у кого есть координата.
-  function numberedRemarks() {
-    return state.page.remarks.filter(markers.hasCoords);
-  }
-
-  function drawPageMarkers() {
-    var image = el('pg-image');
-    var overlay = el('pg-overlay');
-    if (!image.complete || !image.naturalWidth) return;
-
-    var scale = markers.scaleOf(image);
-    markers.fitOverlay(overlay, image);
-    overlay.innerHTML = '';
-
-    numberedRemarks().forEach(function (ann, index) {
-      var circle = markers.createCircle(ann, index + 1, scale);
-      if (ann.id === state.page.selectedId) circle.classList.add('is-selected');
-      circle.title = (ann.text || '').slice(0, 120);
-      wireMarkerDrag(circle, ann, image);
-      overlay.appendChild(circle);
-    });
-
-    if (state.page.pendingCoords) {
-      var ghost = markers.createCircle(
-        { id: '__new__', coords: state.page.pendingCoords, kind: el('pg-kind').value,
-          category: el('pg-category').value, draft: true },
-        '+', scale);
-      ghost.classList.add('is-selected');
-      overlay.appendChild(ghost);
-    }
-  }
-
-  /**
-   * Перетаскивание маркера. Правка уезжает только на mouseup и только если
-   * координата действительно изменилась: иначе обычный клик по маркеру писал
-   * бы в журнал ревизию «перенос маркера» без переноса.
-   */
-  function wireMarkerDrag(circle, ann, image) {
-    var dragging = false;
-    var moved = false;
-    var coords = null;
-
-    function onMove(event) {
-      if (!dragging) return;
-      var point = markers.pointToCoords(image, event.clientX, event.clientY);
-      if (!point) return;
-      moved = true;
-      coords = point;
-      var scale = markers.scaleOf(image);
-      var g = markers.geometry({ coords: coords, kind: markers.kindOf(ann) }, scale);
-      circle.style.left = g.cx + 'px';
-      circle.style.top = (g.cy - g.diameter / 2) + 'px';
-    }
-
-    async function onUp() {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      if (!dragging) return;
-      dragging = false;
-      circle.classList.remove('is-dragging');
-      if (!moved || !coords) {
-        // Не перенос, а клик: открываем карточку.
-        openCard(ann.id);
-        return;
-      }
-      if (coords[0] === ann.coords[0] && coords[1] === ann.coords[1]) {
-        drawPageMarkers();
-        return;
-      }
-      try {
-        await saveCoords(ann, coords);
-      } catch (e) {
-        await loadPage(state.page.docId, state.page.pageKey);
-      }
-    }
-
-    circle.addEventListener('mousedown', function (event) {
-      event.preventDefault();
-      event.stopPropagation();
-      // В режиме выбора точки маркер не должен перехватывать клик: он лежит
-      // поверх скана, и попытка поставить новое замечание рядом с существующим
-      // иначе открывала бы чужую карточку вместо постановки.
-      if (state.page.placing) { onScanClick(event); return; }
-      dragging = true;
-      moved = false;
-      coords = null;
-      state.page.selectedId = ann.id;
-      circle.classList.add('is-dragging');
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-    });
-  }
-
-  async function saveCoords(ann, coords) {
-    var path = editorPageUrl(state.page.docId, state.page.pageKey) + '/' +
-               encodeURIComponent(ann.id);
-    var res = await apiMutate('PUT', path, remarkBody(ann, {
-      coords: coords,
-      summary: 'перенос маркера'
-    }));
-    state.page.sha = res.serverPageSha || state.page.sha;
-    setStatus('Маркер перенесён.', false);
-    await loadPage(state.page.docId, state.page.pageKey);
-  }
-
-  function openCard(remarkId) {
-    window.location.hash = '#/ann/' + encodeURIComponent(state.page.docId) + '/' +
-      encodeURIComponent(state.page.pageKey) + '/' + encodeURIComponent(remarkId);
-  }
-
-  function renderPageList() {
-    var numbered = numberedRemarks();
-    var numberById = {};
-    numbered.forEach(function (ann, index) { numberById[ann.id] = index + 1; });
-
-    var html = state.page.remarks.map(function (ann) {
-      var num = numberById[ann.id];
-      var head = num
-        ? '<span class="app-page-num">' + num + '</span>'
-        : '<span class="app-page-nocoords">без маркера</span>';
-      return '<li class="app-page-item' + (ann.draft ? ' is-draft' : '') + '" data-id="' +
-        escapeHtml(ann.id) + '">' +
-        '<div class="app-page-item-head">' + head +
-        catDot(ann.category || 'other') +
-        '<span>' + escapeHtml(catTitle(ann.category || 'other')) + '</span>' +
-        '<span>' + (ann.draft ? 'черновик' : 'опубликовано') + '</span>' +
-        '</div>' +
-        '<div>' + escapeHtml((ann.text || '').slice(0, 200)) + '</div>' +
-        '</li>';
-    }).join('');
-    el('pg-list').innerHTML = html || '<li class="app-empty">На странице пока нет замечаний.</li>';
-  }
-
-  // --- создание замечания -------------------------------------------------
-
-  function cancelPlacing() {
-    state.page.placing = false;
-    state.page.pendingCoords = null;
-    el('pg-scan').classList.remove('is-placing');
-    el('pg-form').hidden = true;
-    el('pg-hint').textContent = '';
-  }
-
-  function startPlacing() {
-    state.page.placing = true;
-    state.page.pendingCoords = null;
-    el('pg-scan').classList.add('is-placing');
-    el('pg-hint').textContent = 'Щёлкните по скану там, где должен стоять маркер.';
-  }
-
-  function onScanClick(event) {
-    if (!state.page.placing) return;
-    var image = el('pg-image');
-    var coords = markers.pointToCoords(image, event.clientX, event.clientY);
-    if (!coords) return;
-    state.page.pendingCoords = coords;
-    el('pg-coords').textContent = 'Координаты: ' + coords[0] + ', ' + coords[1] +
-      ' (щёлкните ещё раз, чтобы передвинуть)';
-    el('pg-form').hidden = false;
-    el('pg-hint').textContent = '';
-    fillCategorySelect(el('pg-category'), 'other');
-    drawPageMarkers();
-    el('pg-text').focus();
-  }
-
-  async function createRemark() {
-    var coords = state.page.pendingCoords;
-    if (!coords) { setStatus('Сначала выберите точку на скане.', true); return; }
-    var text = el('pg-text').value.trim();
-    if (!text) { setStatus('Текст замечания пуст.', true); return; }
-
-    var res = await apiMutate('POST', editorPageUrl(state.page.docId, state.page.pageKey), {
-      kind: el('pg-kind').value,
-      text: text,
-      // Новое замечание всегда черновик: публикация — отдельное решение, и
-      // делается оно в карточке или в очереди приёмки.
-      status: 'draft',
-      category: el('pg-category').value,
-      coords: coords,
-      clientPageSha: state.page.sha,
-      summary: 'создано в редакторе'
-    });
-    state.page.sha = res.serverPageSha || state.page.sha;
-    el('pg-text').value = '';
-    cancelPlacing();
-    setStatus('Черновик создан.', false);
-    await loadPage(state.page.docId, state.page.pageKey);
-    if (res.id) openCard(res.id);
-  }
-
-  function wirePage() {
-    el('pg-image').addEventListener('load', drawPageMarkers);
-    el('pg-image').addEventListener('click', onScanClick);
-    el('pg-new').addEventListener('click', function () {
-      if (state.page.placing) { cancelPlacing(); return; }
-      startPlacing();
-    });
-    el('pg-cancel').addEventListener('click', function () {
-      el('pg-text').value = '';
-      cancelPlacing();
-      drawPageMarkers();
-    });
-    el('pg-reload').addEventListener('click', function () {
-      if (state.page.docId) loadPage(state.page.docId, state.page.pageKey).catch(function () {});
-    });
-    el('pg-form').addEventListener('submit', function (event) {
-      event.preventDefault();
-      createRemark().catch(function () {});
-    });
-    ['pg-kind', 'pg-category'].forEach(function (id) {
-      el(id).addEventListener('change', drawPageMarkers);
-    });
-    el('pg-list').addEventListener('click', function (event) {
-      var item = event.target.closest ? event.target.closest('.app-page-item') : null;
-      if (item && item.dataset.id) openCard(item.dataset.id);
-    });
-    window.addEventListener('resize', function () {
-      if (!el('view-page').hidden) drawPageMarkers();
-    });
-  }
-
-  // --- запуск -------------------------------------------------------------
-
-  function wireFilters() {
-    ['sec-status', 'sec-category', 'sec-source'].forEach(function (id) {
-      el(id).addEventListener('change', function () {
-        if (state.section) loadSection(state.section).catch(function () {});
+    el('sr-filters').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var f = new FormData(ev.target);
+      var filters = {};
+      ['docId', 'pageKey', 'kind', 'status', 'category', 'categorySource',
+       'authorId', 'tag', 'inPool', 'q'].forEach(function (name) {
+        var v = (f.get(name) || '').trim();
+        if (v) filters[name] = v;
       });
+      state.search.filters = filters;
+      loadSearch(true).catch(function () {});
     });
+    el('sr-reset').addEventListener('click', function () {
+      el('sr-filters').reset();
+      state.search.filters = {};
+      loadSearch(true).catch(function () {});
+    });
+    el('sr-more').addEventListener('click', function () { loadSearch(false).catch(function () {}); });
+    loadTagOptions().catch(function () {});
+  }
+
+  //: Словарь тегов — тот, что реально в ходу, частые сверху.
+  async function loadTagOptions() {
+    var data = await apiGet('/api/tags');
+    var sel = el('sr-tag');
+    if (!sel) return;
+    var current = sel.value;
+    sel.innerHTML = '<option value="">Любой</option>' + (data.tags || []).map(function (t) {
+      return '<option value="' + escapeHtml(t.tag) + '">' + escapeHtml(t.tag) +
+             ' (' + t.count + ')</option>';
+    }).join('');
+    sel.value = current;
+  }
+
+  //: Автор — псевдоним, и список авторов набирается из того, что пришло:
+  //: отдельной ручки «кто вообще писал» нет и заводить её не нужно.
+  function updateAuthorOptions(items) {
+    var sel = el('sr-author');
+    if (!sel) return;
+    var seen = {};
+    Array.prototype.forEach.call(sel.options, function (o) { if (o.value) seen[o.value] = true; });
+    items.forEach(function (a) {
+      if (a.authorId == null || seen[a.authorId]) return;
+      seen[a.authorId] = true;
+      sel.insertAdjacentHTML('beforeend', '<option value="' + escapeHtml(a.authorId) + '">' +
+        escapeHtml(a.authorName || ('#' + a.authorId)) + '</option>');
+    });
+  }
+
+  async function loadSearch(reset) {
+    if (!state.search.ready) { searchShell(); state.search.ready = true; reset = true; }
+    if (reset) { state.search.offset = 0; state.search.items = []; }
+    var params = Object.assign({}, state.search.filters,
+                               { limit: state.search.limit, offset: state.search.offset });
+    var data = await apiGet('/api/remarks' + qs(params));
+    state.search.items = reset ? data.items : state.search.items.concat(data.items);
+    state.search.total = data.total;
+    state.search.offset += data.items.length;
+    updateAuthorOptions(data.items);
+    await renderSearchRows();
+  }
+
+  async function renderSearchRows() {
+    var items = state.search.items;
+    // Читательские номера страниц берутся из манифеста книги; он кэшируется
+    // в redpen-preview, поэтому цикл дорог только на первом документе.
+    var labels = {};
+    for (var i = 0; i < items.length; i++) {
+      var key = items[i].docId + '/' + items[i].pageNum;
+      if (!(key in labels)) labels[key] = await pageLabel(items[i].docId, items[i].pageNum);
+    }
+
+    el('sr-rows').innerHTML = items.map(function (a) {
+      var card = '#/ann/' + encodeURIComponent(a.docId) + '/' +
+                 encodeURIComponent(a.pageNum) + '/' + encodeURIComponent(a.remarkId);
+      var label = labels[a.docId + '/' + a.pageNum];
+      var reader = preview.remarkUrl(a.docId, label, a.remarkId);
+      var poolLabel = a.inPool
+        ? ('В опросе' + (a.poolAnswers ? ' (' + a.poolAnswers + ')' : '') + ' — убрать')
+        : 'В опрос';
+      var attrs = ' data-doc="' + escapeHtml(a.docId) + '" data-page="' +
+                  escapeHtml(a.pageNum) + '" data-ann="' + escapeHtml(a.remarkId) + '"';
+      return '<tr>' +
+        '<td>' + escapeHtml(a.docId) + '</td>' +
+        '<td class="app-nowrap">' + escapeHtml(label) + '</td>' +
+        '<td>' + escapeHtml(a.kind) + '</td>' +
+        '<td><span class="app-badge app-badge-' + escapeHtml(a.status) + '">' +
+          escapeHtml(a.status) + '</span></td>' +
+        '<td class="app-nowrap">' + catDot(a.category) + escapeHtml(catTitle(a.category)) + '</td>' +
+        '<td>' + escapeHtml(a.authorName || '—') + '</td>' +
+        '<td class="app-nowrap">' + escapeHtml(formatDay(a.updatedAt)) + '</td>' +
+        '<td>' + escapeHtml((a.text || '').slice(0, 80)) + '</td>' +
+        '<td class="app-row-actions">' +
+          '<a href="' + card + '">Править</a>' +
+          '<a href="' + escapeHtml(reader) + '" target="_blank" rel="noopener">Открыть</a>' +
+          (a.status === 'deleted' ? '' :
+            '<button type="button" class="sr-status"' + attrs + ' data-newstatus="' +
+            (a.status === 'draft' ? 'published' : 'draft') + '">' +
+            (a.status === 'draft' ? 'Опубликовать' : 'В черновик') + '</button>') +
+          (a.status === 'deleted' ? '' :
+            '<button type="button" class="app-btn-secondary sr-delete"' + attrs + '>Удалить</button>') +
+          '<button type="button" class="app-btn-secondary sr-history"' + attrs + '>История</button>' +
+          '<button type="button" class="app-btn-secondary sr-pool' + (a.inPool ? ' is-pooled' : '') +
+            '"' + attrs + ' data-pooled="' + (a.inPool ? '1' : '') + '">' + poolLabel + '</button>' +
+        '</td>' +
+      '</tr>';
+    }).join('');
+
+    el('sr-empty').hidden = !!items.length;
+    el('sr-more').hidden = items.length >= state.search.total;
+    wireSearchRows();
+  }
+
+  function searchRow(btn) {
+    return state.search.items.filter(function (a) {
+      return a.docId === btn.dataset.doc && a.pageNum === btn.dataset.page &&
+             a.remarkId === btn.dataset.ann;
+    })[0];
+  }
+
+  function wireSearchRows() {
+    var rows = el('sr-rows');
+    function each(sel, fn) {
+      Array.prototype.forEach.call(rows.querySelectorAll(sel), function (btn) {
+        btn.addEventListener('click', function () { fn(btn); });
+      });
+    }
+    // Статус меняется узким PATCH. Кабинет для этого пересылал замечание
+    // целиком (PUT с kind+text+coords): в журнал попадала ревизия «переписали
+    // объект», а не «опубликовал», и уходила она без резюме правки.
+    each('.sr-status', async function (btn) {
+      try {
+        await apiMutate('PATCH', editorPath(btn) + '/status',
+                        { status: btn.dataset.newstatus, summary: 'из списка замечаний' });
+      } catch (e) { return; }
+      var item = searchRow(btn);
+      if (item) item.status = btn.dataset.newstatus;
+      setStatus('Статус обновлён.', false);
+      renderSearchRows().catch(function () {});
+    });
+    each('.sr-delete', async function (btn) {
+      if (!window.confirm('Удалить замечание?')) return;
+      try { await apiMutate('DELETE', editorPath(btn)); } catch (e) { return; }
+      var item = searchRow(btn);
+      if (item) item.status = 'deleted';
+      setStatus('Замечание удалено.', false);
+      renderSearchRows().catch(function () {});
+    });
+    each('.sr-history', function (btn) {
+      state.hist.filters = { docId: btn.dataset.doc, remarkId: btn.dataset.ann };
+      state.hist.ready = false;
+      window.location.hash = '#/history';
+    });
+    each('.sr-pool', async function (btn) {
+      var item = searchRow(btn);
+      if (!(await togglePoolFor(btn.dataset.doc, btn.dataset.page, btn.dataset.ann,
+                                !!btn.dataset.pooled))) return;
+      if (item) item.inPool = !btn.dataset.pooled;
+      renderSearchRows().catch(function () {});
+    });
+  }
+
+  function editorPath(btn) {
+    return '/api/editor/' + encodeURIComponent(btn.dataset.doc) + '/' +
+           encodeURIComponent(btn.dataset.page) + '/' + encodeURIComponent(btn.dataset.ann);
   }
 
   function wireForm() {
@@ -1189,6 +851,9 @@
     });
     el('f-reload').addEventListener('click', function () {
       if (state.ref) loadCard(state.ref).catch(function () {});
+    });
+    el('f-pool').addEventListener('click', function () {
+      togglePool().catch(function () {});
     });
     window.addEventListener('beforeunload', function (event) {
       if (!state.dirty) return;
@@ -1247,54 +912,13 @@
     });
   }
 
-  async function route() {
-    var ref = parseHash();
-    setStatus('');
-    try {
-      if (ref.view === 'ann') {
-        showView('app-main');
-        await loadCard(ref);
-      } else if (ref.view === 'queue') {
-        showView('view-queue');
-        await loadQueue();
-      } else if (ref.view === 'page') {
-        showView('view-page');
-        await loadPage(ref.docId, ref.pageKey);
-      } else if (ref.view === 'section') {
-        showView('view-section');
-        state.section = ref;
-        await loadSection(ref);
-      } else {
-        showView('view-sections');
-        await loadSections();
-      }
-    } catch (e) { /* сообщение уже показано */ }
-  }
-
-  async function start() {
-    try {
-      state.user = await auth.me();
-    } catch (e) {
-      showLogin();
-      return;
-    }
-    if (!state.user) { showLogin(); return; }
-    el('app-login').hidden = true;
-    renderProfile();
-    if (state.user.role === 'viewer') {
-      setStatus('У вас роль читателя — править нельзя.', true);
-    }
-    await route();
-  }
-
-  wireFilters();
-  wireRatings();
-  wireNotes();
-  wireTimeline();
-  wireQueue();
-  wirePage();
-  window.addEventListener('resize', fitPreview);
-  window.addEventListener('hashchange', function () { route().catch(function () {}); });
-  wireForm();
-  start();
+  W.loadCard = loadCard;
+  W.loadQueue = loadQueue;
+  W.loadSearch = loadSearch;
+  W.togglePoolFor = togglePoolFor;
+  W.wire.push(wireForm);
+  W.wire.push(wireRatings);
+  W.wire.push(wireNotes);
+  W.wire.push(wireTimeline);
+  W.wire.push(wireQueue);
 })();

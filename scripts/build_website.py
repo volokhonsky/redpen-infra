@@ -373,11 +373,13 @@ def publish_website_data(target_dir=None, document=None, specific_folders=None):
         if os.path.exists(templates_dir):
             publish_data.copy_files(templates_dir, output_dir, "*.svg")
 
-        # Кабинет, редактор и опросник устроены одинаково: своя точка входа,
+        # Рабочее место и опросник устроены одинаково: своя точка входа,
         # свой html/js/css, все данные из API. Просмотрщик о них не знает.
-        # Опросник (`/survey/`) добавлен 2026-08-31: он единственный из трёх
-        # открыт кому угодно, но к статике это отношения не меняет.
-        for app_name in ('cabinet', 'app', 'survey'):
+        # Опросник (`/survey/`) открыт кому угодно, рабочее место (`/work/`) —
+        # только закрытому кругу, но к статике это отношения не меняет.
+        # `cabinet` и `app` с 2026-08-31 — заглушки-редиректы на `/work/`:
+        # разошедшиеся по закладкам адреса ломать незачем.
+        for app_name in ('cabinet', 'app', 'survey', 'work'):
             app_src = os.path.join(templates_dir, app_name)
             app_dest = os.path.join(output_dir, app_name)
             if os.path.exists(app_src):

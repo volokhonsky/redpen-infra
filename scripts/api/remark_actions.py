@@ -46,7 +46,8 @@ REVISION_ACTIONS = tuple(a for a in ACTIONS if a not in ("rate", "note"))
 
 #: Действия, означающие правку содержания замечания, а не служебный переход.
 #: Фильтр «только правки текста» реализован по токену — на сервере в
-#: `main.list_history` (параметр `changed=`), в редакторе в `app.js`. Список и
+#: `main.list_history` (параметр `changed=`), в рабочем месте — в
+#: `templates/work/remarks.js` (лента событий карточки). Список и
 #: `is_content_edit()` ниже — эталон этого разбиения; на них опираются тесты, а
 #: не рабочий путь запроса.
 CONTENT_ACTIONS = ("text", "coords", "kind")

@@ -52,9 +52,11 @@ def site(tmp_path):
     for name in ("page-view.js", "redpen-markers.js", "redpen-categories.js",
                  "legacy-page-redirect.js"):
         (site_dir / "js" / name).write_text("// %s" % name, encoding="utf-8")
-    # редакторский модуль авторизации — в архив попасть не должен
-    (site_dir / "js" / "redpen-auth.js").write_text(
-        "var base='https://api.medinsky.net';", encoding="utf-8")
+    # Модули рабочего места — в архив попасть не должны: каждый из них умеет
+    # ходить в API, а redpen-config.js вдобавок несёт его адрес.
+    for name in ("redpen-auth.js", "redpen-api.js", "redpen-config.js"):
+        (site_dir / "js" / name).write_text(
+            "var base='https://api.medinsky.net';", encoding="utf-8")
     (site_dir / "favicon.svg").write_text("<svg/>", encoding="utf-8")
 
     doc = site_dir / DOC

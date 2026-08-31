@@ -68,6 +68,11 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+/* Экраны переключаются атрибутом `hidden`, и он обязан побеждать любое
+   `display:` из правил ниже. Без этого `#app-main { display: grid }`
+   пересиливал скрытие, и карточка проступала сквозь экран входа. */
+[hidden] { display: none !important; }
+
 /* --- раскладка --------------------------------------------------------- */
 
 #app-main {
@@ -451,4 +456,197 @@ body {
 
 @media (max-width: 1100px) {
   .app-page { grid-template-columns: 1fr; }
+}
+
+/* Пул опроса. Тумблер, а не кнопка в один конец: состояние читается прямо
+   с него, отдельной строчки под него в карточке нет. */
+.app-pool {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.app-pool button.is-pooled {
+  background: #e8f0fe;
+  color: #1a4d8f;
+  border-color: #9dbdea;
+}
+
+/* ======================================================================
+   Экраны, переехавшие из кабинета (история, опрос, участники, приглашения).
+
+   Дубли того, что уже описано выше редакторской половиной — строка
+   состояния, карточка входа, профиль, таблица, вторичная кнопка, — сюда не
+   перенесены: две версии одного и того же и были причиной слияния.
+   ====================================================================== */
+
+.app-notice {
+  background: #fff6e5;
+  color: #8a5a00;
+  border: 1px solid #f0dca0;
+}
+
+.app-notice-error {
+  background: #fbeaea;
+  color: #a3231f;
+  border: 1px solid #f0b8b6;
+}
+
+.app-nav {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.5rem 1rem 0;
+  background: #eee;
+}
+
+.app-nav-btn {
+  padding: 0.5rem 1rem;
+  border: 1px solid #ccc;
+  border-bottom: none;
+  background: #f4f4f4;
+  cursor: pointer;
+  border-radius: 4px 4px 0 0;
+  font-size: 0.95rem;
+}
+
+.app-nav-btn.is-active {
+  background: #fff;
+  font-weight: bold;
+  color: #DC143C;
+}
+
+.app-filters label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.8rem;
+  color: #555;
+  gap: 0.2rem;
+}
+
+.app-filters input,
+.app-filters select {
+  padding: 0.3rem;
+  min-width: 8rem;
+}
+
+.app-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  color: #fff;
+}
+
+.app-badge-published { background: #2e7d32; }
+
+.app-badge-draft { background: #757575; }
+
+.app-badge-deleted { background: #c62828; }
+
+.app-muted {
+  color: #999;
+}
+
+.app-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.app-row-actions button,
+.app-row-actions a {
+  font-size: 0.8rem;
+  padding: 0.2rem 0.5rem;
+}
+
+.app-load-more {
+  margin-top: 1rem;
+}
+
+.app-history-item {
+  border: 1px solid #eee;
+  border-radius: 4px;
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 0.6rem;
+  font-size: 0.9rem;
+}
+
+.app-history-item .app-history-meta {
+  color: #666;
+  font-size: 0.8rem;
+  margin-bottom: 0.3rem;
+}
+
+.app-history-item .app-history-text {
+  white-space: pre-wrap;
+  margin: 0.3rem 0;
+}
+
+.app-admin-section {
+  margin-bottom: 2rem;
+}
+
+.app-admin-section h3 {
+  margin-bottom: 0.5rem;
+}
+
+.app-admin-form {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  align-items: center;
+}
+
+#ad-logs pre {
+  background: #222;
+  color: #ddd;
+  padding: 0.75rem;
+  max-height: 400px;
+  overflow: auto;
+  font-size: 0.8rem;
+}
+
+/* Замечание уже вынесено на оценку. Состояние видно по кнопке, потому что
+   отдельной колонки под него нет: строка и так широкая. */
+button.app-remark-pool.is-pooled {
+  background: #e8f0fe;
+  color: #1a4d8f;
+  border-color: #9dbdea;
+}
+
+button.app-remark-pool.is-pooled:hover {
+  background: #d5e4fb;
+}
+
+/* --- Приглашения и псевдонимы (модель анонимности) --------------------- */
+
+.app-invite-field {
+  display: block;
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: #555;
+}
+
+.app-invite-field input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Код виден один раз — выделяем, чтобы его не пролистали. */
+.app-invite-code {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #c8a200;
+  background: #fff8e1;
+  border-radius: 4px;
+}
+
+.app-invite-code code {
+  font-size: 16px;
+  font-weight: 600;
+  user-select: all;
 }

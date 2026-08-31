@@ -227,14 +227,63 @@ def test_answering_outside_the_pool_is_refused(monkeypatch):
 
 # --- управление пулом ------------------------------------------------------
 
-def test_pool_is_admin_only(monkeypatch):
+def test_pool_is_editors_work_and_results_are_admins(monkeypatch):
+    """Вынести замечание на оценку — обычная редакторская работа. Сводка
+    ответов — нет: это агрегированные мнения анонимных респондентов."""
     admin = _admin(monkeypatch)
     _create(admin)
     editor = login(monkeypatch, "survey-editor", role="editor")
-    assert editor.get("/api/survey/pool").status_code == 403
     assert editor.post("/api/survey/pool",
+                       json={"docId": DOC, "pageKey": PAGE, "remarkId": "r-1"}).status_code == 200
+    assert editor.get("/api/survey/pool").json()["total"] == 1
+    assert editor.delete(f"/api/survey/pool/{DOC}/{PAGE}/r-1").status_code == 200
+
+    assert editor.get("/api/survey/results").status_code == 403
+    viewer = login(monkeypatch, "survey-viewer", role="viewer")
+    assert viewer.get("/api/survey/pool").status_code == 403
+    assert viewer.post("/api/survey/pool",
                        json={"docId": DOC, "pageKey": PAGE, "remarkId": "r-1"}).status_code == 403
     assert anon().get("/api/survey/pool").status_code == 401
+
+
+def test_membership_is_visible_on_the_remark(monkeypatch):
+    """Без этого признака кнопка «в опрос» работает в один конец: положить
+    можно, а узнать, что замечание уже там, — нет."""
+    admin = _admin(monkeypatch)
+    _create(admin)
+
+    one = admin.get(f"/api/remarks/{DOC}/{PAGE}/r-1").json()["remark"]
+    assert one["inPool"] is False and one["poolAnswers"] == 0
+    assert admin.get("/api/remarks").json()["items"][0]["inPool"] is False
+
+    _pool(admin)
+    client, _ = _respondent()
+    _answer(client, interest=4)
+
+    one = admin.get(f"/api/remarks/{DOC}/{PAGE}/r-1").json()["remark"]
+    assert one["inPool"] is True and one["poolAnswers"] == 1
+    assert admin.get("/api/remarks").json()["items"][0]["poolAnswers"] == 1
+
+    # Изъятие из пула ответы не трогает — и признак это показывает честно.
+    admin.delete(f"/api/survey/pool/{DOC}/{PAGE}/r-1")
+    one = admin.get(f"/api/remarks/{DOC}/{PAGE}/r-1").json()["remark"]
+    assert one["inPool"] is False and one["poolAnswers"] == 0
+
+
+def test_remarks_can_be_filtered_by_membership(monkeypatch):
+    admin = _admin(monkeypatch)
+    _create(admin, "r-1")
+    _create(admin, "r-2")
+    _pool(admin, "r-1")
+
+    def ids(**params):
+        r = admin.get("/api/remarks", params=params).json()
+        assert r["total"] == len(r["items"])
+        return sorted(i["remarkId"] for i in r["items"])
+
+    assert ids(inPool="true") == ["r-1"]
+    assert ids(inPool="false") == ["r-2"]
+    assert ids() == ["r-1", "r-2"]
 
 
 def test_pool_add_is_idempotent_and_lists_the_text(monkeypatch):
@@ -313,9 +362,12 @@ def test_nothing_from_the_survey_reaches_the_static_files(monkeypatch):
 
     rendered = publisher.render_page(DOC, PAGE_KEY)
     assert publisher.compute_page_sha(rendered) == before
-    blob = repr(rendered)
+    static = publisher.render_page_static(DOC, PAGE_KEY)
+    blob = repr(rendered) + repr(static)
     assert "anonymous" not in blob
     assert "Прохожий" not in blob
-    for item in rendered:
+    # inPool — редакторское сведение: в статику не течёт ни под каким именем.
+    assert "inPool" not in blob and "poolAnswers" not in blob
+    for item in list(rendered) + list(static):
         assert set(item) <= {"id", "text", "annType", "kind", "coords", "tags",
                              "category", "draft"}

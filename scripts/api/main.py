@@ -104,7 +104,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
     allow_credentials=allow_credentials,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    # PATCH обязателен: узкие операции редактора (status/category/tags) ходят
+    # именно им, а браузер шлёт на них предварительный OPTIONS — без метода в
+    # списке он получает 400 и запрос до сервера не доходит вовсе. Список
+    # писался до появления этих операций и за ними не поехал.
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     # X-Survey-Token — опознание респондента опроса: он ходит с другого
     # источника (сайт), а токен вместо куки выбран как раз затем, чтобы
     # не заводить CSRF там, где её можно не заводить.
@@ -213,10 +217,13 @@ async def require_csrf(request: Request, user: Dict[str, str] = Depends(require_
     return user
 
 
-#: Лестница ролей: viewer < editor < reviewer < admin. `reviewer` появился
-#: тогда, когда основную массу текста стали производить агенты: публикация —
-#: единственное по-настоящему доверенное действие, и его отделяют от «писать».
-EDITOR_ROLES = ("editor", "reviewer", "admin")
+#: Лестница ролей: viewer < editor < admin.
+#:
+#: `reviewer` упразднён 2026-08-31 вместе со слиянием интерфейсов. Он обещал
+#: отделить «принимать чужое» от «писать», но ни одна ветка кода этого не
+#: делала: роль была равна editor в API и не пускалась вовсе в кабинете.
+#: Существующие строки переводит `db._retire_reviewer_role`.
+EDITOR_ROLES = ("editor", "admin")
 
 MAX_SUMMARY_LENGTH = 200
 REMARK_STATUSES = ("published", "draft", "deleted")
@@ -562,9 +569,9 @@ async def create_invite(request: Request, user: Dict[str, Any] = Depends(require
     note = body.get("note") if isinstance(body, dict) else None
     if role is None:
         role = "editor"
-    if role not in ("viewer", "editor", "reviewer", "admin"):
+    if role not in ("viewer", "editor", "admin"):
         raise HTTPException(status_code=400,
-                            detail="role must be viewer, editor, reviewer or admin")
+                            detail="role must be viewer, editor or admin")
     if note is not None and not isinstance(note, str):
         raise HTTPException(status_code=400, detail="note must be a string")
     if isinstance(note, str) and len(note) > 200:
@@ -1199,6 +1206,7 @@ async def list_remarks(
     category: Optional[str] = None,
     categorySource: Optional[str] = None,
     section: Optional[str] = None,
+    inPool: Optional[bool] = None,
     limit: int = 50,
     offset: int = 0,
     user: Dict[str, Any] = Depends(require_editor_read),
@@ -1223,15 +1231,20 @@ async def list_remarks(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
     kind = validated["kind"]
+    # inPool — членство в пуле опроса. Признак приходит в каждой строке, а не
+    # только в фильтре: без него кнопка «в опрос» работала в один конец —
+    # положить можно было, а увидеть, что замечание уже там, нельзя.
     items = db.list_remarks(
         doc_id=docId, page_num=validated["pageKey"], kind=kind, status=status,
         author_id=authorId, q=q, limit=limit, offset=offset, tag=tag,
         category=category, category_source=categorySource, section_id=section,
+        in_pool=inPool, with_pool=True,
     )
     total = db.count_remarks(
         doc_id=docId, page_num=validated["pageKey"], kind=kind, status=status,
         author_id=authorId, q=q, tag=tag,
         category=category, category_source=categorySource, section_id=section,
+        in_pool=inPool,
     )
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
@@ -1246,7 +1259,7 @@ async def get_one_remark(docId: str, pageKey: str, remarkId: str,
     if not _validate_doc_id(docId):
         raise HTTPException(status_code=400, detail="invalid docId")
     page_num_str = _validate_page_key(pageKey)
-    ann = db.get_remark(docId, page_num_str, remarkId)
+    ann = db.get_remark(docId, page_num_str, remarkId, with_pool=True)
     if ann is None:
         raise HTTPException(status_code=404, detail="remark not found")
     section = db.find_section_for_page(docId, page_num_str)
@@ -1596,7 +1609,11 @@ async def put_survey_rating(body: Dict[str, Any],
 
 @app.get("/api/survey/pool")
 async def get_survey_pool(docId: Optional[str] = None, limit: int = 200, offset: int = 0,
-                          user: Dict[str, Any] = Depends(require_admin)):
+                          user: Dict[str, Any] = Depends(require_editor_read)):
+    """Пул — редакторская работа: положить замечание на оценку решает тот, кто
+    его читает. Админской остаётся сводка ответов (`/api/survey/results`):
+    агрегированные мнения анонимных респондентов ближе к персональным данным,
+    чем к содержанию разбора (docs/anonymity-model.md)."""
     if docId is not None and not _validate_doc_id(docId):
         raise HTTPException(status_code=400, detail="invalid docId")
     return db.pool_list(doc_id=docId, limit=max(1, min(limit, 500)), offset=max(0, offset))
@@ -1604,7 +1621,7 @@ async def get_survey_pool(docId: Optional[str] = None, limit: int = 200, offset:
 
 @app.post("/api/survey/pool")
 async def add_to_survey_pool(body: Dict[str, Any],
-                             user: Dict[str, Any] = Depends(require_admin_csrf)):
+                             user: Dict[str, Any] = Depends(require_editor)):
     """Вынести замечание на оценку. Повтор — не ошибка."""
     page_num_str = _remark_target(str(body.get("docId") or ""),
                                   str(body.get("pageKey") or body.get("pageNum") or ""),
@@ -1616,7 +1633,7 @@ async def add_to_survey_pool(body: Dict[str, Any],
 
 @app.delete("/api/survey/pool/{docId}/{pageKey}/{remarkId}")
 async def remove_from_survey_pool(docId: str, pageKey: str, remarkId: str,
-                                  user: Dict[str, Any] = Depends(require_admin_csrf)):
+                                  user: Dict[str, Any] = Depends(require_editor)):
     """Убрать из раздачи. Уже полученные ответы остаются: снять вопрос и
     стереть ответы — разные действия, и второе здесь не подразумевается."""
     if not _validate_doc_id(docId):

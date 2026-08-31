@@ -613,6 +613,24 @@ def test_cors_preflight_reflects_explicit_origin():
         assert r.headers.get("access-control-allow-credentials") == "true"
 
 
+@pytest.mark.parametrize("method", ["GET", "POST", "PUT", "PATCH", "DELETE"])
+def test_cors_preflight_allows_every_method_the_editor_uses(client, method):
+    """Проверка на настоящем приложении, а не на собственноручно собранном.
+
+    Узкие операции (`PATCH .../status|category|tags`) появились позже списка
+    методов и в него не попали: браузер получал 400 на предварительный OPTIONS
+    и до сервера не доходил вовсе. Стенд это показал, тест не давал показать —
+    он строил свой app со своим списком.
+    """
+    r = client.options(
+        "/api/remarks",
+        headers={"Origin": "https://medinsky.net",
+                 "Access-Control-Request-Method": method},
+    )
+    assert r.status_code == 200, r.text
+    assert method in r.headers.get("access-control-allow-methods", "")
+
+
 # ---------------------------------------------------------------------------
 # Optimistic locking (stage 0.6)
 # ---------------------------------------------------------------------------

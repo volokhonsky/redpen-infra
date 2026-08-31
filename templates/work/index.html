@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Мединский.нет — рабочее место</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <meta name="robots" content="noindex,nofollow" />
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="work.css" />
+</head>
+<body>
+  <header class="app-top">
+    <a class="app-brand" href="../">Мединский.нет</a>
+    <span class="app-title">рабочее место</span>
+    <div id="app-profile" class="app-profile"></div>
+  </header>
+
+  <div id="app-status" class="app-status" hidden></div>
+
+  <div id="app-login" class="app-card" hidden>
+    <h2>Вход</h2>
+    <div id="app-google-btn"></div>
+    <label class="app-invite">
+      <span>Код приглашения — только при первом входе</span>
+      <input id="app-invite-input" type="text" placeholder="0000-0000-0000-0000"
+             autocomplete="off" spellcheck="false" />
+    </label>
+    <!-- Вход по личному токену: агенты и локальные стенды. Показывается
+         только по ?auth=token — людям он не нужен и мешал бы. -->
+    <div id="app-token-login" hidden>
+      <input id="app-token-input" type="text" placeholder="Личный токен" />
+      <button type="button" id="app-token-submit">Войти токеном</button>
+    </div>
+    <div id="app-login-error" class="app-error"></div>
+  </div>
+
+  <!-- Роль — единственная ось разграничения: пункты, которых у роли нет,
+       не показываются. Раньше это же разграничение проходило по двум
+       отдельным приложениям, /app/ и /cabinet/, и делило не права, а экраны. -->
+  <div id="app-viewer-notice" class="app-notice" hidden>
+    Нет прав редактора. Обратитесь к администратору.
+  </div>
+
+  <nav id="app-nav" class="app-nav" hidden>
+    <a class="app-nav-btn" href="#/" data-route="sections">Разбор</a>
+    <a class="app-nav-btn" href="#/remarks" data-route="remarks">Поиск</a>
+    <a class="app-nav-btn" href="#/queue" data-route="queue">Очередь</a>
+    <a class="app-nav-btn" href="#/history" data-route="history">История</a>
+    <a class="app-nav-btn" href="#/survey" data-route="survey">Опрос</a>
+    <a class="app-nav-btn" id="app-nav-admin" href="#/admin" data-route="admin" hidden>Админ</a>
+  </nav>
+
+  <!-- Список параграфов: доска работ. -->
+  <main id="view-sections" class="app-list" hidden>
+    <div class="app-listhead">
+      <h2>Параграфы</h2>
+      <label class="app-inline">
+        <span>Документ</span>
+        <select id="s-doc"></select>
+      </label>
+    </div>
+    <table class="app-table">
+      <thead><tr>
+        <th>§</th><th>Название</th><th>Страницы</th>
+        <th class="num">Всего</th><th class="num">Опубликовано</th>
+        <th class="num">Черновики</th><th class="num">Не разобрано</th>
+      </tr></thead>
+      <tbody id="s-rows"></tbody>
+    </table>
+  </main>
+
+  <!-- Замечания одного параграфа. -->
+  <main id="view-section" class="app-list" hidden>
+    <div class="app-listhead">
+      <h2 id="sec-title">Параграф</h2>
+      <a href="#/" class="app-back">← ко всем параграфам</a>
+    </div>
+    <div class="app-filters">
+      <label class="app-inline"><span>Статус</span>
+        <select id="sec-status">
+          <option value="">любой</option>
+          <option value="draft">черновик</option>
+          <option value="published">опубликован</option>
+        </select></label>
+      <label class="app-inline"><span>Категория</span>
+        <select id="sec-category"><option value="">любая</option></select></label>
+      <label class="app-inline"><span>Разметка</span>
+        <select id="sec-source">
+          <option value="">любая</option>
+          <option value="default">не разобрано</option>
+          <option value="tags-backfill">угадана по тегам</option>
+          <option value="agent">предложил агент</option>
+          <option value="human">выбрал человек</option>
+        </select></label>
+      <span id="sec-count" class="app-hint"></span>
+    </div>
+    <table class="app-table">
+      <thead><tr>
+        <th>Стр.</th><th>Категория</th><th>Статус</th><th>Текст</th><th>Изменено</th>
+      </tr></thead>
+      <tbody id="sec-rows"></tbody>
+    </table>
+  </main>
+
+  <!-- Очередь приёмки: по одному, с решением в два клика. -->
+  <main id="view-queue" hidden>
+    <div class="app-queuebar">
+      <label class="app-inline"><span>Разбираем</span>
+        <select id="q-mode">
+          <option value="drafts">черновики</option>
+          <option value="categories">предложенные категории</option>
+        </select></label>
+      <label class="app-inline"><span>Параграф</span>
+        <select id="q-section"><option value="">все</option></select></label>
+      <span id="q-progress" class="app-hint"></span>
+      <a href="#/" class="app-back">← к параграфам</a>
+    </div>
+
+    <div id="q-empty" class="app-card app-queue-empty" hidden>
+      <p>Разбирать нечего — очередь пуста.</p>
+    </div>
+
+    <div id="q-body" class="app-queue">
+      <section class="app-pane">
+        <div id="q-where" class="app-breadcrumbs"></div>
+        <div id="q-text" class="app-queue-text"></div>
+
+        <div class="app-row">
+          <label class="app-field">
+            <span>Категория <b>*</b></span>
+            <select id="q-category"></select>
+          </label>
+          <label class="app-field">
+            <span>Статус</span>
+            <select id="q-status">
+              <option value="draft">черновик</option>
+              <option value="published">опубликован</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="q-source" class="app-hint"></div>
+
+        <div class="app-actions app-queue-actions">
+          <button type="button" id="q-accept">Принять</button>
+          <button type="button" id="q-skip" class="app-btn-secondary">Отложить</button>
+          <button type="button" id="q-edit" class="app-btn-secondary">Открыть карточку</button>
+          <button type="button" id="q-reject" class="app-btn-danger">Отклонить</button>
+        </div>
+      </section>
+
+      <section class="app-pane app-pane--preview">
+        <div class="app-preview-head">
+          <h3>Как увидит читатель</h3>
+          <a id="q-preview-link" href="#" target="_blank" rel="noopener">открыть отдельно</a>
+        </div>
+        <div id="q-preview-fit" class="app-preview-fit">
+          <iframe id="q-preview" class="app-preview-frame" title="Просмотр страницы с этим замечанием"></iframe>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- Страница книги: скан с маркерами. Единственное место, где замечание
+       создают и двигают — до 2026-08-30 это умел только старый SPA. -->
+  <main id="view-page" hidden>
+    <div class="app-queuebar">
+      <span id="pg-where" class="app-breadcrumbs"></span>
+      <span id="pg-count" class="app-hint"></span>
+      <a href="#/" class="app-back">← к параграфам</a>
+    </div>
+
+    <div class="app-page">
+      <section class="app-pane app-pane--scan">
+        <div class="app-scan-head">
+          <button type="button" id="pg-new">Новое замечание</button>
+          <button type="button" id="pg-reload" class="app-btn-secondary">Перечитать</button>
+          <span id="pg-hint" class="app-hint"></span>
+        </div>
+        <div id="pg-scan" class="app-scan">
+          <img id="pg-image" alt="Скан страницы" />
+          <div id="pg-overlay" class="app-scan-overlay"></div>
+        </div>
+      </section>
+
+      <section class="app-pane app-pane--side">
+        <!-- Форма нового замечания: показывается, когда координата выбрана. -->
+        <form id="pg-form" class="app-form" hidden>
+          <h3>Новое замечание</h3>
+          <div id="pg-coords" class="app-hint"></div>
+          <label class="app-field">
+            <span>Текст <b>*</b></span>
+            <textarea id="pg-text" rows="6" required></textarea>
+          </label>
+          <div class="app-row">
+            <label class="app-field">
+              <span>Категория <b>*</b></span>
+              <select id="pg-category" required></select>
+            </label>
+            <label class="app-field">
+              <span>Вид</span>
+              <select id="pg-kind">
+                <option value="major">major — основной разбор</option>
+                <option value="minor" selected>minor — обычное замечание</option>
+              </select>
+            </label>
+          </div>
+          <div class="app-actions">
+            <button type="submit" id="pg-create">Создать черновик</button>
+            <button type="button" id="pg-cancel" class="app-btn-secondary">Отмена</button>
+          </div>
+        </form>
+
+        <h3>Замечания страницы</h3>
+        <ol id="pg-list" class="app-page-list"></ol>
+      </section>
+    </div>
+  </main>
+
+  <main id="app-main" hidden>
+    <!-- Слева правка и история, справа — то, что увидит читатель. -->
+    <section class="app-pane app-pane--work">
+      <nav id="app-breadcrumbs" class="app-breadcrumbs"></nav>
+
+      <form id="app-form" class="app-form">
+        <label class="app-field">
+          <span>Текст замечания</span>
+          <textarea id="f-text" rows="10" required></textarea>
+        </label>
+
+        <div class="app-row">
+          <label class="app-field">
+            <span>Категория <b title="Обязательна к применению">*</b></span>
+            <select id="f-category" required></select>
+          </label>
+          <label class="app-field">
+            <span>Тип</span>
+            <select id="f-kind">
+              <option value="major">major — основной разбор</option>
+              <option value="minor">minor — обычное замечание</option>
+            </select>
+          </label>
+          <label class="app-field">
+            <span>Статус</span>
+            <select id="f-status">
+              <option value="draft">черновик</option>
+              <option value="published">опубликован</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="app-field">
+          <span>Теги через запятую</span>
+          <input id="f-tags" type="text" autocomplete="off" spellcheck="false" />
+        </label>
+
+        <label class="app-field">
+          <span>Резюме правки — что и зачем изменено</span>
+          <input id="f-summary" type="text" maxlength="200" autocomplete="off" />
+        </label>
+
+        <div class="app-actions">
+          <button type="submit" id="f-save">Сохранить</button>
+          <button type="button" id="f-reload" class="app-btn-secondary">Перечитать</button>
+          <span id="f-hint" class="app-hint"></span>
+        </div>
+      </form>
+
+      <section class="app-ratings">
+        <h3>Оценка</h3>
+        <p class="app-note">
+          Три шкалы вместо одного вердикта: интересен ли факт, важно ли его
+          предъявить и правомерно ли предъявлять именно так.
+        </p>
+        <div id="app-rating-scales" class="app-rating-scales"></div>
+
+        <div class="app-pool">
+          <button type="button" id="f-pool" class="app-btn-secondary"></button>
+          <span id="f-pool-note" class="app-hint"></span>
+        </div>
+      </section>
+
+      <section class="app-notes">
+        <h3>Обсуждение</h3>
+        <p class="app-note">
+          Рабочие комментарии участников. На сайт не попадают — но и личных
+          данных здесь быть не должно.
+        </p>
+        <ol id="app-note-list" class="app-note-list"></ol>
+        <form id="app-note-form" class="app-note-form">
+          <textarea id="n-body" rows="3" maxlength="4000"
+                    placeholder="Что смущает в этом замечании?"></textarea>
+          <button type="submit" id="n-send">Отправить</button>
+        </form>
+      </section>
+
+      <section class="app-history">
+        <h3>Что происходило</h3>
+        <div class="app-timeline-filter">
+          <label>
+            <input type="checkbox" id="tl-text-only" />
+            только правки текста
+          </label>
+        </div>
+        <ol id="app-revisions" class="app-revisions"></ol>
+      </section>
+    </section>
+
+    <section class="app-pane app-pane--preview">
+      <div class="app-preview-head">
+        <h3>Как увидит читатель</h3>
+        <a id="app-preview-link" href="#" target="_blank" rel="noopener">открыть отдельно</a>
+      </div>
+      <div id="app-preview-fit" class="app-preview-fit">
+        <iframe id="app-preview" class="app-preview-frame" title="Просмотр страницы с этим замечанием"></iframe>
+      </div>
+    </section>
+  </main>
+
+  <!-- Сквозной поиск по всем книгам: фильтры кабинета и редактора вместе.
+       До слияния ни один из двух списков не был полным. -->
+  <main id="view-remarks" class="app-list" hidden></main>
+
+  <!-- Журнал ревизий с откатом. -->
+  <main id="view-history" class="app-list" hidden></main>
+
+  <!-- Пул опроса (редактор) и сводка ответов (админ). -->
+  <main id="view-survey" class="app-list" hidden></main>
+
+  <!-- Приглашения, участники, перепубликация, логи. -->
+  <main id="view-admin" class="app-list" hidden></main>
+
+  <script src="../js/redpen-config.js"></script>
+  <script src="../js/redpen-categories.js"></script>
+  <script src="../js/redpen-markers.js"></script>
+  <script src="../js/redpen-preview.js"></script>
+  <script src="../js/redpen-auth.js"></script>
+  <script src="../js/redpen-api.js"></script>
+  <script src="core.js"></script>
+  <script src="pages.js"></script>
+  <script src="remarks.js"></script>
+  <script src="admin.js"></script>
+  <script>RedPenWork.start();</script>
+</body>
+</html>

@@ -138,7 +138,7 @@ def test_leaving_the_project_unlinks_the_account(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Роли: лестница viewer < editor < reviewer < admin
+# Роли: лестница viewer < editor < admin
 # ---------------------------------------------------------------------------
 
 def test_viewer_cannot_write_remarks(monkeypatch):
@@ -155,12 +155,34 @@ def test_editor_can_write_remarks(monkeypatch):
     assert response.status_code == 200
 
 
-def test_reviewer_writes_like_an_editor(monkeypatch):
-    # reviewer — это editor плюс право принимать чужое, а не вместо него.
-    client = login(monkeypatch, "reviewer-1", role="reviewer")
-    response = client.post("/api/editor/medinsky11klass/52",
-                           json={"kind": "minor", "text": "x", "coords": [1, 1]})
-    assert response.status_code == 200
+def test_reviewer_role_is_gone(monkeypatch):
+    """`reviewer` упразднён: он никогда не давал ничего сверх editor, а кабинет
+    его и вовсе не пускал — значение, которое ничего не значит, опасно тем, что
+    однажды его кому-нибудь выдадут."""
+    admin = login(monkeypatch, "boss-reviewer", role="admin")
+    csrf = admin.get("/api/auth/csrf").json()["csrfToken"]
+    response = admin.post("/api/admin/invites", json={"role": "reviewer"},
+                          headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 400
+
+    member = login(monkeypatch, "member-reviewer", role="editor")
+    user_id = member.get("/api/auth/me").json()["userId"]
+    csrf = admin.get("/api/auth/csrf").json()["csrfToken"]
+    assert admin.post(f"/api/admin/users/{user_id}/role", json={"role": "reviewer"},
+                      headers={"X-CSRF-Token": csrf}).status_code == 400
+
+
+def test_existing_reviewers_become_editors(monkeypatch):
+    """Строка в базе старше упразднения роли должна пережить его редактором, а
+    не потерять права молча."""
+    import db as dbmod
+    login(monkeypatch, "old-reviewer", role="editor")
+    conn = dbmod.get_connection()
+    conn.execute("UPDATE users SET role = 'reviewer' WHERE sub_hash IS NOT NULL")
+    conn.commit()
+    dbmod._retire_reviewer_role(conn)
+    assert not conn.execute(
+        "SELECT 1 FROM users WHERE role = 'reviewer'").fetchone()
 
 
 def test_viewer_cannot_view_logs(monkeypatch):
@@ -180,10 +202,10 @@ def test_admin_can_change_a_role(monkeypatch):
     member = login(monkeypatch, "member-role", role="editor")
     user_id = member.get("/api/auth/me").json()["userId"]
 
-    response = admin.post(f"/api/admin/users/{user_id}/role", json={"role": "reviewer"})
+    response = admin.post(f"/api/admin/users/{user_id}/role", json={"role": "admin"})
     assert response.status_code == 200
     # Роль читается из БД на каждом запросе, поэтому действует сразу.
-    assert member.get("/api/auth/me").json()["role"] == "reviewer"
+    assert member.get("/api/auth/me").json()["role"] == "admin"
 
 
 def test_admin_can_retire_a_participant(monkeypatch):

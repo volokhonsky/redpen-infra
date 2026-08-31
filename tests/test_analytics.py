@@ -93,7 +93,8 @@ def test_classify_kinds(uri, kind):
 
 
 @pytest.mark.parametrize("uri", [
-    "/app/", "/app/index.html", "/cabinet/", "/api/remarks/x/y",
+    "/app/", "/app/index.html", "/cabinet/", "/work/", "/work/index.html",
+    "/api/remarks/x/y",
     "/.hooks/redpen-publish",
     "/medinsky11klass/pages/17/?editor=1",
     # Опросник тоже грузит читательскую страницу во фрейм: без исключения
@@ -431,6 +432,10 @@ PREVIEW = "https://medinsky.net/app/"
     ("https://medinsky.net/app", True),
     ("https://medinsky.net/cabinet/?tag=draft", True),
     ("https://medinsky.net/survey/", True),
+    # Рабочее место: предпросмотр в карточке грузит настоящую читательскую
+    # страницу во фрейм, и без исключения правка считалась бы за чтение.
+    ("https://medinsky.net/work/", True),
+    ("https://medinsky.net/work/#/ann/medinsky11klass/006/r-1", True),
     ("https://medinsky.net/medinsky11klass/pages/17/", False),
     ("https://t.me/x", False),
     # Чужой сайт со своим /app/ нам не указ.
