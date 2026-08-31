@@ -64,7 +64,10 @@ publish_from_repo() {
   #                 сюда правка через редактор до читателя не доезжает.
   if [ -d /srv/public ]; then
     for doc_dir in /srv/public/*/; do
-      [ -d "$doc_dir" ] || continue
+      # Каталог книги опознаём по metadata.json: на первом уровне лежат ещё
+      # js/, css/, app/, cabinet/, survey/ — им пустые remarks/ и pages/ ни к
+      # чему (до 2026-08-31 цикл создавал их всем подряд).
+      [ -f "${doc_dir}metadata.json" ] || continue
       for owned in remarks pages; do
         mkdir -p "${doc_dir}${owned}"
         chown -R 10001:10001 "${doc_dir}${owned}"

@@ -193,7 +193,10 @@ def _ensure_api_owned_dirs(public_dir: Path) -> None:
     if not public_dir.exists():
         return
     for doc_dir in public_dir.iterdir():
-        if not doc_dir.is_dir():
+        # Каталог книги опознаём по metadata.json: на первом уровне тома лежат
+        # ещё js/, css/, app/, cabinet/, survey/ — им пустые remarks/ и pages/
+        # ни к чему (до 2026-08-31 цикл создавал их всем подряд).
+        if not (doc_dir / "metadata.json").is_file():
             continue
         for name in _API_OWNED_DIRS:
             target = doc_dir / name

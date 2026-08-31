@@ -2401,3 +2401,30 @@ redpen-content-sync-1` → `Publish complete`.
   отношения не имеет.
 - В `survey_respondents` остались **две строки от проверок** («проверка
   выкладки» и «приёмка на проде»), обе без единого ответа. Удаление отложено.
+
+## 2026-08-31 — content-sync: пустые pages/ и remarks/ только книгам
+
+Правка замечания из предыдущей записи («Замечено попутно, не чинилось»). Цикл
+восстановления владения в конце публикации шёл по всем каталогам первого уровня
+тома и заводил `pages/`+`remarks/` в `js/`, `css/`, `blog/`, `app/`, `cabinet/`,
+`survey/`. Теперь каталог книги опознаётся по `metadata.json`.
+
+Правка в двух местах, они независимы: `content-sync/entrypoint.sh` (прогон при
+старте контейнера) и `_ensure_api_owned_dirs()` в `content_sync.py` — вопреки
+записи в CLAUDE.md этот путь не мёртв, его зовёт `publish_from_parent()` из
+вебхук-сервера, то есть он и работает при публикации по push. Тест —
+`tests/test_content_sync_owned_dirs.py`; 681 зелёный.
+
+Выкладка: scp двух файлов в `infra/content-sync/`, `docker compose up -d --build
+content-sync`, в логе `Publish complete`.
+
+Уборка уже созданного: `find /srv/public -mindepth 2 -maxdepth 2 -type d
+\( -name pages -o -name remarks \) -empty` с пропуском каталогов, у которых рядом
+лежит `metadata.json` — снесено 12 пустышек. **Тринадцатой в выдаче был
+`/srv/public/medinsky10klass/remarks`: он тоже пуст, но законен — у 10 класса
+пока нет ни одного замечания, и API пишет именно туда.** Голый `-empty -delete`
+унёс бы его вместе с владением uid 10001. Он оставлен.
+
+Проверено: на томе `pages/`+`remarks/` остались ровно у двух книг, обе под
+10001; `/`, `/survey/`, `/js/page-view.js`, `pages/17/`,
+`remarks/page_017.json` — 200.
