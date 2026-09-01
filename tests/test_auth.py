@@ -121,6 +121,11 @@ def test_participant_without_a_pseudonym_is_shown_by_number(monkeypatch):
     assert body["username"].startswith("Участник №")
 
 
+def test_me_is_not_cacheable(monkeypatch):
+    client = login(monkeypatch, "cache-check")
+    assert client.get("/api/auth/me").headers["cache-control"] == "no-store"
+
+
 def test_display_name_requires_csrf(monkeypatch):
     client = login(monkeypatch, "nocsrf", csrf=False)
     assert client.post("/api/auth/display-name",

@@ -470,8 +470,14 @@ async def get_csrf(user: Dict[str, Any] = Depends(require_user)):
 
 
 @app.get("/api/auth/me")
-async def get_me(user: Dict[str, Any] = Depends(require_user)):
+async def get_me(response: Response, user: Dict[str, Any] = Depends(require_user)):
     """Return current user info from session"""
+    # Личность и роль актора: кэшировать нечего и негде. На общей машине
+    # соседний вход не должен вытащить чужой ответ из истории/bfcache, а смена
+    # роли обязана быть видна сразу. У /api/* нет Cache-Control ни на одном
+    # ярусе (Caddy проксирует, nginx-кэш — только для статики), поэтому ставим
+    # здесь.
+    response.headers["Cache-Control"] = "no-store"
     logger.info("auth/me: success userId=%s role=%s", user["userId"], user["role"])
     return {
         "userId": user["userId"],
@@ -654,7 +660,7 @@ async def admin_publish_all(user: Dict[str, Any] = Depends(require_admin_csrf)):
 
 # ===== Инбокс этапа 0: /api/hello, /api/store-raw, /api/store =====
 #
-# ВНИМАНИЕ: клиентов нет. Ни просмотрщик, ни /app/, ни кабинет, ни content-sync
+# ВНИМАНИЕ: клиентов нет. Ни просмотрщик, ни /work/, ни content-sync
 # к этим трём эндпоинтам не обращаются — они остались от этапа 0, когда правки
 # складывались в файлы инбокса до появления SQLite-канона. Вместе с ними жив
 # модуль scripts/api/storage.py, существующий только ради них. Оставлены
