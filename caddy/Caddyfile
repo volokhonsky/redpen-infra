@@ -49,8 +49,9 @@
     X-Content-Type-Options "nosniff"
     Referrer-Policy "no-referrer-when-downgrade"
     # SAMEORIGIN, а не DENY: DENY запрещает кадрирование вообще, включая
-    # собственные страницы, а редактору (/app/) нужен предпросмотр страницы
-    # читателя в iframe. Чужим сайтам кадрирование по-прежнему запрещено.
+    # собственные страницы, а рабочему месту (/work/) и опроснику (/survey/)
+    # нужен предпросмотр страницы читателя в iframe. Чужим сайтам кадрирование
+    # по-прежнему запрещено.
     X-Frame-Options "SAMEORIGIN"
     Content-Security-Policy "frame-ancestors 'self'"
     Permissions-Policy "geolocation=(), camera=(), microphone=()"

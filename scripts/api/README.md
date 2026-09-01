@@ -75,8 +75,8 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 - ⛔ `GET /logs` → HTML-просмотр лога; ⛔ `GET /api/logs?lines=N` → JSON
 
 Приём данных (inbox). **Клиентов нет:** это наследие этапа 0, когда правки
-складывались в файлы до появления SQLite-канона. Ни просмотрщик, ни `/app/`,
-ни кабинет, ни content-sync сюда не обращаются; вместе с ними жив только ради
+складывались в файлы до появления SQLite-канона. Ни просмотрщик, ни `/work/`,
+ни content-sync сюда не обращаются; вместе с ними жив только ради
 них модуль `storage.py`. Оставлены намеренно (решение 2026-08-30).
 - 🔒 `POST /api/store` — сохраняет JSON-объект в `${STORAGE_DIR}/inbox/YYYYMMDD/<uuid>.json`.
   Ответ: `{"status":"stored","path":"inbox/YYYYMMDD/<uuid>.json"}`.

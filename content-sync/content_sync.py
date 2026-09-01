@@ -140,8 +140,8 @@ def mutate_staging(staging_dir: Path, api_base_url: str) -> None:
     Здесь жила подстановка адреса API: файл `app-config.js` с `window.APP_CONFIG`,
     тег на него в HTML клиентов API и заплатка `apiBase()` в
     `redpen-editor-bootstrap.js`. Единственным потребителем `APP_CONFIG` был этот
-    самый бутстрап старого SPA; SPA удалён 2026-08-30, а кабинет и редактор
-    /app/ определяют адрес API сами, инлайновым блоком в своём index.html.
+    самый бутстрап старого SPA; SPA удалён 2026-08-30, а /work/ и /survey/
+    определяют адрес API сами, инлайновым блоком в своём index.html.
     Функция оставлена точкой расширения: `--mutate-only` зовут из
     `entrypoint.sh`, и убирать вызов — отдельная выкладка контейнера.
     """
@@ -194,7 +194,7 @@ def _ensure_api_owned_dirs(public_dir: Path) -> None:
         return
     for doc_dir in public_dir.iterdir():
         # Каталог книги опознаём по metadata.json: на первом уровне тома лежат
-        # ещё js/, css/, app/, cabinet/, survey/ — им пустые remarks/ и pages/
+        # ещё js/, css/, work/, survey/ — им пустые remarks/ и pages/
         # ни к чему (до 2026-08-31 цикл создавал их всем подряд).
         if not (doc_dir / "metadata.json").is_file():
             continue

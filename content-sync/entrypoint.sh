@@ -47,7 +47,7 @@ publish_from_repo() {
 
   # Правки статики на месте развёртывания. Подстановка адреса API отсюда ушла
   # вместе со старым SPA (2026-08-30): её единственным потребителем был
-  # redpen-editor-bootstrap.js, а кабинет и /app/ знают адрес сами.
+  # redpen-editor-bootstrap.js, а /work/ и /survey/ знают адрес сами.
   /usr/bin/env python3 /app/content_sync.py --mutate-only --staging /srv/staging || true
 
   # Sync to public (shared volume)
@@ -65,7 +65,7 @@ publish_from_repo() {
   if [ -d /srv/public ]; then
     for doc_dir in /srv/public/*/; do
       # Каталог книги опознаём по metadata.json: на первом уровне лежат ещё
-      # js/, css/, app/, cabinet/, survey/ — им пустые remarks/ и pages/ ни к
+      # js/, css/, work/, survey/ — им пустые remarks/ и pages/ ни к
       # чему (до 2026-08-31 цикл создавал их всем подряд).
       [ -f "${doc_dir}metadata.json" ] || continue
       for owned in remarks pages; do
