@@ -137,6 +137,25 @@ def test_list_remarks_hides_the_archive_unless_asked(monkeypatch):
 # --- удалить навсегда --------------------------------------------------------
 
 
+def _survey_answers_table():
+    """Имя таблицы ответов опроса в текущей схеме.
+
+    На main она называется `survey_ratings` (ответ — только число), в ветке
+    опроса переезжает в `survey_answers` (число или свободный текст, вопрос в
+    колонке `question` вместо `scale`). Тест про полное удаление обязан
+    проверять ту таблицу, которая есть в базе: иначе он ломается на слиянии
+    двух веток — молча, потому что переименование в одной из них до этого
+    файла не доезжает. Возвращает (таблица, колонка вопроса).
+    """
+    conn = db.get_connection()
+    with db._lock:
+        names = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+    if "survey_answers" in names:
+        return "survey_answers", "question"
+    return "survey_ratings", "scale"
+
+
 def _seed_related(remark_id="a-1"):
     """Навесить на замечание всё, что должно уйти вместе с ним."""
     db.upsert_remark_db(DOC, PAGE_KEY, remark_id, "minor", "с тегами",
@@ -144,6 +163,7 @@ def _seed_related(remark_id="a-1"):
     db.set_rating(DOC, PAGE_KEY, remark_id, "importance", 2, rater_id=1)
     db.add_note(DOC, PAGE_KEY, remark_id, author_id=1, body="рабочий комментарий")
     db.pool_add(DOC, PAGE_KEY, remark_id, added_by=1)
+    table, question_col = _survey_answers_table()  # берёт db._lock — до захвата ниже
     conn = db.get_connection()
     with db._lock:
         conn.execute(
@@ -153,8 +173,9 @@ def _seed_related(remark_id="a-1"):
         )
         rid = conn.execute("SELECT id FROM survey_respondents").fetchone()["id"]
         conn.execute(
-            "INSERT INTO survey_ratings "
-            "(respondent_id, doc_id, page_num, remark_id, scale, value, created_at, updated_at) "
+            f"INSERT INTO {table} "
+            f"(respondent_id, doc_id, page_num, remark_id, {question_col}, value, "
+            "created_at, updated_at) "
             "VALUES (?, ?, ?, ?, 'importance', 2, ?, ?)",
             (rid, DOC, PAGE_KEY, remark_id, db._now_iso(), db._now_iso()),
         )
@@ -162,6 +183,7 @@ def _seed_related(remark_id="a-1"):
 
 
 def _related_counts(remark_id="a-1"):
+    survey_table = _survey_answers_table()[0]  # берёт db._lock — до захвата ниже
     conn = db.get_connection()
     with db._lock:
         pk_row = conn.execute(
@@ -173,7 +195,8 @@ def _related_counts(remark_id="a-1"):
             tags = conn.execute("SELECT COUNT(*) c FROM remark_tags WHERE remark_pk=?",
                                 (pk_row["rowid_pk"],)).fetchone()["c"]
         out = {"remark_tags": tags}
-        for table in ("remark_ratings", "remark_notes", "rating_pool", "survey_ratings"):
+        for table in ("remark_ratings", "remark_notes", "rating_pool",
+                      survey_table):
             out[table] = conn.execute(
                 f"SELECT COUNT(*) c FROM {table} WHERE doc_id=? AND page_num=? AND remark_id=?",
                 (DOC, PAGE_KEY, remark_id),
@@ -209,7 +232,7 @@ def test_purge_wipes_the_remark_and_all_its_traces(monkeypatch):
     assert after["remark_ratings"] == 0
     assert after["remark_notes"] == 0
     assert after["rating_pool"] == 0
-    assert after["survey_ratings"] == 0
+    assert after[_survey_answers_table()[0]] == 0
 
     # Ровно одна запись в журнале — сам факт удаления.
     conn = db.get_connection()
