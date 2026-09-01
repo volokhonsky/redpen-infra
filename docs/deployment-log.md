@@ -2578,3 +2578,75 @@ scp `scripts/api/main.py` → `docker compose up -d --build api`. На стар�
   `publish_all` без ошибок;
 - `robots.txt` по-прежнему запрещает `/work/`, `/app/`, `/cabinet/`;
 - все шесть контейнеров `Up`.
+
+---
+
+## 2026-09-01 (вечер) — Удаление замечания: архив и полное удаление
+
+Два коммита в `redpen-infra` (`4dd1038`, `dfaf391`), влитые в `main`
+fast-forward, один в `redpen-publish` (`8320544`). 709 тестов зелёные.
+Порядок обычный для «у API прибавляется»: **сначала API, потом статика** —
+вкладка «Архив» в `/work/` ходит в ручки, которых до выкладки не было.
+
+Прежнее «мягкое удаление» (`status='deleted'`) разделено на два действия:
+«в архив» (`DELETE /api/editor/...`, редактор, обратимо через
+`PATCH .../status`) и «удалить навсегда» (`DELETE .../purge`, только админ —
+стирает строку, теги, оценки, комментарии, пул, ответы опроса и всю историю,
+оставляя одну запись `remark_history` с `action='purge'`).
+
+**Бэкап перед выкладкой:** `VACUUM INTO` →
+`/root/backups/redpen-db/redpen-pre-archive-20260901T113919Z.db` (6,6 МБ).
+Прежние версии правленых файлов — `/root/backups/infra-pre-archive/`.
+
+### API
+
+scp `scripts/api/{db,main,publisher,remark_actions}.py` и
+`scripts/api/README.md` плюс `templates/work/{core.js,index.html,remarks.js,
+work.css}` (в образ едет `COPY . /app/`), затем
+`docker compose up -d --build api`. На старте
+`startup publish_all pages=315 failed=0`, `/api/health` → 200.
+
+**Миграция `db._migrate_statuses_to_archived` отработала:**
+`deleted 3` → `archived 3`. Три строки — `medinsky11klass` `001`/`ann-page2-1`,
+`017`/`srv-import-0df25036`, `-01`/`srv-1783594507-d461fe`.
+
+**Замер до и после сошёлся строка в строку:** users 1 admin + 1 editor,
+remarks 225 published / 1047 draft / 3 archived (были `deleted`), тегов 3405,
+ревизий 2526, пул 33, ответов опроса 3, `remark_ratings` и `remark_notes` по 0.
+
+`compute_page_sha` не сдвинулся: 315 страниц, расхождений 0
+(`/root/backups/page-shas-pre-archive.json` против `page-shas-post-archive.json`).
+Это и проверялось в первую очередь: хеш — вход оптимистической блокировки
+редактора, его сдвиг выдал бы 409 всем открытым сессиям.
+
+### Статика
+
+`build_website.py --skip-push`, коммит и push в `redpen-publish` (`8320544`),
+`docker restart redpen-content-sync-1`, в логе `Publish complete`. Кроме
+`work/*` в сборку попала обычная смена даты обновления на титульной и в блоге
+плюс `lastmod` в `sitemap.xml`.
+
+### Проверено на проде
+
+- `/api/health` → 200; анонимно `/api/remarks` (в том числе `?status=archived`
+  и `?includeArchived=true`) → 401, `DELETE .../purge` → 401; предварительный
+  OPTIONS с `Access-Control-Request-Method: DELETE` → 204;
+- `/`, `/work/`, `/survey/`, обе книги, `pages/17/`, `/blog/`, `robots.txt`
+  → 200; `robots.txt` по-прежнему запрещает `/work/`;
+- новая статика доехала: в `work/index.html` есть маршрут `#/archive`;
+- **архив наружу не течёт**: все три архивных `remarkId` дают 0 вхождений и в
+  своих `remarks/page_*.json`, и в HTML читательской страницы;
+- шесть контейнеров `Up`.
+
+**Вход под живой учётной записью не проверялся** — требует Google-входа
+владельца. Всё, что проверяемо анонимно, проверено; цикл «в архив → вкладка
+Архив → восстановить → удалить навсегда» пройден на локальном стенде.
+
+### Что учесть дальше
+
+Ветка `survey-open-answers` (`fd0f2f7`, на прод не выкладывалась) переименует
+`survey_ratings` в `survey_answers`. При её слиянии с `main` будет ровно два
+конфликта, оба в `db.py` и оба разрешаются стороной опроса: вызовы миграций
+опроса в `_migrate_schema` и имя таблицы в списке зачистки внутри
+`purge_remark`. `tests/test_remark_archive.py` к этому уже готов — коммитом
+`dfaf391` он спрашивает схему и работает при обоих именах.
