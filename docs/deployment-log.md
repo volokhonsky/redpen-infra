@@ -2519,3 +2519,62 @@ scp девяти файлов (`scripts/api/{main,db,dev_seed,remark_actions}.py
 `GET /api/auth/me` стоит отдавать с `Cache-Control: no-store`: браузер его
 кэширует, и смена роли применяется только после перезагрузки (права сервер
 проверяет на каждом запросе, так что это косметика).
+
+---
+
+## 2026-09-01 — Снятие заглушек /app/ + /cabinet/, no-store на /api/auth/me, ревизия документации
+
+Три пункта из «Что осталось» предыдущей записи плюс догоняющая правка доков.
+Три коммита в `redpen-infra` (`6af2932`, `b185465`, `52c1aff`), один в
+`redpen-publish` (`8436413`).
+
+### Статика — заглушки сняты
+
+`git rm -r app cabinet` в `redpen-publish` → push (`8436413`) →
+`docker restart redpen-content-sync-1`.
+
+`git reset --hard` в `/srv/repo` каталоги **не убрал**: `app/` и `cabinet/`
+держались непроиндексированными пустыми `annotations/ pages/ remarks/` внутри
+(осадок древнего цикла проставления владения, который до 2026-08-31 создавал
+их всем каталогам первого уровня — `css/`, `js/`, `blog/` и т. д. тоже).
+Поэтому `rsync --delete` их переносил, а не удалял. Убрано руками:
+`rm -rf /srv/{repo,staging,public}/{app,cabinet}`. Впредь не воспроизведётся —
+текущий цикл трогает только каталоги с `metadata.json`.
+
+Проверено: `https://medinsky.net/app/` и `/cabinet/` → 404; `/work/`,
+`/survey/`, `/` → 200.
+
+### API — Cache-Control: no-store на /api/auth/me
+
+scp `scripts/api/main.py` → `docker compose up -d --build api`. На старте
+`startup publish_all pages=315 failed=0` (рендер не изменился — правка только
+в заголовке ответа). `https://api.medinsky.net/api/health` → 200.
+
+Заголовок ставится в обработчике, то есть на пути `200`. Анонимный запрос
+`/api/auth/me` по-прежнему `401` **без** `Cache-Control` (зависимость
+`require_user` рвёт до обработчика) — это ожидаемо, кэшировать нечего.
+Проверка на `200` требует живой сессии владельца и не гонялась; логика
+покрыта тестом `tests/test_auth.py::test_me_is_not_cacheable`.
+
+### Документация
+
+Слияние в `/work/` (894da8b) не тронуло живую документацию — догнали:
+`README.md`, `STATE_OVERVIEW.md`, `REMARK_IDS.md`, `anonymity-model.md`
+(нормативный: список исключений аналитики ведёт `/work/`+`/survey/`,
+`/app/`+`/cabinet/` помечены наследием — логи неизменяемы),
+`analytics-setup.md`, `scripts/api/README.md`, `tests/README.md`, плюс
+комментарии в `caddy/Caddyfile`, `scripts/sitemap.py`,
+`scripts/matomo_export.py`, `content-sync/*`. Планы, обоснования и
+датированные журналы не тронуты намеренно.
+
+`content-sync` и `caddy` не передеплоены: правки в них — только комментарии,
+поведение контейнеров не изменилось.
+
+### Проверено на проде
+
+- `/app/`, `/cabinet/` → 404; `/work/`, `/survey/`, `/`, обе книги,
+  `pages/17/`, `/blog/` → 200;
+- `/api/health` → 200; `redpen-api-1` поднялся без рестарт-петли,
+  `publish_all` без ошибок;
+- `robots.txt` по-прежнему запрещает `/work/`, `/app/`, `/cabinet/`;
+- все шесть контейнеров `Up`.
