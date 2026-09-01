@@ -101,7 +101,7 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 - 🔒 `POST /api/editor/{docId}/{pageNum}` — добавить/обновить замечание.
   Тело: `{kind, text, coords?[x,y], id?, clientPageSha?, status?, tags?}`.
   `tags` — список строк; отсутствие поля означает «не трогать теги», `[]` —
-  «очистить». Имена `draft`/`published`/`deleted` зарезервированы.
+  «очистить». Имена `draft`/`published`/`archived`/`deleted` зарезервированы.
   `status` — `"draft"` или `"published"` (иначе `400`); если поле не
   передано, у существующей замечания статус сохраняется, у новой —
   `"published"`. Можно передать целочисленные
@@ -110,9 +110,17 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
   черновиков — это не ошибка).
 - 🔒 `PUT /api/editor/{docId}/{pageNum}/{remarkId}` — обновить замечание по id
   (если не найдена — создаётся новая). То же тело/ответ/семантика `status`.
-- 🔒 `DELETE /api/editor/{docId}/{pageNum}/{remarkId}` — мягкое удаление
-  (`status='deleted'`, остаётся в истории) + республикация. `404`, если
-  замечания нет или она уже удалена. Ответ: `{id, serverPageSha, published}`.
+- 🔒 `DELETE /api/editor/{docId}/{pageNum}/{remarkId}` — **в архив**
+  (`status='archived'`, ревизия `archive`, остаётся в истории) + республикация.
+  `404`, если замечания нет или оно уже в архиве. Ответ:
+  `{id, serverPageSha, published}`. Обратимо: `PATCH .../status`
+  (`draft`/`published`) достаёт из архива, diff подписывает `restore`.
+- 🔒 `DELETE /api/editor/{docId}/{pageNum}/{remarkId}/purge` — **удалить
+  навсегда** (роль `admin`, CSRF). Необратимо: стирает строку `remarks`, теги,
+  оценки, комментарии, членство в пуле, ответы опроса и всю историю; остаётся
+  одна запись `remark_history` с `action='purge'` (кто и когда + снимок головы).
+  Применимо при любом статусе; страница перепубликовывается. `404`, если
+  замечания нет. Ответ: `{id, serverPageSha, published}`.
 
 Узкие операции — правят одно поле и записывают в журнал ровно то изменение,
 которое произошло. `serverPageSha` не требуют: оптимистическая блокировка
@@ -131,7 +139,7 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 Рабочее место (`/work/`) — списки, история и статистика поверх той же
 таблицы `remarks`/`remark_history`. До 2026-08-31 эти ручки делили между собой
 два приложения, `/app/` и `/cabinet/`; теперь они питают одни и те же экраны:
-- 📖 `GET /api/remarks?docId&pageKey&kind&status&authorId&q&tag&category&categorySource&section&inPool&limit&offset`
+- 📖 `GET /api/remarks?docId&pageKey&kind&status&authorId&q&tag&category&categorySource&section&inPool&includeArchived&limit&offset`
   → `{items, total, limit, offset}`.
   `items[]` — как `_remark_row_to_dict` + `authorName` (псевдоним автора;
   `null` для импортированных) + `tags` + **`inPool`/`poolAnswers`** (лежит ли
@@ -139,8 +147,10 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
   `tag` — один тег; `category` (один из семи слагов) и `categorySource`
   (`default`/`tags-backfill`/`agent`/`human`) — вход очереди приёмки;
   `section` — параграф (выводится из диапазона страниц, отдельной колонки
-  нет); `inPool=true|false` — членство в пуле опроса. Валидация: `docId`/`pageKey` — как в
-  `/api/editor/...`; `status ∈ {published,draft,deleted}`;
+  нет); `inPool=true|false` — членство в пуле опроса. **Архив в выдачу не
+  попадает**, пока его не спросят: `includeArchived=true` подмешивает
+  `status='archived'`, либо явный `status=archived` отдаёт только его. Валидация:
+  `docId`/`pageKey` — как в `/api/editor/...`; `status ∈ {published,draft,archived}`;
   `kind ∈ {major,minor}`; `limit ≤ 200` (по умолчанию 50);
   `offset ≥ 0`; `len(q) ≤ 200` — иначе `400`.
 - 📖 `GET /api/remarks/{docId}/{pageKey}/{remarkId}` → `{remark, section}` —
@@ -148,7 +158,7 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
   годится: карточке нужен адрес, а не страница выдачи). `remark` несёт те же
   поля, что элемент списка, включая `inPool`/`poolAnswers`.
 - 📖 `GET /api/tags?docId` (роль `editor`/`admin`, чтение) →
-  `{"tags": [{tag, count}, …]}` (по убыванию частоты, без удалённых замечаний) — словарь тегов для фильтра в кабинете.
+  `{"tags": [{tag, count}, …]}` (по убыванию частоты, без архивных замечаний) — словарь тегов для фильтра в кабинете.
 - 📖 `GET /api/history?docId&pageKey&remarkId&authorId&action&changed&limit&offset`
   → `{items, hasMore, limit, offset}`; `items[].snapshot` —
   распарсенное состояние замечания на момент записи. `action` фильтрует по
@@ -156,7 +166,7 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
   изменения (токен `remark_actions.ACTIONS`): это разные вопросы, «кто это
   записал» и «что при этом изменилось».
 - `GET /api/stats` (любая роль, включая `viewer`, требует только сессию) →
-  `{"docs": [{"docId","published","draft","deleted"}, …], "recentActivity": […]}`.
+  `{"docs": [{"docId","published","draft","archived"}, …], "recentActivity": […]}`.
 - 🔒 `POST /api/history/{histId}/revert` — восстанавливает замечание в
   состояние из снапшота истории (включая его `status` — откат к записи
   `action='delete'` повторно удаляет) и республикует страницу. `404`, если

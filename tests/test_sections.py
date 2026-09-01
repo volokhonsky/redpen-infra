@@ -136,10 +136,10 @@ def test_unclassified_count_drives_the_work_board():
     assert by_id["1"]["counts"]["unclassified"] == 1
 
 
-def test_deleted_remarks_are_out_of_the_counts():
+def test_archived_remarks_are_out_of_the_counts():
     _seed_sections()
     db.upsert_remark_db("doc1", "006", "a1", "major", "t", action="create")
-    db.soft_delete_remark("doc1", "006", "a1")
+    db.archive_remark("doc1", "006", "a1")
     by_id = {s["sectionId"]: s for s in db.list_sections("doc1")}
     assert by_id["1"]["counts"]["total"] == 0
 

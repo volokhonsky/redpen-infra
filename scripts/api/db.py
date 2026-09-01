@@ -457,6 +457,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     )
     _backfill_revision_numbers(conn)
     _retire_reviewer_role(conn)
+    _migrate_statuses_to_archived(conn)
 
 
 def _retire_reviewer_role(conn: sqlite3.Connection) -> None:
@@ -484,6 +485,28 @@ def _retire_reviewer_role(conn: sqlite3.Connection) -> None:
     if has_role("invites"):
         conn.execute(
             "UPDATE invites SET role = 'editor' WHERE role = 'reviewer' AND used_at IS NULL"
+        )
+
+
+def _migrate_statuses_to_archived(conn: sqlite3.Connection) -> None:
+    """Перевести status='deleted' → 'archived' (2026-09).
+
+    Мягкое удаление всегда и было архивом — обратимым, скрытым отовсюду, но не
+    стёртым. Отдельным значением его делает то, что теперь рядом появилось
+    настоящее удаление (`purge_remark`), и слово «удалён» больше не должно
+    значить «убран, но цел».
+
+    Идёт после `executescript`, тем же приёмом, что и `_retire_reviewer_role`.
+    Не путать с `_rename_legacy_to_remarks`, который обязан идти строго до DDL.
+
+    Журнал ревизий не трогаем: старые снапшоты со `status='deleted'`
+    нормализуются на чтении там же, где и легаси-имена полей (см.
+    `normalize_snapshot`, `remark_actions.diff_snapshots`).
+    """
+    if any(row["name"] == "status"
+           for row in conn.execute("PRAGMA table_info(remarks)")):
+        conn.execute(
+            "UPDATE remarks SET status = 'archived' WHERE status = 'deleted'"
         )
 
 
@@ -853,12 +876,15 @@ def set_session_csrf(session_id: str, token: str) -> None:
 
 # ===== Annotation tags =====
 
-# `status` stays the canonical draft/published/deleted flag; the matching tags
+# `status` stays the canonical draft/published/archived flag; the matching tags
 # are *derived* at render time (publisher.render_page_static), never stored, so
 # there is no second source of truth to drift. Storing them is therefore an
 # error, wherever the write comes from -- the API, import_remarks.py or the
 # backfill script -- hence the check lives here rather than in main.py.
-RESERVED_TAGS = frozenset({"draft", "published", "deleted"})
+#
+# `deleted` stays reserved though the status is gone (2026-09, migrated to
+# `archived`): un-reserving an old name only invites a tag that means nothing.
+RESERVED_TAGS = frozenset({"draft", "published", "deleted", "archived"})
 
 # Префикс зеркального тега категории. Тег `cat:<slug>` появляется в
 # опубликованном JSON сам (publisher._render_item) и целиком выводится из
@@ -974,10 +1000,10 @@ def _read_tags_batch(conn: sqlite3.Connection, pks: List[int]) -> Dict[int, List
 
 
 def list_all_tags(doc_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """[{tag, count}] over non-deleted remarks, most used first."""
+    """[{tag, count}] over non-archived remarks, most used first."""
     conn = get_connection()
     params: List[Any] = []
-    where = "a.status != 'deleted'"
+    where = "a.status != 'archived'"
     if doc_id is not None:
         where += " AND a.doc_id = ?"
         params.append(doc_id)
@@ -1217,14 +1243,14 @@ def list_sections(doc_id: str) -> List[Dict[str, Any]]:
 
     Сводка — это доска работ: сколько всего, сколько опубликовано, сколько
     черновиков и сколько ещё не разобрано по категориям (category_source =
-    'default'). Удалённые в счёт не идут."""
+    'default'). Архивные в счёт не идут."""
     conn = get_connection()
     with _lock:
         rows = conn.execute(
             f"""
             SELECT s.*,
               (SELECT COUNT(*) FROM remarks a
-                WHERE a.doc_id = s.doc_id AND a.status != 'deleted'
+                WHERE a.doc_id = s.doc_id AND a.status != 'archived'
                   AND {_PAGE_IN_SECTION}) AS n_total,
               (SELECT COUNT(*) FROM remarks a
                 WHERE a.doc_id = s.doc_id AND a.status = 'published'
@@ -1233,7 +1259,7 @@ def list_sections(doc_id: str) -> List[Dict[str, Any]]:
                 WHERE a.doc_id = s.doc_id AND a.status = 'draft'
                   AND {_PAGE_IN_SECTION}) AS n_draft,
               (SELECT COUNT(*) FROM remarks a
-                WHERE a.doc_id = s.doc_id AND a.status != 'deleted'
+                WHERE a.doc_id = s.doc_id AND a.status != 'archived'
                   AND a.category_source = 'default'
                   AND {_PAGE_IN_SECTION}) AS n_unclassified,
               (SELECT MAX(a.updated_at) FROM remarks a
@@ -1436,10 +1462,10 @@ def add_history(
         conn.commit()
 
 
-def list_page_remarks(doc_id: str, page_num: str, include_deleted: bool = False) -> List[Dict[str, Any]]:
+def list_page_remarks(doc_id: str, page_num: str, include_archived: bool = False) -> List[Dict[str, Any]]:
     conn = get_connection()
     with _lock:
-        if include_deleted:
+        if include_archived:
             rows = conn.execute(
                 "SELECT * FROM remarks WHERE doc_id = ? AND page_num = ? ORDER BY rowid_pk",
                 (doc_id, page_num),
@@ -1582,12 +1608,16 @@ def upsert_remark_db(
     return ann
 
 
-def soft_delete_remark(doc_id: str, page_num: str, remark_id: str,
-                           author_id: Optional[int] = None,
-                           summary: Optional[str] = None,
-                           agent_run_id: Optional[int] = None) -> bool:
-    """Mark a published remark as deleted and record history. Returns False
-    if the remark doesn't exist or is already deleted."""
+def archive_remark(doc_id: str, page_num: str, remark_id: str,
+                   author_id: Optional[int] = None,
+                   summary: Optional[str] = None,
+                   agent_run_id: Optional[int] = None) -> bool:
+    """Убрать замечание в архив (status='archived') и записать ревизию.
+
+    Обратимо: вернуть замечание из архива можно узким `set_status_db`
+    (`PATCH .../status`), diff подпишет переход `restore`. Возвращает False,
+    если замечания нет или оно уже в архиве.
+    """
     conn = get_connection()
     now = _now_iso()
     with _lock:
@@ -1595,10 +1625,10 @@ def soft_delete_remark(doc_id: str, page_num: str, remark_id: str,
             "SELECT * FROM remarks WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
             (doc_id, page_num, remark_id),
         ).fetchone()
-        if row is None or row["status"] == "deleted":
+        if row is None or row["status"] == "archived":
             return False
         conn.execute(
-            "UPDATE remarks SET status = 'deleted', updated_at = ? WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
+            "UPDATE remarks SET status = 'archived', updated_at = ? WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
             (now, doc_id, page_num, remark_id),
         )
         row = conn.execute(
@@ -1607,11 +1637,72 @@ def soft_delete_remark(doc_id: str, page_num: str, remark_id: str,
         ).fetchone()
         ann = _remark_row_to_dict(row)
         ann["tags"] = _read_tags(conn, ann["rowidPk"])
-        # agent_run_id — чтобы удаление, сделанное агентом, привязывалось к
-        # прогону так же, как правка: иначе «откатить прогон целиком» его не
+        # agent_run_id — чтобы архивация, сделанная агентом, привязывалась к
+        # прогону так же, как правка: иначе «откатить прогон целиком» её не
         # увидит.
-        _insert_history(conn, doc_id, page_num, remark_id, "delete", ann, author_id,
+        _insert_history(conn, doc_id, page_num, remark_id, "archive", ann, author_id,
                         summary=summary, agent_run_id=agent_run_id)
+        conn.commit()
+    return True
+
+
+def purge_remark(doc_id: str, page_num: str, remark_id: str,
+                 author_id: Optional[int],
+                 summary: Optional[str] = None) -> bool:
+    """Стереть замечание навсегда: строку `remarks`, все связанные данные и всю
+    историю правок. Остаётся ровно одна запись в журнале — `action='purge'`:
+    кто и когда стёр, плюс снимок головы на момент удаления.
+
+    Необратимо. Применимо при любом статусе — и к архивному, и к живому
+    замечанию (в последнем случае вызывающий обязан перепубликовать страницу).
+    Возвращает False, если замечания нет.
+
+    Всё одной транзакцией под `_lock`. Связанные таблицы вычищаются явно:
+    `PRAGMA foreign_keys` на рабочем соединении не включён (см. get_connection),
+    на `ON DELETE CASCADE` у `remark_tags` полагаться нельзя, а у оценок,
+    комментариев, пула и ответов опроса внешнего ключа к `remarks` нет вовсе.
+    """
+    conn = get_connection()
+    with _lock:
+        head = _head_snapshot(conn, doc_id, page_num, remark_id)
+        if head is None:
+            return False
+        remark_pk = head["rowidPk"]
+        max_rev = conn.execute(
+            "SELECT MAX(rev_no) AS m FROM remark_history "
+            "WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
+            (doc_id, page_num, remark_id),
+        ).fetchone()["m"] or 0
+
+        conn.execute("DELETE FROM remark_tags WHERE remark_pk = ?", (remark_pk,))
+        for table in ("remark_ratings", "remark_notes", "rating_pool",
+                      "survey_ratings"):
+            conn.execute(
+                f"DELETE FROM {table} WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
+                (doc_id, page_num, remark_id),
+            )
+        conn.execute(
+            "DELETE FROM remarks WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
+            (doc_id, page_num, remark_id),
+        )
+        conn.execute(
+            "DELETE FROM remark_history WHERE doc_id = ? AND page_num = ? AND remark_id = ?",
+            (doc_id, page_num, remark_id),
+        )
+        # Прямой INSERT, а не _insert_history: тот считает rev_no и дифф от
+        # предыдущей ревизии, которой уже нет.
+        conn.execute(
+            """
+            INSERT INTO remark_history
+              (doc_id, page_num, remark_id, action, snapshot, author_id, created_at,
+               rev_no, parent_rev_id, agent_run_id, summary, changes)
+            VALUES (?, ?, ?, 'purge', ?, ?, ?, ?, NULL, NULL, ?, ?)
+            """,
+            (doc_id, page_num, remark_id,
+             json.dumps(head, ensure_ascii=False), author_id, _now_iso(),
+             max_rev + 1, summary,
+             json.dumps(["purge"], ensure_ascii=False)),
+        )
         conn.commit()
     return True
 
@@ -1759,6 +1850,7 @@ def _remark_filters(
     category_source: Optional[str] = None,
     section_id: Optional[str] = None,
     in_pool: Optional[bool] = None,
+    include_archived: bool = False,
 ) -> Tuple[str, List[Any]]:
     clauses: List[str] = []
     params: List[Any] = []
@@ -1774,6 +1866,10 @@ def _remark_filters(
     if status is not None:
         clauses.append("a.status = ?")
         params.append(status)
+    elif not include_archived:
+        # Архив нигде не всплывает сам: увидеть его можно только явным
+        # ?status=archived или ?includeArchived=true (вкладка «Архив»).
+        clauses.append("a.status != 'archived'")
     if author_id is not None:
         clauses.append("a.author_id = ?")
         params.append(author_id)
@@ -1828,13 +1924,17 @@ def list_remarks(
     section_id: Optional[str] = None,
     in_pool: Optional[bool] = None,
     with_pool: bool = False,
+    include_archived: bool = False,
 ) -> List[Dict[str, Any]]:
     """`with_pool` не включён по умолчанию: этой же выборкой пользуется
     отрисовка страницы редактора (GET /api/editor/...), которая соседствует с
-    публикацией — там сведений о пуле быть не должно."""
+    публикацией — там сведений о пуле быть не должно.
+
+    `include_archived` действует только когда `status` не задан: без него
+    архивные замечания в выдачу не попадают (см. `_remark_filters`)."""
     where, params = _remark_filters(doc_id, page_num, kind, status, author_id, q,
                                         tag, category, category_source, section_id,
-                                        in_pool)
+                                        in_pool, include_archived)
     conn = get_connection()
     with _lock:
         rows = conn.execute(
@@ -1873,10 +1973,11 @@ def count_remarks(
     category_source: Optional[str] = None,
     section_id: Optional[str] = None,
     in_pool: Optional[bool] = None,
+    include_archived: bool = False,
 ) -> int:
     where, params = _remark_filters(doc_id, page_num, kind, status, author_id, q,
                                         tag, category, category_source, section_id,
-                                        in_pool)
+                                        in_pool, include_archived)
     conn = get_connection()
     with _lock:
         row = conn.execute(
@@ -2337,7 +2438,7 @@ def get_stats() -> Dict[str, Any]:
     docs: Dict[str, Dict[str, Any]] = {}
     for row in rows:
         doc = docs.setdefault(
-            row["doc_id"], {"docId": row["doc_id"], "published": 0, "draft": 0, "deleted": 0}
+            row["doc_id"], {"docId": row["doc_id"], "published": 0, "draft": 0, "archived": 0}
         )
         if row["status"] in doc:
             doc[row["status"]] = row["n"]

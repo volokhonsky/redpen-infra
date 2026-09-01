@@ -542,10 +542,24 @@ body {
 
 .app-badge-draft { background: #757575; }
 
-.app-badge-deleted { background: #c62828; }
+/* Архив — не авария: приглушённый сине-серый, не тревожный красный. */
+.app-badge-archived { background: #5b6b7c; }
 
 .app-muted {
   color: #999;
+}
+
+/* Карточка: убрать в архив / вернуть / стереть навсегда. */
+.app-archive-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.app-archive-actions .app-hint {
+  flex-basis: 100%;
 }
 
 .app-row-actions {

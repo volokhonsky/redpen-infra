@@ -226,8 +226,8 @@ async def require_csrf(request: Request, user: Dict[str, str] = Depends(require_
 EDITOR_ROLES = ("editor", "admin")
 
 MAX_SUMMARY_LENGTH = 200
-REMARK_STATUSES = ("published", "draft", "deleted")
-# "general" ушёл: см. docs/general-migration-map.json. Строки со status='deleted'
+REMARK_STATUSES = ("published", "draft", "archived")
+# "general" ушёл: см. docs/general-migration-map.json. Строки со status='archived'
 # могут по-прежнему иметь kind='general' — их никто не читает, кроме истории.
 REMARK_KINDS = ("major", "minor")
 
@@ -1023,24 +1023,57 @@ async def put_editor_remark(docId: str, pageNum: str, remarkId: str, request: Re
 
 @app.delete("/api/editor/{docId}/{pageNum}/{remarkId}")
 async def delete_editor_remark(docId: str, pageNum: str, remarkId: str, user: Dict[str, Any] = Depends(require_editor)):
-    """Soft-delete an remark and republish the page."""
+    """Убрать замечание в архив и перепубликовать страницу.
+
+    Обратимо: вернуть из архива можно PATCH .../status. Стереть навсегда —
+    отдельный маршрут .../purge (только админ)."""
     if not _validate_doc_id(docId):
         raise HTTPException(status_code=400, detail="invalid docId")
     page_num_str = _validate_page_key(pageNum)
     if page_num_str is None:
         raise HTTPException(status_code=400, detail="invalid pageNum")
 
-    deleted = db.soft_delete_remark(docId, page_num_str, remarkId,
-                                        author_id=user["userId"])
-    if not deleted:
+    archived = db.archive_remark(docId, page_num_str, remarkId,
+                                 author_id=user["userId"])
+    if not archived:
         raise HTTPException(status_code=404, detail="remark not found")
 
     published = publisher.publish_page(docId, page_num_str)
     new_sha = _current_page_sha(docId, page_num_str)
 
     logger.info(
-        "DELETE editor SUCCESS docId=%s pageKey=%s remarkId=%s published=%s",
+        "ARCHIVE editor SUCCESS docId=%s pageKey=%s remarkId=%s published=%s",
         docId, page_num_str, remarkId, published,
+    )
+    return {"id": remarkId, "serverPageSha": new_sha, "published": published}
+
+
+@app.delete("/api/editor/{docId}/{pageNum}/{remarkId}/purge")
+async def purge_editor_remark(docId: str, pageNum: str, remarkId: str,
+                              user: Dict[str, Any] = Depends(require_admin_csrf)):
+    """Стереть замечание навсегда: строку, все связанные данные и историю.
+
+    Только админ. Необратимо. В журнале остаётся ровно одна запись
+    (`action='purge'`: кто и когда). Применимо при любом статусе — и к
+    архивному, и к живому замечанию; во втором случае страница ещё несёт
+    замечание, поэтому перепубликуем её."""
+    if not _validate_doc_id(docId):
+        raise HTTPException(status_code=400, detail="invalid docId")
+    page_num_str = _validate_page_key(pageNum)
+    if page_num_str is None:
+        raise HTTPException(status_code=400, detail="invalid pageNum")
+
+    purged = db.purge_remark(docId, page_num_str, remarkId,
+                             author_id=user["userId"])
+    if not purged:
+        raise HTTPException(status_code=404, detail="remark not found")
+
+    published = publisher.publish_page(docId, page_num_str)
+    new_sha = _current_page_sha(docId, page_num_str)
+
+    logger.info(
+        "PURGE editor SUCCESS docId=%s pageKey=%s remarkId=%s by=%s published=%s",
+        docId, page_num_str, remarkId, user["userId"], published,
     )
     return {"id": remarkId, "serverPageSha": new_sha, "published": published}
 
@@ -1102,11 +1135,13 @@ def _patch_result(docId: str, page_num_str: str, remarkId: str,
 @app.patch("/api/editor/{docId}/{pageNum}/{remarkId}/status")
 async def patch_remark_status(docId: str, pageNum: str, remarkId: str, request: Request,
                               user: Dict[str, Any] = Depends(require_editor)):
-    """Опубликовать черновик или вернуть замечание в черновики.
+    """Опубликовать черновик, вернуть замечание в черновики или достать его из
+    архива (status='draft'/'published').
 
-    'deleted' сюда не принимается: удаление — отдельная операция с собственным
-    маршрутом (DELETE), и смешивать их значило бы прятать удаление за словом
-    «статус»."""
+    'archived' сюда не принимается: архивация — отдельная операция с собственным
+    маршрутом (DELETE), и смешивать их значило бы прятать её за словом «статус».
+    Обратный переход (из архива в работу) идёт как раз этим PATCH — diff
+    подпишет его 'restore'."""
     page_num_str = _patch_target(docId, pageNum)
     body = await _patch_body(request)
     status = body.get("status")
@@ -1213,6 +1248,7 @@ async def list_remarks(
     categorySource: Optional[str] = None,
     section: Optional[str] = None,
     inPool: Optional[bool] = None,
+    includeArchived: bool = False,
     limit: int = 50,
     offset: int = 0,
     user: Dict[str, Any] = Depends(require_editor_read),
@@ -1244,13 +1280,13 @@ async def list_remarks(
         doc_id=docId, page_num=validated["pageKey"], kind=kind, status=status,
         author_id=authorId, q=q, limit=limit, offset=offset, tag=tag,
         category=category, category_source=categorySource, section_id=section,
-        in_pool=inPool, with_pool=True,
+        in_pool=inPool, with_pool=True, include_archived=includeArchived,
     )
     total = db.count_remarks(
         doc_id=docId, page_num=validated["pageKey"], kind=kind, status=status,
         author_id=authorId, q=q, tag=tag,
         category=category, category_source=categorySource, section_id=section,
-        in_pool=inPool,
+        in_pool=inPool, include_archived=includeArchived,
     )
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
@@ -1718,9 +1754,12 @@ async def get_stats(user: Dict[str, Any] = Depends(require_user)):
 @app.post("/api/history/{histId}/revert")
 async def revert_history(histId: int, user: Dict[str, Any] = Depends(require_editor)):
     """Restore a remark to the exact state recorded in a history
-    snapshot (including that snapshot's own status -- reverting to a
-    delete-record re-deletes, which is intentional: the cabinet shows every
-    record's action and lets the user pick the state they want back)."""
+    snapshot (including that snapshot's own status -- reverting to an
+    archive-record re-archives, which is intentional: the cabinet shows every
+    record's action and lets the user pick the state they want back).
+
+    This is not the ordinary way out of the archive -- that is PATCH
+    .../status. Revert only matters when you want an older snapshot back."""
     record = db.get_history_record(histId)
     if record is None:
         raise HTTPException(status_code=404, detail="history record not found")

@@ -44,8 +44,28 @@
     el('f-status').value = ann.status === 'published' ? 'published' : 'draft';
     el('f-tags').value = visibleTags(ann).join(', ');
     el('f-summary').value = '';
+    // Архивное замечание правке не подлежит: форма — только на чтение, пока
+    // его не вернут из архива кнопкой «Восстановить».
+    var archived = ann && ann.status === 'archived';
+    ['f-text', 'f-category', 'f-kind', 'f-status', 'f-tags', 'f-summary'].forEach(function (id) {
+      el(id).disabled = !!archived;
+    });
     setDirty(false);
     updateHint(ann);
+    renderArchiveActions(ann);
+  }
+
+  //: Убрать в архив / вернуть / стереть навсегда. Что показать — по статусу и
+  //: роли: «В архив» у живого, «Восстановить» у архивного, «Удалить навсегда»
+  //: только админу и только для того, что уже в архиве.
+  function renderArchiveActions(ann) {
+    var archived = !!(ann && ann.status === 'archived');
+    el('f-archive').hidden = archived;
+    el('f-restore').hidden = !archived;
+    el('f-purge').hidden = !(archived && W.isAdmin());
+    el('f-archive-note').textContent = archived
+      ? 'В архиве: со страницы читателя убрано, правка заблокирована.'
+      : '';
   }
 
   function updateHint(ann) {
@@ -57,7 +77,8 @@
 
   function setDirty(value) {
     state.dirty = value;
-    el('f-save').disabled = !value;
+    var archived = state.remark && state.remark.status === 'archived';
+    el('f-save').disabled = !value || !!archived;
   }
 
   function collectForm() {
@@ -448,7 +469,8 @@
   async function queueReject() {
     var item = state.queue.items[state.queue.index];
     if (!item) return;
-    if (!window.confirm('Отклонить замечание ' + item.remarkId + '? Оно будет удалено (мягко).')) return;
+    if (!window.confirm('Отклонить замечание ' + item.remarkId +
+                        '? Оно будет отправлено в архив.')) return;
     await apiMutate('DELETE', '/api/editor/' + encodeURIComponent(item.docId) + '/' +
                     encodeURIComponent(item.pageNum) + '/' + encodeURIComponent(item.remarkId));
     setStatus('Отклонён: ' + item.remarkId, false);
@@ -627,6 +649,56 @@
     frame.src = frame.src;
   }
 
+  //: Перерисовать читательский фрейм: адрес тот же, сам он не обновится.
+  function reloadPreviewFrame() {
+    var frame = el('app-preview');
+    if (frame) frame.src = frame.src;
+  }
+
+  async function archiveCard() {
+    var ref = state.ref;
+    if (!ref) return;
+    if (!window.confirm('Убрать замечание ' + ref.remarkId + ' в архив? Со страницы ' +
+        'читателя оно исчезнет; вернуть можно кнопкой «Восстановить».')) return;
+    try {
+      await apiMutate('DELETE', '/api/editor/' + encodeURIComponent(ref.docId) + '/' +
+        encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.remarkId));
+    } catch (e) { return; }
+    state.archive.ready = false;
+    setStatus('Убрано в архив.', false);
+    await loadCard(ref);
+    reloadPreviewFrame();
+  }
+
+  async function restoreCard() {
+    var ref = state.ref;
+    if (!ref) return;
+    try {
+      await apiMutate('PATCH', '/api/editor/' + encodeURIComponent(ref.docId) + '/' +
+        encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.remarkId) + '/status',
+        { status: 'draft', summary: 'возврат из архива' });
+    } catch (e) { return; }
+    state.archive.ready = false;
+    setStatus('Восстановлено в черновики.', false);
+    await loadCard(ref);
+    reloadPreviewFrame();
+  }
+
+  async function purgeCard() {
+    var ref = state.ref;
+    if (!ref || !W.isAdmin()) return;
+    if (!window.confirm('Удалить замечание ' + ref.remarkId + ' НАВСЕГДА?\n\n' +
+        'Будут стёрты сам текст, все оценки, рабочие комментарии и вся история ' +
+        'правок. Это необратимо.')) return;
+    try {
+      await apiMutate('DELETE', '/api/editor/' + encodeURIComponent(ref.docId) + '/' +
+        encodeURIComponent(ref.pageKey) + '/' + encodeURIComponent(ref.remarkId) + '/purge');
+    } catch (e) { return; }
+    state.archive.ready = false;
+    setStatus('Замечание удалено навсегда.', false);
+    window.location.hash = '#/archive';
+  }
+
   // --- сквозной поиск -----------------------------------------------------
   //
   // Один список вместо двух. До слияния фильтры были поделены между
@@ -644,7 +716,7 @@
           '<option value="major">major</option><option value="minor">minor</option></select></label>' +
         '<label>Статус<select name="status"><option value="">Любой</option>' +
           '<option value="published">опубликован</option><option value="draft">черновик</option>' +
-          '<option value="deleted">удалён</option></select></label>' +
+          '</select></label>' +
         '<label>Категория<select name="category" id="sr-category"></select></label>' +
         '<label>Разметка<select name="categorySource"><option value="">любая</option>' +
           '<option value="default">не разобрано</option>' +
@@ -765,12 +837,12 @@
         '<td class="app-row-actions">' +
           '<a href="' + card + '">Править</a>' +
           '<a href="' + escapeHtml(reader) + '" target="_blank" rel="noopener">Открыть</a>' +
-          (a.status === 'deleted' ? '' :
+          (a.status === 'archived' ? '' :
             '<button type="button" class="sr-status"' + attrs + ' data-newstatus="' +
             (a.status === 'draft' ? 'published' : 'draft') + '">' +
             (a.status === 'draft' ? 'Опубликовать' : 'В черновик') + '</button>') +
-          (a.status === 'deleted' ? '' :
-            '<button type="button" class="app-btn-secondary sr-delete"' + attrs + '>Удалить</button>') +
+          (a.status === 'archived' ? '' :
+            '<button type="button" class="app-btn-secondary sr-delete"' + attrs + '>В архив</button>') +
           '<button type="button" class="app-btn-secondary sr-history"' + attrs + '>История</button>' +
           '<button type="button" class="app-btn-secondary sr-pool' + (a.inPool ? ' is-pooled' : '') +
             '"' + attrs + ' data-pooled="' + (a.inPool ? '1' : '') + '">' + poolLabel + '</button>' +
@@ -811,11 +883,13 @@
       renderSearchRows().catch(function () {});
     });
     each('.sr-delete', async function (btn) {
-      if (!window.confirm('Удалить замечание?')) return;
+      if (!window.confirm('Убрать замечание в архив? Со страницы читателя оно ' +
+                          'исчезнет; вернуть можно на вкладке «Архив».')) return;
       try { await apiMutate('DELETE', editorPath(btn)); } catch (e) { return; }
       var item = searchRow(btn);
-      if (item) item.status = 'deleted';
-      setStatus('Замечание удалено.', false);
+      if (item) item.status = 'archived';
+      state.archive.ready = false;
+      setStatus('Убрано в архив.', false);
       renderSearchRows().catch(function () {});
     });
     each('.sr-history', function (btn) {
@@ -855,6 +929,9 @@
     el('f-pool').addEventListener('click', function () {
       togglePool().catch(function () {});
     });
+    el('f-archive').addEventListener('click', function () { archiveCard().catch(function () {}); });
+    el('f-restore').addEventListener('click', function () { restoreCard().catch(function () {}); });
+    el('f-purge').addEventListener('click', function () { purgeCard().catch(function () {}); });
     window.addEventListener('beforeunload', function (event) {
       if (!state.dirty) return;
       event.preventDefault();
@@ -912,9 +989,153 @@
     });
   }
 
+  // --- архив ------------------------------------------------------------------
+  //
+  // Своя вкладка и своё состояние (state.archive), чтобы фильтры поиска и
+  // архива не перетирали друг друга. status=archived здесь зашит; в остальном
+  // экран собран по образцу сквозного поиска.
+
+  function archiveShell() {
+    el('view-archive').innerHTML =
+      '<div class="app-listhead"><h2>Архив</h2></div>' +
+      '<p class="app-note">Замечания, убранные из работы. На странице читателя ' +
+      'их нет. «Восстановить» возвращает в черновики; «Удалить навсегда» ' +
+      '(только админ) стирает замечание со всей историей и оценками.</p>' +
+      '<form id="ar-filters" class="app-filters">' +
+        '<label>Документ<select name="docId">' + W.docOptions() + '</select></label>' +
+        '<label>Страница<input type="text" name="pageKey" placeholder="напр. 6" /></label>' +
+        '<label>Тег<select name="tag" id="ar-tag"><option value="">Любой</option></select></label>' +
+        '<label>Поиск<input type="text" name="q" placeholder="текст" /></label>' +
+        '<button type="submit">Применить</button>' +
+        '<button type="button" class="app-btn-secondary" id="ar-reset">Сбросить</button>' +
+      '</form>' +
+      '<table class="app-table"><thead><tr>' +
+        '<th>Документ</th><th>Стр.</th><th>Категория</th><th>Изменено</th>' +
+        '<th>Текст</th><th>Действия</th>' +
+      '</tr></thead><tbody id="ar-rows"></tbody></table>' +
+      '<div id="ar-empty" hidden>Архив пуст.</div>' +
+      '<button type="button" id="ar-more" class="app-load-more" hidden>Показать ещё</button>';
+
+    el('ar-filters').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var f = new FormData(ev.target);
+      var filters = {};
+      ['docId', 'pageKey', 'tag', 'q'].forEach(function (name) {
+        var v = (f.get(name) || '').trim();
+        if (v) filters[name] = v;
+      });
+      state.archive.filters = filters;
+      loadArchive(true).catch(function () {});
+    });
+    el('ar-reset').addEventListener('click', function () {
+      el('ar-filters').reset();
+      state.archive.filters = {};
+      loadArchive(true).catch(function () {});
+    });
+    el('ar-more').addEventListener('click', function () { loadArchive(false).catch(function () {}); });
+
+    apiGet('/api/tags').then(function (data) {
+      var sel = el('ar-tag');
+      if (!sel) return;
+      sel.innerHTML = '<option value="">Любой</option>' + (data.tags || []).map(function (t) {
+        return '<option value="' + escapeHtml(t.tag) + '">' + escapeHtml(t.tag) +
+               ' (' + t.count + ')</option>';
+      }).join('');
+    }).catch(function () {});
+  }
+
+  async function loadArchive(reset) {
+    if (!state.archive.ready) { archiveShell(); state.archive.ready = true; reset = true; }
+    if (reset === undefined) reset = true;
+    if (reset) { state.archive.offset = 0; state.archive.items = []; }
+    var params = Object.assign({ status: 'archived' }, state.archive.filters,
+                               { limit: state.archive.limit, offset: state.archive.offset });
+    var data = await apiGet('/api/remarks' + qs(params));
+    state.archive.items = reset ? data.items : state.archive.items.concat(data.items);
+    state.archive.total = data.total;
+    state.archive.offset += data.items.length;
+    await renderArchiveRows();
+  }
+
+  async function renderArchiveRows() {
+    var items = state.archive.items;
+    var labels = {};
+    for (var i = 0; i < items.length; i++) {
+      var key = items[i].docId + '/' + items[i].pageNum;
+      if (!(key in labels)) labels[key] = await pageLabel(items[i].docId, items[i].pageNum);
+    }
+    var admin = W.isAdmin();
+    el('ar-rows').innerHTML = items.map(function (a) {
+      var card = '#/ann/' + encodeURIComponent(a.docId) + '/' +
+                 encodeURIComponent(a.pageNum) + '/' + encodeURIComponent(a.remarkId);
+      var label = labels[a.docId + '/' + a.pageNum];
+      var attrs = ' data-doc="' + escapeHtml(a.docId) + '" data-page="' +
+                  escapeHtml(a.pageNum) + '" data-ann="' + escapeHtml(a.remarkId) + '"';
+      return '<tr>' +
+        '<td>' + escapeHtml(a.docId) + '</td>' +
+        '<td class="app-nowrap">' + escapeHtml(label) + '</td>' +
+        '<td class="app-nowrap">' + catDot(a.category) + escapeHtml(catTitle(a.category)) + '</td>' +
+        '<td class="app-nowrap">' + escapeHtml(formatDay(a.updatedAt)) + '</td>' +
+        '<td>' + escapeHtml((a.text || '').slice(0, 80)) + '</td>' +
+        '<td class="app-row-actions">' +
+          '<a href="' + card + '">Открыть</a>' +
+          '<button type="button" class="ar-restore"' + attrs + '>Восстановить</button>' +
+          (admin ? '<button type="button" class="app-btn-danger ar-purge"' + attrs +
+            '>Удалить навсегда</button>' : '') +
+        '</td>' +
+      '</tr>';
+    }).join('');
+
+    el('ar-empty').hidden = !!items.length;
+    el('ar-more').hidden = items.length >= state.archive.total;
+    wireArchiveRows();
+  }
+
+  function archiveRow(btn) {
+    return state.archive.items.filter(function (a) {
+      return a.docId === btn.dataset.doc && a.pageNum === btn.dataset.page &&
+             a.remarkId === btn.dataset.ann;
+    })[0];
+  }
+
+  function dropFromArchive(btn) {
+    var gone = archiveRow(btn);
+    state.archive.items = state.archive.items.filter(function (a) { return a !== gone; });
+    state.archive.total = Math.max(0, state.archive.total - 1);
+  }
+
+  function wireArchiveRows() {
+    var rows = el('ar-rows');
+    function each(sel, fn) {
+      Array.prototype.forEach.call(rows.querySelectorAll(sel), function (btn) {
+        btn.addEventListener('click', function () { fn(btn); });
+      });
+    }
+    each('.ar-restore', async function (btn) {
+      try {
+        await apiMutate('PATCH', editorPath(btn) + '/status',
+                        { status: 'draft', summary: 'возврат из архива' });
+      } catch (e) { return; }
+      dropFromArchive(btn);
+      setStatus('Восстановлено в черновики.', false);
+      renderArchiveRows().catch(function () {});
+    });
+    each('.ar-purge', async function (btn) {
+      if (!W.isAdmin()) return;
+      if (!window.confirm('Удалить замечание ' + btn.dataset.ann + ' НАВСЕГДА?\n\n' +
+          'Будут стёрты текст, оценки, рабочие комментарии и вся история правок. ' +
+          'Это необратимо.')) return;
+      try { await apiMutate('DELETE', editorPath(btn) + '/purge'); } catch (e) { return; }
+      dropFromArchive(btn);
+      setStatus('Удалено навсегда.', false);
+      renderArchiveRows().catch(function () {});
+    });
+  }
+
   W.loadCard = loadCard;
   W.loadQueue = loadQueue;
   W.loadSearch = loadSearch;
+  W.loadArchive = loadArchive;
   W.togglePoolFor = togglePoolFor;
   W.wire.push(wireForm);
   W.wire.push(wireRatings);

@@ -217,7 +217,7 @@ def test_revert_before_delete_resurrects_remark(monkeypatch):
     assert remark_id in [a["id"] for a in page_data2["remarks"]]
 
 
-def test_revert_delete_record_redeletes(monkeypatch):
+def test_revert_archive_record_rearchives(monkeypatch):
     editor = _editor(monkeypatch, "editor-revert3@example.com")
     _with_csrf(editor)
     doc, page = "revertdoc3", "82"
@@ -228,9 +228,9 @@ def test_revert_delete_record_redeletes(monkeypatch):
     editor.delete(f"/api/editor/{doc}/{page}/{remark_id}")
 
     hist = editor.get("/api/history", params={"docId": doc, "remarkId": remark_id}).json()["items"]
-    delete_record = next(h for h in hist if h["action"] == "delete")
+    archive_record = next(h for h in hist if h["action"] == "archive")
 
-    r = editor.post(f"/api/history/{delete_record['id']}/revert")
+    r = editor.post(f"/api/history/{archive_record['id']}/revert")
     assert r.status_code == 200
 
     page_data = editor.get(f"/api/editor/{doc}/{page}").json()

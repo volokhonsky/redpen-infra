@@ -46,6 +46,9 @@
     // Сквозной поиск, история, опрос и админка — состояние экранов,
     // переехавших из кабинета.
     search: { filters: {}, items: [], total: 0, offset: 0, limit: 50, ready: false },
+    // Архив — свой список и своё состояние, чтобы фильтры поиска и архива не
+    // перетирали друг друга. status=archived здесь зашит.
+    archive: { filters: {}, items: [], total: 0, offset: 0, limit: 50, ready: false },
     hist: { filters: {}, items: [], offset: 0, limit: 50, ready: false },
     survey: { results: [], resultsTotal: 0, resultsOffset: 0, pool: [], ready: false },
     admin: { ready: false },
@@ -96,8 +99,8 @@
   //: Все экраны приложения. Показываем ровно один — так не приходится
   //: помнить, что спрятать при каждом переходе.
   var VIEWS = ['view-sections', 'view-section', 'view-queue', 'view-page',
-               'app-main', 'view-remarks', 'view-history', 'view-survey',
-               'view-admin'];
+               'app-main', 'view-remarks', 'view-archive', 'view-history',
+               'view-survey', 'view-admin'];
 
   function showView(id) {
     VIEWS.forEach(function (name) { el(name).hidden = name !== id; });
@@ -124,6 +127,7 @@
     }
     if (/^#\/queue\b/.test(hash)) return { view: 'queue' };
     if (/^#\/remarks\b/.test(hash)) return { view: 'remarks' };
+    if (/^#\/archive\b/.test(hash)) return { view: 'archive' };
     if (/^#\/history\b/.test(hash)) return { view: 'history' };
     if (/^#\/survey\b/.test(hash)) return { view: 'survey' };
     if (/^#\/admin\b/.test(hash)) return { view: 'admin' };
@@ -366,6 +370,9 @@
       } else if (ref.view === 'remarks') {
         showView('view-remarks');
         await W.loadSearch();
+      } else if (ref.view === 'archive') {
+        showView('view-archive');
+        await W.loadArchive();
       } else if (ref.view === 'history') {
         showView('view-history');
         await W.loadHistory(true);

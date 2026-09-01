@@ -45,6 +45,7 @@
     <a class="app-nav-btn" href="#/" data-route="sections">Разбор</a>
     <a class="app-nav-btn" href="#/remarks" data-route="remarks">Поиск</a>
     <a class="app-nav-btn" href="#/queue" data-route="queue">Очередь</a>
+    <a class="app-nav-btn" href="#/archive" data-route="archive">Архив</a>
     <a class="app-nav-btn" href="#/history" data-route="history">История</a>
     <a class="app-nav-btn" href="#/survey" data-route="survey">Опрос</a>
     <a class="app-nav-btn" id="app-nav-admin" href="#/admin" data-route="admin" hidden>Админ</a>
@@ -278,6 +279,15 @@
           <button type="button" id="f-pool" class="app-btn-secondary"></button>
           <span id="f-pool-note" class="app-hint"></span>
         </div>
+
+        <!-- Убрать из работы / вернуть / стереть навсегда. Кнопки
+             показываются по статусу и роли (см. remarks.js renderArchiveActions). -->
+        <div class="app-archive-actions">
+          <button type="button" id="f-archive" class="app-btn-secondary" hidden>В архив</button>
+          <button type="button" id="f-restore" class="app-btn-secondary" hidden>Восстановить</button>
+          <button type="button" id="f-purge" class="app-btn-danger" hidden>Удалить навсегда</button>
+          <span id="f-archive-note" class="app-hint"></span>
+        </div>
       </section>
 
       <section class="app-notes">
@@ -320,6 +330,10 @@
   <!-- Сквозной поиск по всем книгам: фильтры кабинета и редактора вместе.
        До слияния ни один из двух списков не был полным. -->
   <main id="view-remarks" class="app-list" hidden></main>
+
+  <!-- Архив: замечания, убранные из работы и со статики. Обратимо
+       («Восстановить»); «Удалить навсегда» — только админу. -->
+  <main id="view-archive" class="app-list" hidden></main>
 
   <!-- Журнал ревизий с откатом. -->
   <main id="view-history" class="app-list" hidden></main>

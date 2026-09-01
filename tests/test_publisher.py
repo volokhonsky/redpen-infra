@@ -44,10 +44,10 @@ def test_render_page_omits_coords_when_they_are_null():
     assert "coords" not in rendered[0]
 
 
-def test_render_page_excludes_deleted():
+def test_render_page_excludes_archived():
     db.upsert_remark_db("doc1", "006", "ann-1", "minor", "one")
     db.upsert_remark_db("doc1", "006", "ann-2", "minor", "two")
-    db.soft_delete_remark("doc1", "006", "ann-1")
+    db.archive_remark("doc1", "006", "ann-1")
     rendered = publisher.render_page("doc1", "006")
     assert [a["id"] for a in rendered] == ["ann-2"]
 

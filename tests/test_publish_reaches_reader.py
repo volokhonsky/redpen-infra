@@ -109,11 +109,11 @@ def test_edit_updates_the_reader_page(site):
     assert "старый текст" not in html
 
 
-def test_delete_removes_it_from_the_reader_page(site):
+def test_archive_removes_it_from_the_reader_page(site):
     db.upsert_remark_db(DOC, "006", "a1", "major", "будет удалена",
                             coord_x=1, coord_y=1, action="create")
     publisher.publish_page(DOC, "006")
-    db.soft_delete_remark(DOC, "006", "a1")
+    db.archive_remark(DOC, "006", "a1")
     publisher.publish_page(DOC, "006")
     assert "будет удалена" not in _page_html(site, "6")
 

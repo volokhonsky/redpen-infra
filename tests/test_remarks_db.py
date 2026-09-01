@@ -72,43 +72,43 @@ def test_list_page_remarks_stable_order():
     assert ids == ["ann-1", "ann-2", "ann-3"]
 
 
-def test_list_page_remarks_excludes_deleted_by_default():
+def test_list_page_remarks_excludes_archived_by_default():
     db.upsert_remark_db("doc1", "006", "ann-1", "minor", "one")
     db.upsert_remark_db("doc1", "006", "ann-2", "minor", "two")
-    db.soft_delete_remark("doc1", "006", "ann-1")
+    db.archive_remark("doc1", "006", "ann-1")
 
     published = db.list_page_remarks("doc1", "006")
     assert [a["remarkId"] for a in published] == ["ann-2"]
 
-    everything = db.list_page_remarks("doc1", "006", include_deleted=True)
+    everything = db.list_page_remarks("doc1", "006", include_archived=True)
     assert [a["remarkId"] for a in everything] == ["ann-1", "ann-2"]
-    assert everything[0]["status"] == "deleted"
+    assert everything[0]["status"] == "archived"
 
 
-def test_soft_delete_missing_or_already_deleted_returns_false():
-    assert db.soft_delete_remark("doc1", "006", "missing") is False
+def test_archive_missing_or_already_archived_returns_false():
+    assert db.archive_remark("doc1", "006", "missing") is False
 
     db.upsert_remark_db("doc1", "006", "ann-1", "minor", "one")
-    assert db.soft_delete_remark("doc1", "006", "ann-1") is True
-    assert db.soft_delete_remark("doc1", "006", "ann-1") is False
+    assert db.archive_remark("doc1", "006", "ann-1") is True
+    assert db.archive_remark("doc1", "006", "ann-1") is False
 
 
-def test_soft_delete_records_history():
+def test_archive_records_history():
     db.upsert_remark_db("doc1", "006", "ann-1", "minor", "one")
-    db.soft_delete_remark("doc1", "006", "ann-1", author_id=2)
+    db.archive_remark("doc1", "006", "ann-1", author_id=2)
 
     conn = db.get_connection()
     rows = conn.execute("SELECT action, author_id FROM remark_history WHERE remark_id = 'ann-1' ORDER BY id").fetchall()
-    assert [r["action"] for r in rows] == ["update", "delete"]
+    assert [r["action"] for r in rows] == ["update", "archive"]
     assert rows[-1]["author_id"] == 2
 
 
 def test_get_remark_returns_regardless_of_status():
     db.upsert_remark_db("doc1", "006", "ann-1", "minor", "one")
-    db.soft_delete_remark("doc1", "006", "ann-1")
+    db.archive_remark("doc1", "006", "ann-1")
     ann = db.get_remark("doc1", "006", "ann-1")
     assert ann is not None
-    assert ann["status"] == "deleted"
+    assert ann["status"] == "archived"
     assert db.get_remark("doc1", "006", "missing") is None
 
 
@@ -172,7 +172,7 @@ def test_history_snapshot_carries_tags():
     assert record["snapshot"]["tags"] == ["omission"]
 
 
-@pytest.mark.parametrize("bad", ["draft", "published", "DELETED", "has space", "кириллица", "", "-lead", "a" * 65])
+@pytest.mark.parametrize("bad", ["draft", "published", "DELETED", "archived", "has space", "кириллица", "", "-lead", "a" * 65])
 def test_reserved_and_malformed_tags_rejected(bad):
     with pytest.raises(db.TagError):
         db.normalize_tag(bad)
@@ -187,11 +187,11 @@ def test_prefixed_tags_are_allowed():
     assert db.normalize_tag("tc-usa-origin") == "tc-usa-origin"
 
 
-def test_list_all_tags_counts_and_skips_deleted():
+def test_list_all_tags_counts_and_skips_archived():
     db.upsert_remark_db("doc1", "006", "a1", "minor", "x", tags=["omission", "framing"])
     db.upsert_remark_db("doc1", "007", "a2", "minor", "y", tags=["omission"])
     db.upsert_remark_db("doc1", "008", "a3", "minor", "z", tags=["omission"])
-    db.soft_delete_remark("doc1", "008", "a3")
+    db.archive_remark("doc1", "008", "a3")
 
     counts = {t["tag"]: t["count"] for t in db.list_all_tags("doc1")}
     assert counts == {"omission": 2, "framing": 1}

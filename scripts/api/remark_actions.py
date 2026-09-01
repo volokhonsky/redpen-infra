@@ -29,8 +29,10 @@ ACTIONS = (
     "kind",        # major ⇄ minor
     "publish",     # draft → published
     "unpublish",   # published → draft
-    "delete",      # → deleted
-    "restore",     # deleted → published/draft
+    "archive",     # → archived (обратимо, доступно редактору)
+    "delete",      # → deleted (легаси: до 2026-09 так называлась архивация)
+    "restore",     # archived/deleted → published/draft
+    "purge",       # строка стёрта навсегда; остаётся только эта запись
     "category",    # сменена категория
     "tags",        # изменён набор тегов
     "revert",      # ревизия получена откатом
@@ -59,8 +61,10 @@ LABELS = {
     "kind": "смена вида",
     "publish": "публикация",
     "unpublish": "возврат в черновики",
+    "archive": "в архив",
     "delete": "удаление",
     "restore": "восстановление",
+    "purge": "удалено навсегда",
     "category": "смена категории",
     "tags": "правка тегов",
     "revert": "откат",
@@ -121,10 +125,13 @@ def diff_snapshots(prev: Optional[Dict[str, Any]], cur: Dict[str, Any]) -> List[
 
     old_status, new_status = prev.get("status"), cur.get("status")
     if old_status != new_status:
-        if new_status == "deleted":
+        if new_status == "archived":
+            found.add("archive")
+        elif new_status == "deleted":
+            # Легаси: в снапшотах до 2026-09 архивация записана как 'deleted'.
             found.add("delete")
-        elif old_status == "deleted":
-            # Из удаления возвращаются и в публикацию, и в черновики; сам факт
+        elif old_status in ("archived", "deleted"):
+            # Из архива возвращаются и в публикацию, и в черновики; сам факт
             # возврата важнее того, куда именно, — куда, видно по снимку.
             found.add("restore")
         elif new_status == "published":

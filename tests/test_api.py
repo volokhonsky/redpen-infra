@@ -339,14 +339,14 @@ def test_editor_put_upserts_when_id_missing(client):
 
 
 # ---------------------------------------------------------------------------
-# DELETE /api/editor/{docId}/{pageNum}/{remarkId} (stage 2, soft-delete)
+# DELETE /api/editor/{docId}/{pageNum}/{remarkId} -- в архив (status='archived')
 # ---------------------------------------------------------------------------
 
 def test_editor_delete_removes_remark_from_get_and_published_file(client):
     doc, page = "medinsky11klass", "50"
     created = client.post(
         f"/api/editor/{doc}/{page}",
-        json={"kind": "minor", "text": "to be deleted", "coords": [1, 1]},
+        json={"kind": "minor", "text": "to be archived", "coords": [1, 1]},
     ).json()
     remark_id = created["id"]
 
@@ -368,7 +368,7 @@ def test_editor_delete_missing_remark_is_404(client):
     assert r.status_code == 404
 
 
-def test_editor_delete_already_deleted_is_404(client):
+def test_editor_delete_already_archived_is_404(client):
     doc, page = "medinsky11klass", "52"
     created = client.post(
         f"/api/editor/{doc}/{page}",

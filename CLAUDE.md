@@ -269,6 +269,20 @@ redpen-api-1` (publish_all на старте) → curl-проверки → ре
   `GET /api/remarks/.../timeline`. Старые ревизии заполняет
   `scripts/api/backfill_history_changes.py` (`--apply`), а не старт API.
   Формат — `docs/remark_specification.md`, раздел «Действия и их типы».
+- **Удаление замечания: архив и полное удаление — реализовано, на прод не
+  выкладывалось.** Прежнее «мягкое удаление» (`status='deleted'`) разделено на
+  два действия. «В архив» (`DELETE /api/editor/...`, редактор, обратимо через
+  `PATCH .../status`) — четвёртое значение `status`: `archived`; замечание
+  исчезает из всех рабочих списков и из статики, живёт на вкладке `#/archive`.
+  «Удалить навсегда» (`DELETE /api/editor/.../purge`, **только админ**) — стирает
+  строку, теги, оценки, комментарии, пул, ответы опроса и всю историю, оставляя
+  одну запись `remark_history` с `action='purge'`. Миграция
+  `db._migrate_statuses_to_archived` перевела `deleted` → `archived`. `GET
+  /api/remarks` без `status=` архив не отдаёт (`includeArchived=true` /
+  `status=archived` — отдаёт). Токены `archive`/`purge` в `remark_actions`;
+  `delete`/`deleted` оставлены терпимыми для старого журнала. Тесты —
+  `tests/test_remark_archive.py`. Формат — `docs/remark_specification.md`,
+  раздел «Архив и полное удаление».
 - **Общая уборка 2026-08-30 — на проде** (deployment-log, 2026-08-30). Старый SPA
   снесён, фаза 6 переименования снята, документация пересмотрена. Подробности —
   раздел «Фронтенд» ниже и «Сущность называется „замечание“» выше; журнал —

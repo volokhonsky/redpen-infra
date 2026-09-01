@@ -84,6 +84,11 @@ def test_tags_compare_as_sets_not_lists():
 @pytest.mark.parametrize("before,after,token", [
     ("draft", "published", "publish"),
     ("published", "draft", "unpublish"),
+    ("published", "archived", "archive"),
+    ("draft", "archived", "archive"),
+    ("archived", "published", "restore"),
+    ("archived", "draft", "restore"),
+    # Легаси: снапшоты до 2026-09 записывали архивацию как 'deleted'.
     ("published", "deleted", "delete"),
     ("draft", "deleted", "delete"),
     ("deleted", "published", "restore"),
@@ -142,15 +147,15 @@ def test_tag_only_save_is_not_a_text_edit():
     assert remark_actions.is_content_edit(_last_changes()) is False
 
 
-def test_soft_delete_records_delete_token():
+def test_archive_records_archive_token():
     _upsert(action="create", status="published")
-    db.soft_delete_remark("doc1", "006", "ann-1")
-    assert _last_changes() == ["delete"]
+    db.archive_remark("doc1", "006", "ann-1")
+    assert _last_changes() == ["archive"]
 
 
-def test_restore_after_delete():
+def test_restore_after_archive():
     _upsert(action="create", status="published")
-    db.soft_delete_remark("doc1", "006", "ann-1")
+    db.archive_remark("doc1", "006", "ann-1")
     _upsert(status="published")
     assert _last_changes() == ["restore"]
 
@@ -226,7 +231,7 @@ def test_get_history_record_matches_list_history():
     assert fetched == listed
 
 
-def test_delete_can_be_attributed_to_an_agent_run():
+def test_archive_can_be_attributed_to_an_agent_run():
     _upsert(action="create", status="published")
-    db.soft_delete_remark("doc1", "006", "ann-1", agent_run_id=42)
+    db.archive_remark("doc1", "006", "ann-1", agent_run_id=42)
     assert db.list_history(doc_id="doc1", limit=1)[0]["agentRunId"] == 42

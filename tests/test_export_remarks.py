@@ -50,10 +50,10 @@ def test_export_writes_bare_array_files(tmp_path):
     assert os.path.exists(os.path.join(out, "doc2", "remarks", "page_-01.json"))
 
 
-def test_export_excludes_deleted_remarks(tmp_path):
+def test_export_excludes_archived_remarks(tmp_path):
     db.upsert_remark_db("doc1", "006", "ann-1", "minor", "one")
     db.upsert_remark_db("doc1", "006", "ann-2", "minor", "two")
-    db.soft_delete_remark("doc1", "006", "ann-1")
+    db.archive_remark("doc1", "006", "ann-1")
 
     out = str(tmp_path / "export")
     export_remarks.run(out)

@@ -128,11 +128,11 @@ def test_untouched_pages_keep_their_stamp(repo):
     assert all("/pages/7/" not in name for name in changed), changed
 
 
-def test_deletion_reaches_the_snapshot(repo):
+def test_archival_reaches_the_snapshot(repo):
     db.upsert_remark_db(DOC, "006", "a1", "major", "исчезнет", coord_x=1, coord_y=1,
                             action="create")
     _run(repo, apply=True)
-    db.soft_delete_remark(DOC, "006", "a1")
+    db.archive_remark(DOC, "006", "a1")
     _run(repo, apply=True)
 
     with open(os.path.join(repo, DOC, "remarks", "page_006.json"), encoding="utf-8") as f:

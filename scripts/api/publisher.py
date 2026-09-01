@@ -92,7 +92,7 @@ def render_page(doc_id: str, page_num: str) -> List[Dict[str, Any]]:
     наружу этот массив не отдаётся, его видит только блокировка."""
     return [
         _render_item(ann, with_tags=False)
-        for ann in db.list_page_remarks(doc_id, page_num, include_deleted=False)
+        for ann in db.list_page_remarks(doc_id, page_num, include_archived=False)
     ]
 
 
@@ -105,7 +105,7 @@ def render_page_static(doc_id: str, page_num: str) -> List[Dict[str, Any]]:
     the tag filter in templates/js/page-view.js."""
     rendered = [
         _render_item(ann, draft=False)
-        for ann in db.list_page_remarks(doc_id, page_num, include_deleted=False)
+        for ann in db.list_page_remarks(doc_id, page_num, include_archived=False)
     ]
     rendered += [_render_item(ann, draft=True) for ann in db.list_page_drafts(doc_id, page_num)]
     return rendered

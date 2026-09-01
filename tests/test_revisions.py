@@ -65,13 +65,13 @@ def test_numbering_is_per_remark_not_global():
     assert [r["revNo"] for r in _revisions("ann-2")] == [1, 2]
 
 
-def test_delete_is_a_revision_too():
+def test_archive_is_a_revision_too():
     _upsert(action="create")
-    db.soft_delete_remark("doc1", "006", "ann-1")
+    db.archive_remark("doc1", "006", "ann-1")
     revs = _revisions()
-    assert [r["action"] for r in revs] == ["create", "delete"]
+    assert [r["action"] for r in revs] == ["create", "archive"]
     assert [r["revNo"] for r in revs] == [1, 2]
-    assert revs[-1]["snapshot"]["status"] == "deleted"
+    assert revs[-1]["snapshot"]["status"] == "archived"
 
 
 def test_head_equals_the_latest_revision_snapshot():

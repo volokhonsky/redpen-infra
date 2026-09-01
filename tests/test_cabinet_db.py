@@ -109,10 +109,10 @@ def test_list_history_filters_and_order():
     u = _user("sub-hist", name="Historian")
     db.upsert_remark_db("doc1", "006", "a1", "minor", "v1", author_id=u["id"], action="create")
     db.upsert_remark_db("doc1", "006", "a1", "minor", "v2", author_id=u["id"], action="update")
-    db.soft_delete_remark("doc1", "006", "a1", author_id=u["id"])
+    db.archive_remark("doc1", "006", "a1", author_id=u["id"])
 
     all_hist = db.list_history(doc_id="doc1")
-    assert [h["action"] for h in all_hist] == ["delete", "update", "create"]
+    assert [h["action"] for h in all_hist] == ["archive", "update", "create"]
     assert all_hist[0]["authorName"] == "Historian"
     assert all_hist[0]["snapshot"]["text"] == "v2"
 
@@ -165,13 +165,13 @@ def test_get_stats_counts_per_doc_and_status():
     db.upsert_remark_db("doc1", "006", "a1", "minor", "x", status="published")
     db.upsert_remark_db("doc1", "006", "a2", "minor", "y", status="draft")
     db.upsert_remark_db("doc1", "006", "a3", "minor", "z", status="published")
-    db.soft_delete_remark("doc1", "006", "a3")
+    db.archive_remark("doc1", "006", "a3")
     db.upsert_remark_db("doc2", "001", "b1", "minor", "w", status="published")
 
     stats = db.get_stats()
     by_doc = {d["docId"]: d for d in stats["docs"]}
-    assert by_doc["doc1"] == {"docId": "doc1", "published": 1, "draft": 1, "deleted": 1}
-    assert by_doc["doc2"] == {"docId": "doc2", "published": 1, "draft": 0, "deleted": 0}
+    assert by_doc["doc1"] == {"docId": "doc1", "published": 1, "draft": 1, "archived": 1}
+    assert by_doc["doc2"] == {"docId": "doc2", "published": 1, "draft": 0, "archived": 0}
 
 
 def test_get_stats_recent_activity_last_ten():

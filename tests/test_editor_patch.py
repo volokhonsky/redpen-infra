@@ -106,11 +106,14 @@ def test_publishing_a_draft_moves_the_page_sha(monkeypatch):
     assert before != after
 
 
-def test_deleted_is_not_reachable_through_status(monkeypatch):
+def test_archived_is_not_reachable_through_status(monkeypatch):
     editor = _editor(monkeypatch)
     _create(editor)
-    r = editor.patch(f"/api/editor/{DOC}/{PAGE}/p-1/status", json={"status": "deleted"})
-    assert r.status_code == 400
+    # Архивация — это DELETE, а не смена статуса. Легаси-значение 'deleted' тоже
+    # не принимается.
+    for bad in ("archived", "deleted"):
+        r = editor.patch(f"/api/editor/{DOC}/{PAGE}/p-1/status", json={"status": bad})
+        assert r.status_code == 400
 
 
 def test_patch_status_unknown_remark_404(monkeypatch):
