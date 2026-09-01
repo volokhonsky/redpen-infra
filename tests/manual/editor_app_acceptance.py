@@ -1,4 +1,4 @@
-"""Сквозная приёмка экрана страницы в редакторе /app/.
+"""Сквозная приёмка экрана страницы в /work/.
 
 Проверяет ровно то, что до 2026-08-30 умел только старый SPA: создание
 замечания кликом по скану, перенос маркера перетаскиванием, оптимистическую
@@ -42,14 +42,14 @@ with sync_playwright() as p:
     page.on('pageerror', lambda e: errors.append(str(e)))
 
     # вход агентским токеном (Google в стенде нет)
-    page.goto(BASE + '/app/?api=' + str(cfg['static']))
+    page.goto(BASE + '/work/?api=' + str(cfg['static']))
     page.evaluate("""async () => {
       await fetch('/api/auth/login', {method:'POST',
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({token:'stand-token'}), credentials:'include'});
     }""")
 
-    page.goto(BASE + '/app/?api=' + str(cfg['static']) + '#/page/%s/%s' % (DOC, PAGE))
+    page.goto(BASE + '/work/?api=' + str(cfg['static']) + '#/page/%s/%s' % (DOC, PAGE))
     page.wait_for_selector('#view-page:not([hidden])', timeout=10000)
     page.wait_for_timeout(1200)
 
@@ -92,7 +92,7 @@ with sync_playwright() as p:
     check('после создания открылась карточка', '/ann/' in page.url, page.url)
 
     # --- перенос маркера ---
-    page.goto(BASE + '/app/?api=' + str(cfg['static']) + '#/page/%s/%s' % (DOC, PAGE))
+    page.goto(BASE + '/work/?api=' + str(cfg['static']) + '#/page/%s/%s' % (DOC, PAGE))
     page.wait_for_selector('#view-page:not([hidden])')
     page.wait_for_timeout(1200)
     sel = '#circle-' + new_ann['id'].replace('.', '\\.')

@@ -113,12 +113,10 @@ def test_build_produces_per_document_layout(synthetic_project, tmp_path):
     for name in ("index.html", "work.css", "core.js", "pages.js", "remarks.js", "admin.js"):
         assert (target / "work" / name).is_file(), name
 
-    # Старые адреса остаются заглушками-редиректами: ссылки на конкретные
-    # замечания вида /app/#/ann/... разошлись по переписке.
+    # Заглушки-редиректы /app/ и /cabinet/ сняты 2026-09-01: сборка их больше
+    # не раскладывает.
     for old_app in ("app", "cabinet"):
-        stub = target / old_app / "index.html"
-        assert stub.is_file()
-        assert "../work/" in stub.read_text(encoding="utf-8")
+        assert not (target / old_app).exists()
 
     # Блог: архив + страница записи, стили каркаса и блога.
     assert (target / "blog" / "index.html").is_file()

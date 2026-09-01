@@ -320,7 +320,7 @@ def _publish_one_document(doc, output_dir, templates_dir):
 
     # <doc>/index.html пишет шаг 3.6 (page_html.build_pages) — это оглавление.
     # Здесь раньше публиковался старый SPA (document_index.html), последнее
-    # место, где жил режим редактора ?editor=1; редактор переехал в /app/,
+    # место, где жил режим редактора ?editor=1; редактор переехал в /work/,
     # и SPA удалён 2026-08-30.
 
 
@@ -377,9 +377,11 @@ def publish_website_data(target_dir=None, document=None, specific_folders=None):
         # свой html/js/css, все данные из API. Просмотрщик о них не знает.
         # Опросник (`/survey/`) открыт кому угодно, рабочее место (`/work/`) —
         # только закрытому кругу, но к статике это отношения не меняет.
-        # `cabinet` и `app` с 2026-08-31 — заглушки-редиректы на `/work/`:
-        # разошедшиеся по закладкам адреса ломать незачем.
-        for app_name in ('cabinet', 'app', 'survey', 'work'):
+        # Заглушки-редиректы `cabinet`/`app` сняты 2026-09-01 (жили с 2026-08-31).
+        # На томе публикации их каталоги убирает rsync `--delete` в content-sync,
+        # как только они уходят из git redpen-publish (`*/remarks/` там исключён,
+        # эти два — нет).
+        for app_name in ('survey', 'work'):
             app_src = os.path.join(templates_dir, app_name)
             app_dest = os.path.join(output_dir, app_name)
             if os.path.exists(app_src):

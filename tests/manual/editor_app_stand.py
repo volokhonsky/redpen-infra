@@ -1,6 +1,6 @@
 """Локальный стенд редактора: API на временной БД + статика на одном источнике.
 
-Зачем: приёмка экрана страницы в /app/ (создание замечания кликом по скану,
+Зачем: приёмка экрана страницы в /work/ (создание замечания кликом по скану,
 перенос маркера, оптимистическая блокировка) требует живого API, живой статики
 и одного источника для куки сессии — как на проде за Caddy. Docker для этого
 избыточен, а разные источники ломают куки и CSRF.
@@ -25,7 +25,7 @@ shutil.rmtree(STAND, ignore_errors=True)
 PUBLIC = os.path.join(STAND, 'public')
 os.makedirs(PUBLIC, exist_ok=True)
 
-# Статика: берём готовую сборку (там есть картинки, /app/ и /cabinet/)
+# Статика: берём готовую сборку (там есть картинки, /work/ и /survey/)
 for name in os.listdir(BUILD):
     src = os.path.join(BUILD, name)
     dst = os.path.join(PUBLIC, name)
@@ -107,7 +107,7 @@ httpd = socketserver.ThreadingTCPServer(('127.0.0.1', static_port), handler)
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
 
 # Свежие шаблоны поверх сборки: приёмка гоняет то, что в рабочей копии.
-for sub in ('app', 'cabinet'):
+for sub in ('work', 'survey'):
     for name in os.listdir(os.path.join(ROOT, 'templates', sub)):
         shutil.copy2(os.path.join(ROOT, 'templates', sub, name),
                      os.path.join(PUBLIC, sub, name))
