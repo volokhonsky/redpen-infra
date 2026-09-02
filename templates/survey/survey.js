@@ -169,7 +169,8 @@
     // раз не раздаётся, и человек иначе увидел бы пустую выдачу без причины.
     el('sv-intro-returning').hidden = !state.returning;
     el('sv-intro-scales').innerHTML = valueQuestions().map(function (q) {
-      return '<li><b>' + escapeHtml(q.title) + '.</b> ' + escapeHtml(q.hint) + '</li>';
+      // Точка не дописывается: заголовок шкалы сам сформулирован вопросом.
+      return '<li><b>' + escapeHtml(q.title) + '</b> ' + escapeHtml(q.hint) + '</li>';
     }).join('');
     renderTail('sv-intro-tail');
   }
@@ -200,8 +201,12 @@
           '" data-scale="' + escapeHtml(q.name) + '" data-value="' + choice.value + '">' +
           escapeHtml(choice.label) + '</button>';
       }).join('');
-      var ends = q.options ? '' :
-        '<div class="sv-scale-ends"><span>совсем нет</span><span>да, вполне</span></div>';
+      // Подписи концов принадлежат шкале: пара «совсем нет — да, вполне»
+      // отвечала на вопрос «да или нет», а шкала спрашивает о мере.
+      var ends = q.ends
+        ? '<div class="sv-scale-ends"><span>' + escapeHtml(q.ends.low) +
+          '</span><span>' + escapeHtml(q.ends.high) + '</span></div>'
+        : '';
       return '<div class="sv-scale">' +
         '<div class="sv-scale-title">' + escapeHtml(q.title) + '</div>' +
         '<div class="sv-scale-hint">' + escapeHtml(q.hint) + '</div>' +

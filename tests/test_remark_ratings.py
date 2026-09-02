@@ -68,6 +68,12 @@ def test_scales_are_served_to_the_ui(monkeypatch):
     assert by_name["admissibility"]["min"] == 1
     assert by_name["admissibility"]["max"] == 2
     assert [o["label"] for o in by_name["admissibility"]["options"]] == ["Нет", "Да"]
+    # Подписи концов принадлежат шкале: у меры они свои и согласованы с
+    # вопросом в заголовке, у подписанных вариантов их нет вовсе.
+    assert by_name["interest"]["ends"] == {
+        "low": "совсем неинтересно", "high": "очень интересно"}
+    assert set(by_name["importance"]["ends"]) == {"low", "high"}
+    assert by_name["admissibility"]["ends"] is None
 
 
 def test_value_validation_rejects_booleans():

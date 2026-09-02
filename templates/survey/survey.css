@@ -149,7 +149,9 @@ body { color: var(--sv-ink); }
   resize: vertical;
 }
 .sv-open:focus { outline: 2px solid var(--sv-accent); outline-offset: 1px; }
-.sv-scale-row { display: flex; flex-wrap: wrap; gap: 6px; }
+/* Кнопки делят ширину карточки поровну и не переносятся: с переносом пятая
+   кнопка уезжала на вторую строку и шкала выглядела четырёхбалльной. */
+.sv-scale-row { display: flex; flex-wrap: nowrap; gap: 6px; }
 .sv-scale-ends {
   display: flex;
   justify-content: space-between;
@@ -160,8 +162,9 @@ body { color: var(--sv-ink); }
 
 /* Кнопка ответа крупная: по этому экрану чаще всего тычут пальцем. */
 .sv-choice {
-  min-width: 2.8rem;
-  padding: 10px 14px;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 10px 4px;
   font-size: 1rem;
   background: #fff;
   border: 1px solid var(--sv-line);
