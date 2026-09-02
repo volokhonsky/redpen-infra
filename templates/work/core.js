@@ -50,7 +50,9 @@
     // перетирали друг друга. status=archived здесь зашит.
     archive: { filters: {}, items: [], total: 0, offset: 0, limit: 50, ready: false },
     hist: { filters: {}, items: [], offset: 0, limit: 50, ready: false },
-    survey: { results: [], resultsTotal: 0, resultsOffset: 0, pool: [], ready: false },
+    survey: { results: [], resultsTotal: 0, resultsOffset: 0, pool: [],
+              people: [], peopleTotal: 0, peopleOffset: 0, openPerson: null,
+              ready: false },
     admin: { ready: false },
     docs: [],
     manifests: {}

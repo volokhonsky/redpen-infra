@@ -156,8 +156,13 @@
       '</li>';
     }
     if (item.kind === 'note') {
-      return '<li class="app-rev app-rev--note">' + timelineHead(item) +
-        '<div class="app-rev-text">' + escapeHtml((item.body || '').slice(0, 200)) + '</div>' +
+      // Ответ с улицы (открытый ответ в опросе) не должен путаться с рабочим
+      // тредом — тот же модификатор, что и у оценок опроса.
+      return '<li class="app-rev app-rev--note' +
+        (item.source === 'survey' ? ' app-rev--survey' : '') + '">' + timelineHead(item) +
+        '<div class="app-rev-text">' + escapeHtml((item.body || '').slice(0, 200)) +
+        (item.source === 'survey' ? ' <span class="app-agent">опрос</span>' : '') +
+      '</div>' +
       '</li>';
     }
     return '<li class="app-rev">' + timelineHead(item) +

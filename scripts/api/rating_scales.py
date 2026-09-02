@@ -63,9 +63,24 @@ SCALES: Dict[str, Dict[str, Any]] = {
 #: развёрнутый разбор — это комментарий (remark_notes).
 MAX_NOTE_LENGTH = 500
 
+#: Открытые вопросы опроса — ответ свободным текстом, а не цифрой. Отдельны от
+#: SCALES намеренно: `describe()`/`names()` остаются «списком шкал», их читает
+#: редакторский путь (`remark_ratings`, где значение обязательно и текст уже
+#: есть колонкой `note`). Открытый вопрос нужен только опросу — самое ценное во
+#: взгляде со стороны это формулировка возражения, а не среднее по шкале.
+#: Порядок словаря задаёт порядок в опроснике (после шкал).
+OPEN_QUESTIONS: Dict[str, Dict[str, Any]] = {
+    "comment": {
+        "title": "Что бы вы сказали автору замечания",
+        "hint": "Необязательно. Если замечание кажется вам неубедительным или "
+                "задевающим — напишите, что именно не так.",
+        "maxLength": 1000,
+    },
+}
+
 
 class ScaleError(ValueError):
-    """Неизвестная шкала или значение вне диапазона."""
+    """Неизвестная шкала/вопрос или значение вне диапазона."""
 
 
 def names() -> List[str]:
@@ -129,4 +144,54 @@ def describe() -> List[Dict[str, Any]]:
             "max": high,
             "options": meta.get("options"),
         })
+    return out
+
+
+# --- открытые вопросы (только опрос) -------------------------------------
+
+
+def open_names() -> List[str]:
+    return list(OPEN_QUESTIONS)
+
+
+def is_open_question(name: Any) -> bool:
+    return isinstance(name, str) and name in OPEN_QUESTIONS
+
+
+def normalize_text(question: Any, raw: Any) -> Optional[str]:
+    """Открытый ответ: обрезка по краям, пустое → None, длиннее предела →
+    ScaleError. `None` на выходе означает «ответа нет» (вызывающий трактует
+    это как «удалить», если ключ в запросе был)."""
+    if not is_open_question(question):
+        raise ScaleError(f"unknown open question: {question}")
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    limit = OPEN_QUESTIONS[question]["maxLength"]
+    if len(text) > limit:
+        raise ScaleError(f"{question} must be at most {limit} characters")
+    return text
+
+
+def describe_open() -> List[Dict[str, Any]]:
+    return [
+        {
+            "name": name,
+            "title": meta["title"],
+            "hint": meta["hint"],
+            "maxLength": meta["maxLength"],
+            "answer": "text",
+        }
+        for name, meta in OPEN_QUESTIONS.items()
+    ]
+
+
+def describe_survey() -> List[Dict[str, Any]]:
+    """Шкалы и открытые вопросы одним списком — чтобы опросник рисовал карточку
+    по описанию: у каждого пункта `answer` — `"value"` (кнопки) или `"text"`
+    (поле). Шкалы идут первыми."""
+    out = [dict(scale, answer="value") for scale in describe()]
+    out.extend(describe_open())
     return out

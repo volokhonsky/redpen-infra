@@ -31,6 +31,12 @@
       <b>Не вписывайте сюда настоящее имя, почту или что-то ещё, по чему вас
       можно узнать.</b> Мы не спрашиваем, кто вы, и не хотим этого знать.
     </p>
+    <p class="sv-hint">
+      Если вы уже отвечали и назовётесь так же, опрос продолжится с того места,
+      где вы остановились: то, что вы оценили, второй раз не покажут. Пароля у
+      подписи нет — назваться ею может кто угодно, поэтому и придумывать что-то
+      секретное не нужно.
+    </p>
     <form id="sv-name-form" class="sv-name-form">
       <label for="sv-name-input">Подпись</label>
       <input id="sv-name-input" type="text" maxlength="32" autocomplete="off"
@@ -49,13 +55,22 @@
       истории — по одному. Замечание выглядит как кружок на скане страницы и
       текст рядом с ним; прочитайте и то и другое.
     </p>
+    <p id="sv-intro-returning" class="sv-hint" hidden>
+      С возвращением. Уже оценённое вами мы пропустим и покажем только новое.
+    </p>
     <p>По каждому ответьте на три вопроса:</p>
     <ol id="sv-intro-scales" class="sv-intro-scales"></ol>
+    <p class="sv-hint">
+      Под ними будет необязательное поле — пара фраз автору замечания, если
+      хотите что-то сказать. Как и в подписи, <b>не пишите там ничего, по чему
+      вас можно узнать.</b>
+    </p>
     <p class="sv-hint">
       Правильных ответов нет — нужно ваше впечатление. Если по какому-то
       вопросу ответить не получается, оставьте его пустым и идите дальше.
       Вернуться к уже отвеченному нельзя, но ошибиться здесь не страшно.
     </p>
+    <p id="sv-intro-tail" class="sv-status" hidden></p>
     <button type="button" id="sv-intro-start" class="sv-btn">Начать</button>
   </section>
 
@@ -82,7 +97,9 @@
   <section id="sv-screen-done" class="sv-card" hidden>
     <h2>Спасибо</h2>
     <p id="sv-done-text"></p>
-    <button type="button" id="sv-more" class="sv-btn" hidden>Оценить ещё десять</button>
+    <p id="sv-done-tail" class="sv-status" hidden></p>
+    <p id="sv-done-all" class="sv-hint" hidden></p>
+    <button type="button" id="sv-more" class="sv-btn" hidden>Оценить ещё</button>
     <p class="sv-hint"><a href="../index.html">Вернуться к разбору учебников</a></p>
   </section>
 

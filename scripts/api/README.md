@@ -30,7 +30,7 @@ nginx (301), сам каталог удалён в фазе 6 переимено
 | `LOG_LEVEL` | `INFO` | Уровень логирования |
 | `CORS_ALLOW_ORIGINS` | `_` (→ `*`) | Список origin через запятую; `_`/`*` = разрешить все |
 | `AGENT_TOKENS` | (пусто) | Токены входа агентов: `token1:agent1,token2:agent2`. Пусто = вход по токену отключён. `EDITOR_TOKENS` — прежнее имя, читается для совместимости |
-| `DB_PATH` | `/var/redpen-db/redpen.db` | SQLite-файл: users/sessions/invites + remarks/remark_history/remark_tags/remark_ratings/remark_notes/sections/agent_runs + rating_pool/survey_respondents/survey_ratings. Не должен лежать в `STORAGE_DIR` |
+| `DB_PATH` | `/var/redpen-db/redpen.db` | SQLite-файл: users/sessions/invites + remarks/remark_history/remark_tags/remark_ratings/remark_notes/sections/agent_runs + rating_pool/survey_respondents/survey_sessions/survey_answers. Не должен лежать в `STORAGE_DIR` |
 | `RATE_LIMIT_PER_MINUTE` / `RATE_LIMIT_BURST` | `240` / `60` | Общее ведро для `/api/*` (кроме `/api/health`) |
 | `RATE_LIMIT_AUTH_PER_MINUTE` / `RATE_LIMIT_AUTH_BURST` | `12` / `6` | Жёсткое ведро для входа и записи опроса: `/api/auth/google`, `/api/auth/login`, `/api/survey/session`, `/api/survey/ratings` |
 | `PUBLISH_DIR` | (пусто) | Куда `publisher.py` пишет `<docId>/remarks/page_NNN.json`. Пусто = публикация отключена (тесты, dev без volume) |
@@ -210,22 +210,32 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
   элемента `kind ∈ {revision, rating, note}`; у оценок `source ∈
   {editor, survey}` — голос участника и голос с улицы не смешиваются.
 
-Опрос (`/survey/`) — оценка замечаний людьми вне закрытого круга. Респондент
+Опрос (`/survey/`) — оценка замечаний людьми вне закрытого круга. Заход
 опознаётся заголовком **`X-Survey-Token`**, а не кукой: кука потребовала бы
-CSRF, а токен, недоступный чужому сайту, снимает вопрос. Модель субъекта —
+CSRF, а токен, недоступный чужому сайту, снимает вопрос. Респондент — это
+псевдоним (`survey_respondents`), заход — сессия (`survey_sessions`); одно имя
+— один респондент с любым числом заходов. Модель субъекта —
 `docs/anonymity-model.md`, раздел «Анонимные респонденты опроса».
-- `POST /api/survey/session` `{pseudonym}` → `{id, pseudonym, author, token,
-  createdAt, scales}`. **Единственный маршрут, заводящий субъекта без
-  приглашения.** Псевдоним: 2..32 символа, без `:` (иначе 400) — подпись
-  `anonymous:<псевдоним>` собирается на чтении и подделке не поддаётся.
-  Респондент не заводится в `users`.
+- `POST /api/survey/session` `{pseudonym}` → `{respondentId, sessionId,
+  pseudonym, author, token, createdAt, returning, questions}`. **Единственный
+  маршрут, заводящий субъекта без приглашения.** Псевдоним: 2..32 символа, без
+  `:` (иначе 400) — подпись `anonymous:<псевдоним>` собирается на чтении и
+  подделке не поддаётся. Респондент не заводится в `users`. `returning` —
+  под этим именем уже отвечали раньше; пароля у псевдонима нет, сравнение
+  посимвольное. `questions` — шкалы и открытые вопросы одним списком, у
+  каждого `answer` (`"value"` — кнопки, `"text"` — поле).
 - `GET /api/survey/batch?limit=10` (токен) → `{items: [{docId, pageNum,
-  remarkId}], remaining, author, scales}` — случайные замечания из пула,
-  которых респондент ещё не оценивал (не больше 50). Отдаются одни адреса:
-  текст опросник берёт с читательской страницы (`?only=<id>`).
+  remarkId}], remaining, tail, author, questions}` — случайные замечания из
+  пула, которых **этот псевдоним** ещё не оценивал (не больше 50).
+  `tail = remaining <= limit` — выдан весь остаток, дальше ничего нет.
+  Отдаются одни адреса: текст опросник берёт с читательской страницы
+  (`?only=<id>`).
 - `PUT /api/survey/ratings` `{docId, pageKey, remarkId, interest?, importance?,
-  admissibility?}` (токен) → `{saved, docId, pageNum, remarkId}`. Все шкалы
-  одним вызовом; пустой ответ — 400; замечание вне пула — 403.
+  admissibility?, comment?}` (токен) → `{saved, docId, pageNum, remarkId}`. Все
+  вопросы одним вызовом; хотя бы одна оценка обязательна (пустой ответ или один
+  `comment` — 400); замечание вне пула — 403. `comment` — открытый ответ с
+  семантикой тегов: ключа нет — не трогать, `""` — стереть, длиннее предела
+  (`rating_scales.OPEN_QUESTIONS`) — 400.
 Пулом ведает **редактор**, сводкой ответов — **админ** (с 2026-08-31).
 Вынести замечание на оценку решает тот, кто его читает, — это обычная
 редакторская работа; агрегированные мнения анонимных респондентов ближе к
@@ -240,7 +250,21 @@ CSRF, а токен, недоступный чужому сайту, снима�
 - ⛔ `GET /api/survey/results?docId&limit&offset` → `{items, total, limit,
   offset}`; у элемента `interest`/`importance` — `{count, average}`,
   `admissibility` — `{yes, no}`. Расклад, а не среднее: среднее по «да или
-  нет» ничего не сообщает.
+  нет» ничего не сообщает. Голос сводится к псевдониму: из нескольких заходов
+  берётся последний ответ, `raters` считает псевдонимы. Открытые ответы —
+  `commentsN` и `comments: [{author, question, text, createdAt}]`; их, в
+  отличие от цифр, показывают все: текст не усредняется.
+- ⛔ `GET /api/survey/respondents?limit&offset` → `{items, total, limit, offset}`;
+  у элемента `{id, pseudonym, author, createdAt, lastSeenAt, sessions, answers,
+  remarks}`. Токена нет ни в каком виде — в базе от него только хеш.
+- ⛔ `GET /api/survey/respondents/{id}/sessions` → `{items: [{id, createdAt,
+  lastSeenAt, answers, remarks}]}`, свежие сверху.
+- ⛔ `DELETE /api/survey/sessions/{id}` → `{deleted: {answers, sessions,
+  respondentId}}` — стереть один заход с его ответами; псевдоним и прочие его
+  заходы остаются, токен стёртого захода перестаёт работать (401).
+- ⛔ `DELETE /api/survey/respondents/{id}` → `{deleted: {answers, sessions,
+  pseudonym}}` — псевдоним целиком. Обе необратимы, ревизиями не становятся и
+  в `remark_history` не пишутся.
 
 `/api/survey/session` и `/api/survey/ratings` живут в жёстком ведре
 рейт-лимита (`AUTH_PATHS`) — это единственные анонимные пути записи.

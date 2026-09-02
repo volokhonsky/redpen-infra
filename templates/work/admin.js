@@ -193,10 +193,24 @@
         '<table class="app-table"><thead><tr>' +
           '<th>Документ</th><th>Стр.</th><th>Замечание</th><th class="num">Ответивших</th>' +
           '<th class="num">Интересность</th><th class="num">Важность</th>' +
-          '<th>Публиковать</th><th></th>' +
+          '<th>Публиковать</th><th class="num">Комментарии</th><th></th>' +
         '</tr></thead><tbody id="sv-result-rows"></tbody></table>' +
         '<p id="sv-result-empty" class="app-muted">Ответов пока нет.</p>' +
         '<button type="button" id="sv-more" class="app-load-more" hidden>Ещё</button>' +
+      '</div>' +
+      '<div class="app-admin-section">' +
+        '<h3>Кто отвечал</h3>' +
+        '<p class="app-muted">Псевдоним — это отвечавший, заход — сессия: ' +
+          'назвавшись тем же именем, человек продолжает свой опрос. Пароля у ' +
+          'подписи нет, поэтому под одним именем могут оказаться разные люди — ' +
+          'накрутка видна здесь посессионно и стирается.</p>' +
+        '<table class="app-table"><thead><tr>' +
+          '<th>Псевдоним</th><th class="num">Заходов</th><th class="num">Ответов</th>' +
+          '<th class="num">Замечаний</th><th>Первый заход</th><th>Последняя активность</th>' +
+          '<th></th>' +
+        '</tr></thead><tbody id="sv-people-rows"></tbody></table>' +
+        '<p id="sv-people-empty" class="app-muted">Никто ещё не называл себя.</p>' +
+        '<button type="button" id="sv-people-more" class="app-load-more" hidden>Ещё</button>' +
       '</div>' : '');
 
     el('sv-filters').addEventListener('submit', function (ev) {
@@ -208,15 +222,21 @@
       el('sv-more').addEventListener('click', function () {
         loadSurveyResults(false).catch(function () {});
       });
+      el('sv-people-more').addEventListener('click', function () {
+        loadSurveyPeople(false).catch(function () {});
+      });
     }
   }
 
   async function loadSurvey(refresh) {
     if (!state.survey.ready || refresh) { surveyShell(); state.survey.ready = true; }
     await loadSurveyPool();
-    // Сводка — админская: редактор кладёт вопросы, но не читает, как на них
-    // ответили (docs/anonymity-model.md).
-    if (W.isAdmin()) await loadSurveyResults(true);
+    // Сводка и список отвечавших — админские: редактор кладёт вопросы, но не
+    // читает, как на них ответили (docs/anonymity-model.md).
+    if (W.isAdmin()) {
+      await loadSurveyResults(true);
+      await loadSurveyPeople(true);
+    }
   }
 
   async function loadSurveyPool() {
@@ -258,14 +278,15 @@
     state.survey.resultsOffset = state.survey.results.length;
 
     var labels = await labelsFor(state.survey.results);
-    el('sv-result-rows').innerHTML = state.survey.results.map(function (item) {
+    el('sv-result-rows').innerHTML = state.survey.results.map(function (item, i) {
       var yes = item.admissibility.yes, no = item.admissibility.no;
       // Расклад, а не среднее: среднее по «да или нет» ничего не сообщает.
       var verdict = (yes + no) ? (yes + ' да / ' + no + ' нет') : '—';
       var avg = function (s) {
         return s.average == null ? '—' : s.average + ' (' + s.count + ')';
       };
-      return '<tr>' +
+      var cN = item.commentsN || 0;
+      var main = '<tr>' +
         '<td>' + escapeHtml(item.docId) + '</td>' +
         '<td class="app-nowrap">' + escapeHtml(labels[item.docId + '/' + item.pageNum]) + '</td>' +
         '<td>' + escapeHtml((item.text || item.remarkId).slice(0, 90)) + '</td>' +
@@ -273,11 +294,133 @@
         '<td class="num">' + avg(item.interest) + '</td>' +
         '<td class="num">' + avg(item.importance) + '</td>' +
         '<td>' + escapeHtml(verdict) + '</td>' +
+        '<td class="num">' + (cN
+          ? '<button type="button" class="app-linklike sv-comments-toggle" data-i="' + i + '">' + cN + '</button>'
+          : '0') + '</td>' +
         '<td class="app-row-actions">' + readerCell(item, labels) + '</td>' +
       '</tr>';
+      if (!cN) return main;
+      // Свёрнуто по умолчанию: открытые ответы — самое длинное в строке, и
+      // развёрнутыми они превратили бы таблицу в ленту.
+      var list = (item.comments || []).map(function (c) {
+        return '<li><span class="app-rev-who">' + escapeHtml(c.author || 'без подписи') +
+          '</span> ' + escapeHtml(c.text) + '</li>';
+      }).join('');
+      return main +
+        '<tr class="sv-comments-row" id="sv-comments-' + i + '" hidden>' +
+          '<td colspan="9"><ul class="sv-comments">' + list + '</ul></td>' +
+        '</tr>';
     }).join('');
     el('sv-result-empty').hidden = !!state.survey.results.length;
     el('sv-more').hidden = state.survey.results.length >= state.survey.resultsTotal;
+
+    Array.prototype.forEach.call(
+      el('sv-result-rows').querySelectorAll('.sv-comments-toggle'), function (btn) {
+        btn.addEventListener('click', function () {
+          var row = el('sv-comments-' + btn.dataset.i);
+          if (row) row.hidden = !row.hidden;
+        });
+      });
+  }
+
+  //: Кто отвечал: псевдонимы, их заходы и удаление того и другого.
+  //:
+  //: Строка раскрывается списком сессий — иначе «удалить один заход» некуда
+  //: повесить: в сводке по замечаниям отвечавших нет вовсе, только счётчик.
+
+  async function loadSurveyPeople(reset) {
+    if (reset) { state.survey.peopleOffset = 0; state.survey.people = []; }
+    var data = await apiGet('/api/survey/respondents' + qs({
+      limit: 100, offset: state.survey.peopleOffset
+    }));
+    state.survey.people = state.survey.people.concat(data.items || []);
+    state.survey.peopleTotal = data.total || 0;
+    state.survey.peopleOffset = state.survey.people.length;
+    await renderSurveyPeople();
+  }
+
+  async function renderSurveyPeople() {
+    var open = state.survey.openPerson;
+    var sessions = open ? await apiGet('/api/survey/respondents/' + open + '/sessions') : null;
+
+    el('sv-people-rows').innerHTML = state.survey.people.map(function (person) {
+      var expanded = person.id === open;
+      var row = '<tr>' +
+        '<td>' + escapeHtml(person.author) + '</td>' +
+        '<td class="num">' + person.sessions + '</td>' +
+        '<td class="num">' + person.answers + '</td>' +
+        '<td class="num">' + person.remarks + '</td>' +
+        '<td class="app-nowrap">' + escapeHtml(formatDay(person.createdAt)) + '</td>' +
+        '<td class="app-nowrap">' + escapeHtml(formatDay(person.lastSeenAt)) + '</td>' +
+        '<td class="app-row-actions">' +
+          '<button type="button" class="app-btn-secondary sv-person-open" data-id="' +
+            person.id + '">' + (expanded ? 'Свернуть' : 'Заходы') + '</button>' +
+          '<button type="button" class="app-btn-secondary sv-person-purge" data-id="' +
+            person.id + '" data-name="' + escapeHtml(person.pseudonym) +
+            '">Удалить псевдоним</button>' +
+        '</td>' +
+      '</tr>';
+      if (!expanded) return row;
+      return row + '<tr><td colspan="7">' + sessionsTable(sessions.items || []) + '</td></tr>';
+    }).join('');
+    el('sv-people-empty').hidden = !!state.survey.people.length;
+    el('sv-people-more').hidden =
+      state.survey.people.length >= state.survey.peopleTotal;
+
+    bind('.sv-person-open', function (btn) {
+      var id = Number(btn.dataset.id);
+      state.survey.openPerson = state.survey.openPerson === id ? null : id;
+      renderSurveyPeople().catch(function () {});
+    });
+    bind('.sv-person-purge', function (btn) {
+      purgeSurvey('/api/survey/respondents/' + btn.dataset.id,
+        'Удалить псевдоним «' + btn.dataset.name + '» НАВСЕГДА?\n\n' +
+        'Будут стёрты все его заходы и все ответы. Это необратимо.');
+    });
+    bind('.sv-session-purge', function (btn) {
+      purgeSurvey('/api/survey/sessions/' + btn.dataset.id,
+        'Удалить этот заход НАВСЕГДА?\n\n' +
+        'Будут стёрты все ответы, данные в нём. Псевдоним и остальные его ' +
+        'заходы останутся. Это необратимо.');
+    });
+  }
+
+  function sessionsTable(items) {
+    if (!items.length) return '<p class="app-muted">Заходов нет.</p>';
+    return '<table class="app-table"><thead><tr>' +
+      '<th>Заход</th><th class="num">Ответов</th><th class="num">Замечаний</th>' +
+      '<th>Последняя активность</th><th></th>' +
+    '</tr></thead><tbody>' + items.map(function (item) {
+      return '<tr>' +
+        '<td class="app-nowrap">' + escapeHtml(formatDay(item.createdAt)) + '</td>' +
+        '<td class="num">' + item.answers + '</td>' +
+        '<td class="num">' + item.remarks + '</td>' +
+        '<td class="app-nowrap">' + escapeHtml(formatDay(item.lastSeenAt)) + '</td>' +
+        '<td class="app-row-actions">' +
+          '<button type="button" class="app-btn-secondary sv-session-purge" data-id="' +
+            item.id + '">Удалить заход</button>' +
+        '</td>' +
+      '</tr>';
+    }).join('') + '</tbody></table>';
+  }
+
+  function bind(selector, handler) {
+    Array.prototype.forEach.call(
+      el('sv-people-rows').querySelectorAll(selector), function (btn) {
+        btn.addEventListener('click', function () { handler(btn); });
+      });
+  }
+
+  async function purgeSurvey(path, question) {
+    if (!W.isAdmin() || !window.confirm(question)) return;
+    try {
+      var data = await apiMutate('DELETE', path);
+    } catch (e) { return; }
+    setStatus('Удалено: ответов — ' + data.deleted.answers + '.', false);
+    state.survey.openPerson = null;
+    // Сводка считается по ответам, и удаление её меняет.
+    await loadSurveyPeople(true);
+    await loadSurveyResults(true);
   }
 
   // --- админка ------------------------------------------------------------

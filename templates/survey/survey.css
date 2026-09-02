@@ -51,6 +51,9 @@ body { color: var(--sv-ink); }
   font-size: 0.92rem;
 }
 .sv-status.is-error { background: #fdecec; color: #b00020; }
+/* Уведомления о хвосте пула живут внутри карточек — там центрирование по
+   auto-полям ни к чему. */
+.sv-card > .sv-status { max-width: none; margin: 12px 0 0; }
 
 /* --- псевдоним ---------------------------------------------------------- */
 
@@ -133,6 +136,19 @@ body { color: var(--sv-ink); }
 }
 .sv-scale-title { font-weight: 600; margin-bottom: 4px; }
 .sv-scale-hint { font-size: 0.85rem; color: var(--sv-quiet); margin-bottom: 10px; }
+
+/* Открытый вопрос: во всю ширину сетки, поле — под подписью. */
+.sv-scale--text { grid-column: 1 / -1; }
+.sv-open {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  font: inherit;
+  border: 1px solid var(--sv-line);
+  border-radius: 4px;
+  resize: vertical;
+}
+.sv-open:focus { outline: 2px solid var(--sv-accent); outline-offset: 1px; }
 .sv-scale-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .sv-scale-ends {
   display: flex;

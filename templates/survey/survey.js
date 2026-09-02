@@ -12,11 +12,15 @@
    * (общий модуль redpen-preview.js). Из-за этого опрос не заводит второго
    * пути к тексту замечания и ничего не знает о геометрии маркеров.
    *
-   * Респондент опознаётся токеном в заголовке `X-Survey-Token`, а не кукой:
+   * Заход опознаётся токеном в заголовке `X-Survey-Token`, а не кукой:
    * кука потребовала бы CSRF-защиты, а токен, недоступный чужому сайту,
    * снимает вопрос целиком. Токен живёт в sessionStorage — закрыли вкладку,
-   * и опроса больше нет. Это осознанно: возвращаться некуда, а хранить
-   * опознание человека дольше нужного не за чем (docs/anonymity-model.md).
+   * и заход кончился. Хранить опознание дольше не за чем: с 2026-09-01
+   * вернуться можно, просто назвавшись тем же псевдонимом — он и есть
+   * респондент, а заход лишь его сессия (docs/anonymity-model.md).
+   *
+   * Карточка рисуется по описанию вопросов из API (`questions`): у каждого
+   * вопроса `answer` — `"value"` (кнопки) или `"text"` (поле).
    */
 
   var preview = window.RedPenPreview;
@@ -25,12 +29,14 @@
   var state = {
     token: null,
     author: '',
-    scales: [],
+    questions: [],  // объединённый список: шкалы + открытые вопросы
     items: [],      // текущая порция
     index: 0,
-    answers: {},    // scale -> value для показанной карточки
+    answers: {},    // name -> value|text для показанной карточки
     answered: 0,    // сколько замечаний оценено за этот заход
-    remaining: 0
+    returning: false, // под этим псевдонимом уже отвечали раньше
+    remaining: 0,
+    tail: false     // остаток не больше порции — покажем его весь
   };
 
   // --- мелочи -------------------------------------------------------------
@@ -50,12 +56,29 @@
     host.classList.toggle('is-error', !!isError);
   }
 
+  //: «1 замечание», «2 замечания», «5 замечаний». Библиотеки ради одного
+  //: слова не нужно, а «2 замечаний» на финальном экране читается как небрежность.
+  function plural(n, one, few, many) {
+    var mod100 = n % 100;
+    if (mod100 >= 11 && mod100 <= 14) return many;
+    var mod10 = n % 10;
+    if (mod10 === 1) return one;
+    if (mod10 >= 2 && mod10 <= 4) return few;
+    return many;
+  }
+
+  function remarksWord(n) { return plural(n, 'замечание', 'замечания', 'замечаний'); }
+
   var SCREENS = ['sv-screen-name', 'sv-screen-intro', 'sv-screen-card', 'sv-screen-done'];
 
   function show(id) {
     SCREENS.forEach(function (name) { el(name).hidden = name !== id; });
     setStatus('');
     window.scrollTo(0, 0);
+  }
+
+  function valueQuestions() {
+    return state.questions.filter(function (q) { return q.answer !== 'text'; });
   }
 
   function readToken() {
@@ -117,41 +140,71 @@
     var data = await api('POST', '/api/survey/session', { pseudonym: pseudonym });
     state.token = data.token;
     state.author = data.author;
-    state.scales = data.scales || [];
+    state.questions = data.questions || [];
+    state.returning = !!data.returning;
     writeToken(data.token);
+    // Порцию тянем сразу — чтобы на экране-инструкции уже знать про хвост пула.
+    await fetchBatch();
     renderIntro();
     show('sv-screen-intro');
   }
 
   // --- 2. инструкция ------------------------------------------------------
 
+  function renderTail(id, left) {
+    var host = el(id);
+    if (!host) return;
+    var n = left == null ? state.remaining : left;
+    if (state.tail && n > 0) {
+      host.textContent = 'Осталось ' + n + ' ' + remarksWord(n) +
+        ' — это всё, что вы ещё не оценивали; мы покажем их все.';
+      host.hidden = false;
+    } else {
+      host.hidden = true;
+    }
+  }
+
   function renderIntro() {
-    el('sv-intro-scales').innerHTML = state.scales.map(function (scale) {
-      return '<li><b>' + escapeHtml(scale.title) + '.</b> ' + escapeHtml(scale.hint) + '</li>';
+    // Тот же псевдоним — продолжение, а не новый опрос: уже оценённое второй
+    // раз не раздаётся, и человек иначе увидел бы пустую выдачу без причины.
+    el('sv-intro-returning').hidden = !state.returning;
+    el('sv-intro-scales').innerHTML = valueQuestions().map(function (q) {
+      return '<li><b>' + escapeHtml(q.title) + '.</b> ' + escapeHtml(q.hint) + '</li>';
     }).join('');
+    renderTail('sv-intro-tail');
   }
 
   // --- 3. карточка --------------------------------------------------------
 
-  function renderScales() {
-    el('sv-scales').innerHTML = state.scales.map(function (scale) {
+  function renderQuestions() {
+    el('sv-scales').innerHTML = state.questions.map(function (q) {
+      if (q.answer === 'text') {
+        var cur = state.answers[q.name] || '';
+        return '<div class="sv-scale sv-scale--text">' +
+          '<div class="sv-scale-title">' + escapeHtml(q.title) + '</div>' +
+          '<div class="sv-scale-hint">' + escapeHtml(q.hint) + '</div>' +
+          '<textarea class="sv-open" data-question="' + escapeHtml(q.name) + '" rows="4" ' +
+            'maxlength="' + (q.maxLength || 1000) + '" ' +
+            'placeholder="Необязательно">' + escapeHtml(cur) + '</textarea>' +
+        '</div>';
+      }
       // Подписи вместо цифр там, где шкала — вопрос о решении, а не о мере.
-      var choices = scale.options;
+      var choices = q.options;
       if (!choices) {
         choices = [];
-        for (var v = scale.min; v <= scale.max; v++) choices.push({ value: v, label: String(v) });
+        for (var v = q.min; v <= q.max; v++) choices.push({ value: v, label: String(v) });
       }
       var buttons = choices.map(function (choice) {
         return '<button type="button" class="sv-choice' +
-          (state.answers[scale.name] === choice.value ? ' is-picked' : '') +
-          '" data-scale="' + escapeHtml(scale.name) + '" data-value="' + choice.value + '">' +
+          (state.answers[q.name] === choice.value ? ' is-picked' : '') +
+          '" data-scale="' + escapeHtml(q.name) + '" data-value="' + choice.value + '">' +
           escapeHtml(choice.label) + '</button>';
       }).join('');
-      var ends = scale.options ? '' :
+      var ends = q.options ? '' :
         '<div class="sv-scale-ends"><span>совсем нет</span><span>да, вполне</span></div>';
       return '<div class="sv-scale">' +
-        '<div class="sv-scale-title">' + escapeHtml(scale.title) + '</div>' +
-        '<div class="sv-scale-hint">' + escapeHtml(scale.hint) + '</div>' +
+        '<div class="sv-scale-title">' + escapeHtml(q.title) + '</div>' +
+        '<div class="sv-scale-hint">' + escapeHtml(q.hint) + '</div>' +
         '<div class="sv-scale-row">' + buttons + '</div>' + ends +
       '</div>';
     }).join('');
@@ -161,7 +214,7 @@
     var item = state.items[state.index];
     if (!item) { finish(); return; }
     state.answers = {};
-    renderScales();
+    renderQuestions();
     el('sv-progress-text').textContent =
       'Замечание ' + (state.index + 1) + ' из ' + state.items.length;
 
@@ -172,62 +225,90 @@
     preview.fitFrame('sv-preview-fit', 'sv-preview', { native: true });
   }
 
+  function currentText(name) {
+    return (state.answers[name] || '').trim();
+  }
+
   async function submitAndAdvance(save) {
     var item = state.items[state.index];
     if (!item) return;
-    if (save && Object.keys(state.answers).length) {
-      var payload = {
-        docId: item.docId,
-        pageKey: item.pageKey || item.pageNum,
-        remarkId: item.remarkId
-      };
-      state.scales.forEach(function (scale) {
-        if (state.answers[scale.name] != null) payload[scale.name] = state.answers[scale.name];
+    if (save) {
+      var scaleNames = valueQuestions().map(function (q) { return q.name; });
+      var hasScale = scaleNames.some(function (n) { return state.answers[n] != null; });
+      var hasText = state.questions.some(function (q) {
+        return q.answer === 'text' && currentText(q.name);
       });
-      await api('PUT', '/api/survey/ratings', payload);
-      state.answered += 1;
+      if (hasText && !hasScale) {
+        // Иначе текст потерялся бы на 400: сервер комментарий без оценки не примет.
+        setStatus('Отметьте хотя бы одну оценку — или нажмите «Пропустить», ' +
+                  'если оценивать не хотите.', true);
+        return;
+      }
+      if (hasScale || hasText) {
+        var payload = {
+          docId: item.docId,
+          pageKey: item.pageKey || item.pageNum,
+          remarkId: item.remarkId
+        };
+        state.questions.forEach(function (q) {
+          var a = state.answers[q.name];
+          if (q.answer === 'text') {
+            if (currentText(q.name)) payload[q.name] = currentText(q.name);
+          } else if (a != null) {
+            payload[q.name] = a;
+          }
+        });
+        await api('PUT', '/api/survey/ratings', payload);
+        state.answered += 1;
+      }
     }
     state.index += 1;
     await renderCard();
   }
 
-  //: «1 замечание», «2 замечания», «5 замечаний». Библиотеки ради одного
-  //: слова не нужно, а «2 замечаний» на финальном экране читается как небрежность.
-  function plural(n, one, few, many) {
-    var mod100 = n % 100;
-    if (mod100 >= 11 && mod100 <= 14) return many;
-    var mod10 = n % 10;
-    if (mod10 === 1) return one;
-    if (mod10 >= 2 && mod10 <= 4) return few;
-    return many;
-  }
-
   function finish() {
+    var left = Math.max(0, state.remaining - state.answered);
     el('sv-done-text').textContent = state.answered
-      ? 'Вы оценили ' + state.answered + ' ' +
-        plural(state.answered, 'замечание', 'замечания', 'замечаний') + '. Это уже помогло.'
+      ? 'Вы оценили ' + state.answered + ' ' + remarksWord(state.answered) + '. Это уже помогло.'
       : 'В этот раз вы ничего не оценили — тоже ответ.';
-    // «Ещё» показывается, только если есть что показать: кнопка, ведущая в
-    // пустой экран, — обман. Остаток считается от того, что было на входе,
-    // за вычетом отвеченного: заново спрашивать сервер ради одной кнопки
-    // не стоит, а пропущенные так и остаются в остатке — это верно.
-    el('sv-more').hidden = (state.remaining - state.answered) <= 0;
+
+    var more = el('sv-more');
+    var doneAll = el('sv-done-all');
+    if (left > 0) {
+      more.hidden = false;
+      more.textContent = state.tail
+        ? 'Оценить оставшиеся ' + left + ' ' + remarksWord(left)
+        : 'Оценить ещё ' + Math.min(left, 10);
+      doneAll.hidden = true;
+    } else {
+      more.hidden = true;
+      doneAll.hidden = false;
+      doneAll.textContent = 'Вы прошли весь пул. Спасибо.';
+    }
+    renderTail('sv-done-tail', left);
     show('sv-screen-done');
   }
 
-  async function loadBatch() {
+  // --- порция ------------------------------------------------------------
+
+  async function fetchBatch() {
     var data = await api('GET', '/api/survey/batch');
     state.items = data.items || [];
     state.remaining = data.remaining || 0;
+    state.tail = !!data.tail;
     state.index = 0;
     state.answered = 0;
     state.author = data.author || state.author;
+    if (data.questions) state.questions = data.questions;
+  }
+
+  async function startBatch() {
     if (!state.items.length) { finish(); return; }
     show('sv-screen-card');
     await renderCard();
   }
 
-  // --- запуск -------------------------------------------------------------
+  // --- запуск -----------------------------------------------------------
 
   function wire() {
     el('sv-name-input').addEventListener('input', updateNamePreview);
@@ -239,7 +320,7 @@
       });
     });
     el('sv-intro-start').addEventListener('click', function () {
-      loadBatch().catch(function (e) { setStatus(e.message, true); });
+      startBatch().catch(function (e) { setStatus(e.message, true); });
     });
     el('sv-scales').addEventListener('click', function (event) {
       var target = event.target;
@@ -249,7 +330,20 @@
       // Повторное нажатие снимает ответ: передумать проще, чем начинать заново.
       state.answers[scale] = state.answers[scale] === value ? null : value;
       if (state.answers[scale] == null) delete state.answers[scale];
-      renderScales();
+      // Перерисовываем только кнопки этой шкалы — полный innerHTML затёр бы
+      // текст в открытом поле и увёл бы из него фокус.
+      Array.prototype.forEach.call(target.parentNode.querySelectorAll('.sv-choice'),
+        function (btn) {
+          btn.classList.toggle('is-picked',
+            state.answers[scale] === parseInt(btn.dataset.value, 10));
+        });
+    });
+    el('sv-scales').addEventListener('input', function (event) {
+      var target = event.target;
+      if (!target.classList.contains('sv-open')) return;
+      var name = target.dataset.question;
+      if (target.value.trim()) state.answers[name] = target.value;
+      else delete state.answers[name];
     });
     el('sv-next').addEventListener('click', function () {
       submitAndAdvance(true).catch(function (e) { setStatus(e.message, true); });
@@ -258,7 +352,7 @@
       submitAndAdvance(false).catch(function (e) { setStatus(e.message, true); });
     });
     el('sv-more').addEventListener('click', function () {
-      loadBatch().catch(function (e) { setStatus(e.message, true); });
+      fetchBatch().then(startBatch).catch(function (e) { setStatus(e.message, true); });
     });
     window.addEventListener('resize', function () {
       preview.fitFrame('sv-preview-fit', 'sv-preview', { native: true });
@@ -275,15 +369,13 @@
     updateNamePreview();
     state.token = readToken();
     if (!state.token) { show('sv-screen-name'); return; }
-    // Токен есть — вкладку перезагрузили посреди опроса. Словарь шкал приходит
-    // вместе с сессией, а её уже не создать: спрашиваем порцию, и если токен
-    // ещё жив, api() вернёт данные, иначе сам отправит на первый экран.
-    api('GET', '/api/survey/batch').then(function (data) {
-      state.scales = data.scales || [];
-      if (!state.scales.length) { dropToken(); state.token = null; show('sv-screen-name'); return; }
-      state.items = data.items || [];
-      state.remaining = data.remaining || 0;
-      state.author = data.author || '';
+    // Токен есть — вкладку перезагрузили посреди опроса. Словарь вопросов
+    // приходит вместе с порцией; если токен ещё жив, api() вернёт данные,
+    // иначе сам отправит на первый экран.
+    fetchBatch().then(function () {
+      if (!state.questions.length) {
+        dropToken(); state.token = null; show('sv-screen-name'); return;
+      }
       renderIntro();
       show('sv-screen-intro');
     }).catch(function () { /* api() уже показал нужный экран */ });

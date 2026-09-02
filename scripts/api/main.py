@@ -1513,7 +1513,25 @@ async def get_remark_timeline(docId: str, pageKey: str, remarkId: str,
             "note": rating["note"],
         })
 
-    for answer in db.list_survey_ratings(docId, page_num_str, remarkId):
+    for answer in db.list_survey_answers(docId, page_num_str, remarkId):
+        # Числовой ответ и открытый — разные виды событий: первый встаёт в
+        # ленту рядом с оценками участников, второй рядом с комментариями.
+        # Различает их не вопрос, а то, чем ответили: `value` или `text`.
+        if answer["text"] is not None:
+            items.append({
+                "kind": "note",
+                "source": "survey",
+                "id": answer["id"],
+                "actions": ["note"],
+                "actionLabel": remark_actions.LABELS["note"],
+                "actorId": None,
+                "actorName": answer["author"],
+                "createdAt": answer["updatedAt"],
+                "body": answer["text"],
+                "parentId": None,
+                "resolved": False,
+            })
+            continue
         items.append({
             "kind": "rating",
             # Тот же вид события, но другой источник: оценку участника и ответ
@@ -1528,7 +1546,7 @@ async def get_remark_timeline(docId: str, pageKey: str, remarkId: str,
             "actorId": None,
             "actorName": answer["author"],
             "createdAt": answer["updatedAt"],
-            "scale": answer["scale"],
+            "scale": answer["question"],
             "value": answer["value"],
             "note": None,
         })
@@ -1536,6 +1554,7 @@ async def get_remark_timeline(docId: str, pageKey: str, remarkId: str,
     for note in db.list_notes(docId, page_num_str, remarkId):
         items.append({
             "kind": "note",
+            "source": "editor",
             "id": note["id"],
             "actions": ["note"],
             "actionLabel": remark_actions.LABELS["note"],
@@ -1549,9 +1568,11 @@ async def get_remark_timeline(docId: str, pageKey: str, remarkId: str,
 
     # Метки времени огрублены до дня (docs/anonymity-model.md), поэтому внутри
     # одного дня порядок задаёт id — он же порядок записи. id считается в
-    # пределах своей таблицы, поэтому вид события входит в ключ: иначе порядок
-    # зависел бы от того, в какой таблице счётчик убежал дальше.
-    items.sort(key=lambda item: (item["createdAt"], item["kind"], item["id"]),
+    # пределах своей таблицы, поэтому вид события входит в ключ; а с тех пор
+    # как один вид приходит из двух таблиц (комментарий участника и открытый
+    # ответ опроса — оба `note`), в ключ входит и источник.
+    items.sort(key=lambda item: (item["createdAt"], item["kind"],
+                                 item.get("source") or "", item["id"]),
                reverse=True)
     return {"items": items[:limit]}
 
@@ -1570,29 +1591,41 @@ async def get_remark_timeline(docId: str, pageKey: str, remarkId: str,
 
 
 async def require_respondent(request: Request) -> Dict[str, Any]:
-    """FastAPI dependency: респондент опроса по токену или 401."""
-    respondent = db.get_respondent_by_token(request.headers.get("X-Survey-Token"))
-    if not respondent:
+    """FastAPI dependency: сессия опроса по токену или 401.
+
+    В объекте и `sessionId` (этот заход), и `respondentId` (псевдоним): ответ
+    пишется на заход, а «что уже оценено» считается по псевдониму.
+    """
+    session = db.get_session_by_token(request.headers.get("X-Survey-Token"))
+    if not session:
         raise HTTPException(status_code=401, detail="survey session required")
-    return respondent
+    return session
 
 
 @app.post("/api/survey/session")
 async def create_survey_session(body: Dict[str, Any]):
-    """Начать опрос: назваться псевдонимом и получить токен сессии.
+    """Начать заход: назваться псевдонимом и получить токен сессии.
 
     Единственный маршрут в системе, который заводит субъекта без приглашения.
     Ничего, кроме псевдонима и хеша токена, при этом не записывается.
+
+    Тот же псевдоним — тот же респондент: заход под уже известным именем
+    продолжает опрос, а не начинает его заново (`returning: true`).
     """
     try:
-        respondent = db.create_respondent(body.get("pseudonym"))
+        respondent = db.start_survey_session(body.get("pseudonym"))
     except db.SurveyError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    logger.info("survey session created respondent_id=%s", respondent["id"])
-    # Шкалы отдаются здесь же. Заводить для них анонимный маршрут не нужно, а
-    # переписывать словарь шкал в опроснике — тем более: у описания шкал ровно
-    # один источник (rating_scales), и он должен остаться единственным.
-    return dict(respondent, scales=rating_scales.describe())
+    # В журнал — только идентификатор сессии: псевдоним это подпись человека,
+    # ей в логах не место.
+    logger.info("survey session created session_id=%s returning=%s",
+                respondent["sessionId"], respondent["returning"])
+    # Вопросы отдаются здесь же. Заводить для них анонимный маршрут не нужно, а
+    # переписывать словарь в опроснике — тем более: у описания ровно один
+    # источник (rating_scales), и он должен остаться единственным. В списке и
+    # шкалы, и открытые вопросы: у каждого пункта `answer` говорит, рисовать
+    # кнопки или поле ввода.
+    return dict(respondent, questions=rating_scales.describe_survey())
 
 
 @app.get("/api/survey/batch")
@@ -1606,21 +1639,33 @@ async def get_survey_batch(limit: int = db.SURVEY_BATCH_SIZE,
     не нужно.
     """
     limit = max(1, min(limit, db.MAX_SURVEY_BATCH_SIZE))
-    batch = db.pool_pick(respondent["id"], limit=limit)
-    # Шкалы прилагаются и здесь: вкладку могли перезагрузить посреди опроса,
-    # и тогда ответа `/session` со словарём шкал у опросника уже нет.
+    # По псевдониму, а не по заходу: вернувшемуся то, что он уже оценил, не
+    # показываем.
+    batch = db.pool_pick(respondent["respondentId"], limit=limit)
+    # Вопросы прилагаются и здесь: вкладку могли перезагрузить посреди опроса,
+    # и тогда ответа `/session` со словарём у опросника уже нет. `tail` — что
+    # это уже весь непросмотренный остаток (его показывают целиком, и человека
+    # об этом предупреждают).
     return {"items": batch["items"], "remaining": batch["remaining"],
-            "author": respondent["author"], "scales": rating_scales.describe()}
+            "tail": batch["remaining"] <= limit,
+            "author": respondent["author"],
+            "questions": rating_scales.describe_survey()}
 
 
 @app.put("/api/survey/ratings")
 async def put_survey_rating(body: Dict[str, Any],
                             respondent: Dict[str, Any] = Depends(require_respondent)):
-    """Ответы по одному замечанию — все шкалы одним вызовом.
+    """Ответы по одному замечанию — все вопросы одним вызовом.
 
-    Карточка опроса оценивается целиком, и разбивать её на три запроса значило
-    бы допускать наполовину заполненные ответы там, где половины не бывает.
-    Незаполненную шкалу можно не присылать; пустой ответ — 400.
+    Карточка опроса оценивается целиком, и разбивать её на несколько запросов
+    значило бы допускать наполовину заполненные ответы там, где половины не
+    бывает. Незаполненную шкалу можно не присылать; пустой ответ — 400.
+
+    Открытый вопрос (`comment`) необязателен, и семантика у него как у тегов в
+    остальном проекте: **ключа нет — не трогать, `""` — стереть**. Текст без
+    единой оценки — тоже 400: карточка оценивается целиком, и одинокий
+    комментарий не дал бы ни строки в сводку (клиент до такой отправки не
+    доводит).
     """
     doc_id = str(body.get("docId") or "")
     page_key = str(body.get("pageKey") or body.get("pageNum") or "")
@@ -1639,14 +1684,31 @@ async def put_survey_rating(body: Dict[str, Any],
             values[scale] = rating_scales.normalize_value(scale, body.get(scale))
         except rating_scales.ScaleError as exc:
             raise HTTPException(status_code=400, detail=f"{scale}: {exc}")
+
+    texts: Dict[str, Optional[str]] = {}
+    for question in rating_scales.open_names():
+        if question not in body:
+            continue
+        try:
+            texts[question] = rating_scales.normalize_text(question, body.get(question))
+        except rating_scales.ScaleError as exc:
+            raise HTTPException(status_code=400, detail=f"{question}: {exc}")
+
     if not values:
         raise HTTPException(status_code=400, detail="no answers given")
 
     for scale, value in values.items():
-        db.set_survey_rating(respondent["id"], doc_id, page_num_str, remark_id,
-                             scale, value)
-    return {"saved": sorted(values), "docId": doc_id, "pageNum": page_num_str,
-            "remarkId": remark_id}
+        db.set_survey_answer(respondent["respondentId"], respondent["sessionId"],
+                             doc_id, page_num_str, remark_id, scale, value=value)
+    for question, text in texts.items():
+        if text is None:
+            db.delete_survey_answer(respondent["sessionId"], doc_id, page_num_str,
+                                    remark_id, question)
+        else:
+            db.set_survey_answer(respondent["respondentId"], respondent["sessionId"],
+                                 doc_id, page_num_str, remark_id, question, text=text)
+    return {"saved": sorted(values) + sorted(q for q, t in texts.items() if t is not None),
+            "docId": doc_id, "pageNum": page_num_str, "remarkId": remark_id}
 
 
 @app.get("/api/survey/pool")
@@ -1697,6 +1759,55 @@ async def get_survey_results(docId: Optional[str] = None, limit: int = 100, offs
         raise HTTPException(status_code=400, detail="invalid docId")
     return db.survey_results(doc_id=docId, limit=max(1, min(limit, 200)),
                              offset=max(0, offset))
+
+
+@app.get("/api/survey/respondents")
+async def get_survey_respondents(limit: int = 100, offset: int = 0,
+                                 user: Dict[str, Any] = Depends(require_admin)):
+    """Кто отвечал: псевдонимы со счётчиками заходов и ответов.
+
+    Админский, как и сводка: список отвечавших ближе к персональным данным,
+    чем к содержанию разбора (docs/anonymity-model.md).
+    """
+    return db.list_respondents(limit=max(1, min(limit, 200)), offset=max(0, offset))
+
+
+@app.get("/api/survey/respondents/{respondentId}/sessions")
+async def get_survey_sessions(respondentId: int,
+                              user: Dict[str, Any] = Depends(require_admin)):
+    """Заходы одного псевдонима."""
+    return {"items": db.list_survey_sessions(respondentId)}
+
+
+@app.delete("/api/survey/sessions/{sessionId}")
+async def delete_survey_session(sessionId: int,
+                                user: Dict[str, Any] = Depends(require_admin_csrf)):
+    """Стереть один заход вместе с его ответами. Только админ, необратимо.
+
+    Псевдоним остаётся: у него могли быть другие заходы. Токен стёртой сессии
+    перестаёт работать — открытая вкладка опросника получит 401 и вернётся на
+    экран имени.
+    """
+    deleted = db.delete_survey_session(sessionId)
+    if deleted is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    logger.info("SURVEY PURGE session=%s answers=%s by=%s",
+                sessionId, deleted["answers"], user["userId"])
+    return {"deleted": deleted}
+
+
+@app.delete("/api/survey/respondents/{respondentId}")
+async def delete_survey_respondent(respondentId: int,
+                                   user: Dict[str, Any] = Depends(require_admin_csrf)):
+    """Стереть псевдоним целиком: все заходы и все ответы. Только админ,
+    необратимо."""
+    deleted = db.delete_respondent(respondentId)
+    if deleted is None:
+        raise HTTPException(status_code=404, detail="respondent not found")
+    # Без псевдонима: это подпись человека, ей в логах не место.
+    logger.info("SURVEY PURGE respondent=%s sessions=%s answers=%s by=%s",
+                respondentId, deleted["sessions"], deleted["answers"], user["userId"])
+    return {"deleted": deleted}
 
 
 @app.get("/api/sections")

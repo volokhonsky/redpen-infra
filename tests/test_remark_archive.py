@@ -164,20 +164,18 @@ def _seed_related(remark_id="a-1"):
     db.add_note(DOC, PAGE_KEY, remark_id, author_id=1, body="рабочий комментарий")
     db.pool_add(DOC, PAGE_KEY, remark_id, added_by=1)
     table, question_col = _survey_answers_table()  # берёт db._lock — до захвата ниже
+    # Респондента заводим штатно: с 2026-09-01 псевдоним и заход — разные
+    # строки, и собирать их руками значило бы дублировать здесь схему.
+    session = db.start_survey_session("кто-то")
     conn = db.get_connection()
     with db._lock:
         conn.execute(
-            "INSERT INTO survey_respondents (pseudonym, token_hash, created_at) "
-            "VALUES ('кто-то', 'hash-1', ?)",
-            (db._now_iso(),),
-        )
-        rid = conn.execute("SELECT id FROM survey_respondents").fetchone()["id"]
-        conn.execute(
             f"INSERT INTO {table} "
-            f"(respondent_id, doc_id, page_num, remark_id, {question_col}, value, "
-            "created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, 'importance', 2, ?, ?)",
-            (rid, DOC, PAGE_KEY, remark_id, db._now_iso(), db._now_iso()),
+            f"(respondent_id, session_id, doc_id, page_num, remark_id, {question_col}, "
+            "value, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 'importance', 2, ?, ?)",
+            (session["respondentId"], session["sessionId"], DOC, PAGE_KEY, remark_id,
+             db._now_iso(), db._now_iso()),
         )
         conn.commit()
 

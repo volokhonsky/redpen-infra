@@ -107,12 +107,31 @@ def test_prefix_is_not_stored_and_cannot_be_forged():
     assert body["author"] == "anonymous:Пётр"
 
 
-def test_same_pseudonym_is_two_respondents():
-    """Псевдоним — подпись, а не личность: второй под тем же именем не должен
-    видеть и переписывать ответы первого."""
+def test_same_pseudonym_is_one_respondent_and_two_sessions():
+    """Псевдоним — это респондент, заход — сессия (2026-09-01). Вернувшийся под
+    тем же именем продолжает свой опрос, а не начинает новый."""
     _, first = _respondent("Тёзка")
     _, second = _respondent("Тёзка")
     assert first["token"] != second["token"]
+    assert first["sessionId"] != second["sessionId"]
+    assert first["respondentId"] == second["respondentId"]
+    assert first["returning"] is False and second["returning"] is True
+    conn = db.get_connection()
+    assert conn.execute("SELECT COUNT(*) FROM survey_respondents").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM survey_sessions").fetchone()[0] == 2
+
+
+def test_pseudonym_matches_exactly():
+    """«Пётр» и «пётр» — разные респонденты: сводить написания значило бы
+    гадать о намерении и отдавать одному чужие ответы. Пробелы по краям и
+    внутри — не написание, а ввод, их схлопывает normalize_pseudonym."""
+    _, first = _respondent("Пётр")
+    _, other = _respondent("пётр")
+    assert other["respondentId"] != first["respondentId"]
+    assert other["pseudonym"] == "пётр"
+    assert other["author"] == "anonymous:пётр"
+    _, same = _respondent("  Пётр  ")
+    assert same["respondentId"] == first["respondentId"]
     assert db.get_connection().execute(
         "SELECT COUNT(*) FROM survey_respondents").fetchone()[0] == 2
 
@@ -168,6 +187,24 @@ def test_batch_of_another_respondent_is_untouched(monkeypatch):
     _answer(first, interest=3)
     assert first.get("/api/survey/batch").json()["remaining"] == 0
     assert second.get("/api/survey/batch").json()["remaining"] == 1
+
+
+def test_a_new_session_does_not_serve_what_the_pseudonym_already_answered(monkeypatch):
+    """Ради чего разделены псевдоним и сессия: вернувшемуся не раздают заново."""
+    admin = _admin(monkeypatch)
+    for n in range(2):
+        _create(admin, f"r-{n}")
+        _pool(admin, f"r-{n}")
+    first, _ = _respondent("Пётр")
+    _answer(first, "r-0", interest=3)
+
+    again, _ = _respondent("Пётр")           # тот же человек, новый заход
+    batch = again.get("/api/survey/batch").json()
+    assert batch["remaining"] == 1
+    assert [i["remarkId"] for i in batch["items"]] == ["r-1"]
+
+    other, _ = _respondent("Иван")           # другое имя — выдача полная
+    assert other.get("/api/survey/batch").json()["remaining"] == 2
 
 
 # --- ответы ----------------------------------------------------------------
@@ -358,7 +395,8 @@ def test_nothing_from_the_survey_reaches_the_static_files(monkeypatch):
     before = publisher.compute_page_sha(publisher.render_page(DOC, PAGE_KEY))
     _pool(admin)
     client, _ = _respondent("Прохожий")
-    _answer(client, interest=5, importance=5, admissibility=2)
+    _answer(client, interest=5, importance=5, admissibility=2,
+            comment="STATIC-LEAK-CANARY-текст-возражения")
 
     rendered = publisher.render_page(DOC, PAGE_KEY)
     assert publisher.compute_page_sha(rendered) == before
@@ -366,8 +404,296 @@ def test_nothing_from_the_survey_reaches_the_static_files(monkeypatch):
     blob = repr(rendered) + repr(static)
     assert "anonymous" not in blob
     assert "Прохожий" not in blob
+    assert "STATIC-LEAK-CANARY" not in blob
     # inPool — редакторское сведение: в статику не течёт ни под каким именем.
     assert "inPool" not in blob and "poolAnswers" not in blob
     for item in list(rendered) + list(static):
         assert set(item) <= {"id", "text", "annType", "kind", "coords", "tags",
                              "category", "draft"}
+
+
+# --- кто отвечал: список и удаление ----------------------------------------
+
+def test_admin_sees_who_answered_without_any_token(monkeypatch):
+    """Список отвечавших — админский, и токена в нём нет: в базе от токена
+    остаётся только хеш, и наружу не выходит даже он."""
+    admin = _admin(monkeypatch)
+    for n in range(2):
+        _create(admin, f"r-{n}")
+        _pool(admin, f"r-{n}")
+    petr, _ = _respondent("Пётр")
+    _answer(petr, "r-0", interest=3, importance=4)
+    again, _ = _respondent("Пётр")
+    _answer(again, "r-1", interest=5)
+    _respondent("Иван")            # назвался и ушёл, ничего не ответив
+
+    data = admin.get("/api/survey/respondents").json()
+    assert data["total"] == 2
+    by_name = {i["pseudonym"]: i for i in data["items"]}
+    assert by_name["Пётр"]["sessions"] == 2
+    assert by_name["Пётр"]["answers"] == 3      # три строки по шкалам
+    assert by_name["Пётр"]["remarks"] == 2
+    assert by_name["Пётр"]["author"] == "anonymous:Пётр"
+    assert by_name["Иван"] == {**by_name["Иван"], "sessions": 1, "answers": 0}
+    assert "token" not in repr(data) and "token_hash" not in repr(data)
+
+    sessions = admin.get(
+        f"/api/survey/respondents/{by_name['Пётр']['id']}/sessions").json()["items"]
+    assert [s["answers"] for s in sessions] == [1, 2]   # свежая сверху
+    assert "token" not in repr(sessions)
+
+
+def test_two_sessions_of_one_pseudonym_are_one_voice(monkeypatch):
+    """Ключ ответа посессионный, поэтому строк две. Но в сводке человек один,
+    и считается его последнее слово."""
+    admin = _admin(monkeypatch)
+    _create(admin)
+    _pool(admin)
+    first, _ = _respondent("Пётр")
+    _answer(first, interest=1, admissibility=1)
+    again, _ = _respondent("Пётр")
+    _answer(again, interest=5, admissibility=2)
+
+    assert db.get_connection().execute(
+        "SELECT COUNT(*) FROM survey_answers").fetchone()[0] == 4
+    item = admin.get("/api/survey/results").json()["items"][0]
+    assert item["raters"] == 1
+    assert item["interest"] == {"count": 1, "average": 5.0}
+    assert item["admissibility"] == {"yes": 1, "no": 0}
+    # В ленте замечания видны оба события: она показывает не сводку.
+    timeline = admin.get(f"/api/remarks/{DOC}/{PAGE}/r-1/timeline").json()["items"]
+    interest = [i for i in timeline if i.get("scale") == "interest"]
+    assert sorted(i["value"] for i in interest) == [1, 5]
+
+
+def test_deleting_a_session_keeps_the_other_one(monkeypatch):
+    admin = _admin(monkeypatch)
+    for n in range(2):
+        _create(admin, f"r-{n}")
+        _pool(admin, f"r-{n}")
+    first, _ = _respondent("Пётр")
+    _answer(first, "r-0", interest=3)
+    again, body = _respondent("Пётр")
+    _answer(again, "r-1", interest=4)
+
+    r = admin.delete(f"/api/survey/sessions/{body['sessionId']}")
+    assert r.status_code == 200, r.text
+    assert r.json()["deleted"]["answers"] == 1
+
+    conn = db.get_connection()
+    assert conn.execute("SELECT COUNT(*) FROM survey_sessions").fetchone()[0] == 1
+    assert [row[0] for row in conn.execute(
+        "SELECT remark_id FROM survey_answers")] == ["r-0"]
+    # Псевдоним цел: у него остался первый заход.
+    assert conn.execute("SELECT COUNT(*) FROM survey_respondents").fetchone()[0] == 1
+    # Стёртая сессия больше не опознаётся — открытая вкладка вернётся к имени.
+    assert again.get("/api/survey/batch").status_code == 401
+    assert first.get("/api/survey/batch").status_code == 200
+
+
+def test_deleting_a_pseudonym_takes_all_its_sessions(monkeypatch):
+    admin = _admin(monkeypatch)
+    _create(admin)
+    _pool(admin)
+    petr, _ = _respondent("Пётр")
+    _answer(petr, interest=3)
+    _respondent("Пётр")
+    ivan, _ = _respondent("Иван")
+    _answer(ivan, interest=5)
+
+    target = [i for i in admin.get("/api/survey/respondents").json()["items"]
+              if i["pseudonym"] == "Пётр"][0]
+    r = admin.delete(f"/api/survey/respondents/{target['id']}")
+    assert r.status_code == 200, r.text
+    assert r.json()["deleted"] == {"answers": 1, "sessions": 2, "pseudonym": "Пётр"}
+
+    conn = db.get_connection()
+    assert [row[0] for row in conn.execute(
+        "SELECT pseudonym FROM survey_respondents")] == ["Иван"]
+    assert conn.execute("SELECT COUNT(*) FROM survey_sessions").fetchone()[0] == 1
+    # Чужие ответы целы, и сводка пересчиталась по ним.
+    item = admin.get("/api/survey/results").json()["items"][0]
+    assert item["raters"] == 1 and item["interest"]["average"] == 5.0
+
+
+def test_deleting_a_session_writes_no_revision(monkeypatch):
+    """Ответы опроса ревизиями замечания не были — и их удаление тоже не ревизия."""
+    admin = _admin(monkeypatch)
+    _create(admin)
+    _pool(admin)
+    client, body = _respondent("Пётр")
+    _answer(client, interest=3)
+    conn = db.get_connection()
+    before = conn.execute("SELECT COUNT(*) FROM remark_history").fetchone()[0]
+    assert admin.delete(f"/api/survey/sessions/{body['sessionId']}").status_code == 200
+    assert conn.execute("SELECT COUNT(*) FROM remark_history").fetchone()[0] == before
+
+
+def test_who_answered_is_admins_only(monkeypatch):
+    """Та же граница, что у сводки: редактор ставит вопросы, но не видит, кто
+    и как ответил (docs/anonymity-model.md)."""
+    admin = _admin(monkeypatch)
+    _create(admin)
+    _pool(admin)
+    client, body = _respondent("Пётр")
+    _answer(client, interest=3)
+    target = admin.get("/api/survey/respondents").json()["items"][0]["id"]
+
+    editor = login(monkeypatch, "survey-editor", role="editor")
+    assert editor.get("/api/survey/respondents").status_code == 403
+    assert editor.delete(f"/api/survey/sessions/{body['sessionId']}").status_code == 403
+    assert editor.delete(f"/api/survey/respondents/{target}").status_code == 403
+    assert anon().get("/api/survey/respondents").status_code == 401
+
+    assert admin.delete("/api/survey/sessions/9999").status_code == 404
+    assert admin.delete("/api/survey/respondents/9999").status_code == 404
+
+
+# --- открытый ответ --------------------------------------------------------
+
+def test_questions_describe_both_kinds_of_answer(monkeypatch):
+    """Опросник рисует карточку по одному списку `questions`: у каждого пункта
+    `answer` говорит, кнопки это или поле ввода. Отдельного ключа `scales`
+    больше нет — прежний опросник в бою его и не видел."""
+    admin = _admin(monkeypatch)
+    _create(admin)
+    _pool(admin)
+    client, body = _respondent()
+    assert "scales" not in body
+    by_name = {q["name"]: q for q in body["questions"]}
+    assert by_name["interest"]["answer"] == "value"
+    assert by_name["comment"]["answer"] == "text"
+    assert by_name["comment"]["maxLength"] == 1000
+
+    batch = client.get("/api/survey/batch").json()
+    assert "scales" not in batch
+    assert {q["name"] for q in batch["questions"]} == set(by_name)
+
+
+def test_open_answer_is_saved_with_the_ratings_and_overwrites(monkeypatch):
+    """Текст приходит тем же вызовом, что и цифры, и в ленте встаёт
+    комментарием, а не оценкой: у него нет значения, которое можно усреднить."""
+    admin = _admin(monkeypatch)
+    _create(admin)
+    _pool(admin)
+    client, _ = _respondent("Прохожий")
+    assert _answer(client, interest=4, comment="слишком резко").status_code == 200
+    # Рабочий комментарий рядом — чтобы проверка источников была не пустой.
+    assert admin.post(f"/api/remarks/{DOC}/{PAGE}/r-1/notes",
+                      json={"body": "обсудим на летучке"}).status_code == 200
+
+    tl = admin.get(f"/api/remarks/{DOC}/{PAGE}/r-1/timeline").json()["items"]
+    notes = [i for i in tl if i["kind"] == "note" and i.get("source") == "survey"]
+    assert len(notes) == 1
+    assert notes[0]["body"] == "слишком резко"
+    assert notes[0]["actorName"] == "anonymous:Прохожий"
+    assert notes[0]["actorId"] is None
+    # Рабочий тред помечен своим источником — иначе два вида `note` не различить.
+    editor_notes = [i for i in tl if i["kind"] == "note" and i.get("source") == "editor"]
+    assert [i["body"] for i in editor_notes] == ["обсудим на летучке"]
+
+    # Повтор внутри захода — исправление, а не вторая мысль.
+    assert _answer(client, interest=4, comment="точнее: голословно").status_code == 200
+    res = admin.get("/api/survey/results").json()["items"][0]
+    assert res["commentsN"] == 1
+    assert res["comments"][0]["text"] == "точнее: голословно"
+    assert res["comments"][0]["author"] == "anonymous:Прохожий"
+
+
+def test_comments_of_two_sessions_are_both_kept(monkeypatch):
+    """Цифру второго захода сводка заменяет, текст — нет: вторая мысль не
+    поправка к первой, и терять её ради аккуратности таблицы незачем."""
+    admin = _admin(monkeypatch)
+    _create(admin)
+    _pool(admin)
+    first, _ = _respondent("Прохожий")
+    _answer(first, interest=2, comment="первая мысль")
+    again, _ = _respondent("Прохожий")
+    _answer(again, interest=5, comment="вторая мысль")
+
+    res = admin.get("/api/survey/results").json()["items"][0]
+    assert res["raters"] == 1                    # голос один
+    assert res["interest"]["average"] == 5.0     # последний
+    assert res["commentsN"] == 2
+    assert [c["text"] for c in res["comments"]] == ["первая мысль", "вторая мысль"]
+    assert {c["author"] for c in res["comments"]} == {"anonymous:Прохожий"}
+
+
+def test_open_answer_length_limit(monkeypatch):
+    admin = _admin(monkeypatch)
+    _create(admin)
+    _pool(admin)
+    client, _ = _respondent()
+    assert _answer(client, interest=3, comment="x" * 1000).status_code == 200
+    assert _answer(client, interest=3, comment="x" * 1001).status_code == 400
+
+
+def test_open_answer_missing_key_keeps_it_empty_string_deletes(monkeypatch):
+    """Семантика тегов: ключа нет — не трогать, `""` — стереть."""
+    admin = _admin(monkeypatch)
+    _create(admin)
+    _pool(admin)
+    client, _ = _respondent()
+
+    _answer(client, interest=3, comment="черновик мысли")
+    assert admin.get("/api/survey/results").json()["items"][0]["commentsN"] == 1
+
+    _answer(client, interest=3)
+    assert admin.get("/api/survey/results").json()["items"][0]["commentsN"] == 1
+
+    _answer(client, interest=3, comment="")
+    assert admin.get("/api/survey/results").json()["items"][0]["commentsN"] == 0
+
+
+def test_comment_without_a_single_rating_is_refused(monkeypatch):
+    """Карточка оценивается целиком: одинокий текст не дал бы ни строки в
+    сводку. Отказ полный — не пишется и он сам."""
+    admin = _admin(monkeypatch)
+    _create(admin)
+    _pool(admin)
+    client, _ = _respondent()
+    assert _answer(client, comment="только текст").status_code == 400
+    conn = db.get_connection()
+    assert conn.execute("SELECT COUNT(*) FROM survey_answers").fetchone()[0] == 0
+
+
+def test_a_commented_remark_is_not_served_again(monkeypatch):
+    """Открытый ответ — тоже ответ: замечание с ним из раздачи уходит."""
+    admin = _admin(monkeypatch)
+    _create(admin)
+    _pool(admin)
+    client, _ = _respondent("Прохожий")
+    _answer(client, interest=3, comment="сказано")
+    again, _ = _respondent("Прохожий")
+    assert again.get("/api/survey/batch").json()["remaining"] == 0
+
+
+# --- хвост пула ------------------------------------------------------------
+
+def test_tail_flag_when_remainder_fits_a_batch(monkeypatch):
+    """`tail` означает «это весь непросмотренный остаток» — опросник говорит
+    человеку, что дальше ничего нет, вместо бодрого «оценить ещё десять»."""
+    admin = _admin(monkeypatch)
+    for n in range(3):
+        _create(admin, f"r-{n}")
+        _pool(admin, f"r-{n}")
+    client, _ = _respondent()
+    batch = client.get("/api/survey/batch").json()
+    assert batch["tail"] is True
+    assert len(batch["items"]) == 3 and batch["remaining"] == 3
+
+    for item in batch["items"]:
+        _answer(client, item["remarkId"], interest=3)
+    done = client.get("/api/survey/batch").json()
+    assert done["items"] == [] and done["remaining"] == 0 and done["tail"] is True
+
+
+def test_no_tail_flag_while_the_pool_is_deep(monkeypatch):
+    admin = _admin(monkeypatch)
+    for n in range(12):
+        _create(admin, f"r-{n}")
+        _pool(admin, f"r-{n}")
+    client, _ = _respondent()
+    batch = client.get("/api/survey/batch").json()
+    assert batch["tail"] is False
+    assert len(batch["items"]) == 10 and batch["remaining"] == 12
