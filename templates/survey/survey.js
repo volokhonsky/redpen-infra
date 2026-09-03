@@ -100,6 +100,13 @@
     return base.replace(/\/$/, '') + path;
   }
 
+  // Отказ fetch без ответа сервера. Текст не утверждает, что у человека нет
+  // связи: так же выглядят обрыв соединения при переключении сотовой сети,
+  // блокировка поддомена api.medinsky.net расширением или DNS провайдера.
+  var NETWORK_ERROR = 'Запрос не дошёл до сервера — попробуйте ещё раз. ' +
+    'Если повторяется, запросы к api.medinsky.net может блокировать ' +
+    'расширение браузера или DNS провайдера.';
+
   async function api(method, path, body) {
     var options = { method: method, headers: {} };
     if (state.token) options.headers['X-Survey-Token'] = state.token;
@@ -111,7 +118,17 @@
     try {
       response = await fetch(apiBase(path), options);
     } catch (e) {
-      throw new Error('Нет связи с сервером. Проверьте соединение.');
+      // Одна икота мобильной сети не должна стоить человеку ответа. Повтор
+      // только для GET и PUT: они идемпотентны, повторить их безопасно.
+      // POST /api/survey/session так повторять нельзя — если первый запрос
+      // всё-таки дошёл, а потерялся ответ, повтор заведёт лишний заход.
+      if (method !== 'GET' && method !== 'PUT') throw new Error(NETWORK_ERROR);
+      await new Promise(function (resolve) { setTimeout(resolve, 1200); });
+      try {
+        response = await fetch(apiBase(path), options);
+      } catch (e2) {
+        throw new Error(NETWORK_ERROR);
+      }
     }
     var data = null;
     try { data = await response.json(); } catch (e) { /* пустой ответ — тоже ответ */ }
@@ -237,6 +254,10 @@
   async function submitAndAdvance(save) {
     var item = state.items[state.index];
     if (!item) return;
+    // Строка состояния гаснет только при смене экрана (см. show), а переход
+    // от замечания к замечанию экран не меняет: без этой строчки сообщение об
+    // ошибке висело бы над карточкой, ответ по которой уже ушёл нормально.
+    setStatus('');
     if (save) {
       var scaleNames = valueQuestions().map(function (q) { return q.name; });
       var hasScale = scaleNames.some(function (n) { return state.answers[n] != null; });
@@ -325,6 +346,7 @@
       });
     });
     el('sv-intro-start').addEventListener('click', function () {
+      setStatus('');
       startBatch().catch(function (e) { setStatus(e.message, true); });
     });
     el('sv-scales').addEventListener('click', function (event) {
@@ -357,6 +379,7 @@
       submitAndAdvance(false).catch(function (e) { setStatus(e.message, true); });
     });
     el('sv-more').addEventListener('click', function () {
+      setStatus('');
       fetchBatch().then(startBatch).catch(function (e) { setStatus(e.message, true); });
     });
     window.addEventListener('resize', function () {
