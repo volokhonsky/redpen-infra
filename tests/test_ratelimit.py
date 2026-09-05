@@ -122,10 +122,13 @@ def strict(monkeypatch):
 
 
 def test_api_answers_429_after_the_burst(strict):
-    codes = [strict.get("/api/hello").status_code for _ in range(5)]
-    assert codes[:3] == [200, 200, 200]
+    # Маршрут взят любой из общего ведра: важен не его ответ, а то, что первые
+    # три запроса до него доходят, а следующие — нет. (Раньше пробным был
+    # /api/hello, удалённый вместе с остальным инбоксом этапа 0.)
+    codes = [strict.get("/api/tags").status_code for _ in range(5)]
+    assert 429 not in codes[:3]
     assert 429 in codes
-    response = strict.get("/api/hello")
+    response = strict.get("/api/tags")
     assert response.status_code == 429
     assert response.headers.get("Retry-After") == "60"
 

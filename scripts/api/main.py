@@ -38,7 +38,6 @@ import publisher
 import rating_scales
 import remark_actions
 import ratelimit
-import storage
 
 
 def _set_session_cookie(response: Response, session_id: str) -> None:
@@ -145,7 +144,8 @@ _startup_publish_thread: Optional[threading.Thread] = None
 @app.on_event("startup")
 async def on_startup() -> None:
     db.init_db()
-    logger.info("service started LOG_LEVEL=%s storage_dir=%s db_path=%s", config.LOG_LEVEL, config.STORAGE_DIR, config.DB_PATH)
+    logger.info("service started LOG_LEVEL=%s db_path=%s publish_dir=%s",
+                config.LOG_LEVEL, config.DB_PATH, config.PUBLISH_DIR or "-")
 
     # Self-heal the published static volume (e.g. after a fresh/recreated
     # container): republish everything already in the DB.
@@ -796,162 +796,6 @@ def admin_publish_all(user: Dict[str, Any] = Depends(require_admin_csrf)):
     logger.info("admin: publish-all pages=%d failed=%d by=%s",
                 result["pages"], result["failed"], user["userId"])
     return result
-
-
-# ===== Инбокс этапа 0: /api/hello, /api/store-raw, /api/store =====
-#
-# ВНИМАНИЕ: клиентов нет. Ни просмотрщик, ни /work/, ни content-sync
-# к этим трём эндпоинтам не обращаются — они остались от этапа 0, когда правки
-# складывались в файлы инбокса до появления SQLite-канона. Вместе с ними жив
-# модуль scripts/api/storage.py, существующий только ради них. Оставлены
-# намеренно (решение 2026-08-30), но работающей частью системы не являются.
-
-
-@app.get("/api/hello")
-def hello():
-    # Minimal Hello endpoint for local smoke tests
-    now = datetime.now().isoformat()
-    version = "local-dev"
-    return {"message": "Hello, RedPen!", "version": version, "now": now}
-
-
-@app.post("/api/store-raw")
-async def store_raw(request: Request, user: Dict[str, str] = Depends(require_editor)):
-    # New endpoint that supports optional bucket/pageId and enhanced response
-    try:
-        body_any: Any = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="body must be a JSON object")
-    if not isinstance(body_any, dict):
-        raise HTTPException(status_code=400, detail="body must be a JSON object")
-
-    # Extract optional fields
-    raw_bucket = body_any.get("bucket") if isinstance(body_any.get("bucket"), str) else None
-    page_id = body_any.get("pageId") if isinstance(body_any.get("pageId"), str) else None
-
-    # Decide sanitization mode and candidate
-    bucket = None
-    if raw_bucket:
-        cand = raw_bucket
-        bucket = storage.sanitize_bucket(cand, for_page_id=False)
-    elif page_id:
-        cand = page_id
-        bucket = storage.sanitize_bucket(cand, for_page_id=True)
-
-    if not bucket:
-        bucket = None
-
-    # Prepare payload with metadata
-    received_at = datetime.utcnow().isoformat()
-    remote_addr: Optional[str] = None
-    try:
-        client = request.client
-        if client:
-            remote_addr = client.host
-    except Exception:
-        remote_addr = None
-
-    payload = {
-        "body": body_any,
-        "receivedAt": received_at,
-        "remoteAddr": remote_addr,
-    }
-
-    # Precompute size
-    data_str = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    data_size = len(data_str.encode("utf-8"))
-
-    # Generate id and write atomically to final dir
-    uid = uuid4().hex
-    filename = f"{uid}.json"
-    try:
-        rel_path = storage.save_inbox(payload, bucket=bucket, filename=filename)
-    except Exception:
-        logger.exception("failed to store incoming payload")
-        raise HTTPException(status_code=500, detail="failed to store")
-
-    # dateDir is the YYYYMMDD component
-    parts = rel_path.split("/")
-    date_dir = parts[1] if len(parts) >= 3 else None
-
-    # Logging
-    logger.info("stored file=%s size=%d bucket=%s", rel_path, data_size, bucket or "-")
-
-    return {
-        "stored": True,
-        "id": uid,
-        "dateDir": date_dir,
-        "bucket": bucket if bucket else None,
-        "relPath": rel_path,
-        "size": data_size,
-    }
-
-
-@app.post("/api/store")
-async def store(request: Request, user: Dict[str, str] = Depends(require_editor)):
-    try:
-        body: Any = await request.json()
-    except Exception:
-        # Not a valid JSON
-        raise HTTPException(status_code=400, detail="body must be a JSON object")
-
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="body must be a JSON object")
-
-    received_at = datetime.now().isoformat()
-    remote_addr = None
-    try:
-        client = request.client
-        if client:
-            remote_addr = client.host
-    except Exception:
-        remote_addr = None
-
-    payload = {
-        "body": body,
-        "receivedAt": received_at,
-        "remoteAddr": remote_addr,
-    }
-
-    # Precompute size using same serialization options as storage
-    data_str = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    data_size = len(data_str.encode("utf-8"))
-
-    try:
-        rel_path = storage.save_inbox(payload)
-    except Exception:
-        logger.exception("failed to store incoming payload")
-        raise HTTPException(status_code=500, detail="failed to store")
-
-    logger.info("stored file=%s size=%d", rel_path, data_size)
-    return {"status": "stored", "path": rel_path}
-
-@app.get("/api/pages/{pageId}")
-def get_page(pageId: str):
-    """GET page data by pageId (legacy endpoint, for backwards compatibility).
-    Rendered from the SQLite remarks store (stage 2); imageUrl/origW/origH
-    were never populated by this endpoint and remain placeholders."""
-    # pageId format: "medinsky11klass_page_006"
-    parts = pageId.rsplit("_page_", 1)
-    if len(parts) != 2:
-        raise HTTPException(status_code=400, detail="invalid pageId format")
-
-    doc_id, page_num_raw = parts
-    page_num = _validate_page_key(page_num_raw)
-    if page_num is None:
-        raise HTTPException(status_code=400, detail="invalid pageId format")
-    rendered = publisher.render_page(doc_id, page_num)
-    sha = publisher.compute_page_sha(rendered)
-
-    logger.info("GET pageId=%s anns=%d", pageId, len(rendered))
-    return {
-        "pageId": pageId,
-        "imageUrl": "",
-        "origW": 0,
-        "origH": 0,
-        "serverPageSha": sha,
-        "remarks": rendered,
-    }
 
 
 def _validate_doc_id(doc_id: str) -> bool:

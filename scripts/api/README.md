@@ -1,8 +1,8 @@
 # RedPen API
 
-FastAPI-сервис для хранения входящих данных и редактирования замечаний.
+FastAPI-сервис для редактирования замечаний.
 Каноническая реализация: `scripts/api` (`main.py`, `db.py`, `publisher.py`,
-`storage.py`, `config.py`).
+`config.py`).
 
 С этапа 2 замечания редактора хранятся в SQLite (`db.py`, таблицы
 `remarks`/`remark_history`), а не в файлах. При каждой мутации
@@ -17,22 +17,20 @@ FastAPI-сервис для хранения входящих данных и р
 nginx (301), сам каталог удалён в фазе 6 переименования 2026-08-30.
 Оглавление и `sitemap.xml` перерисовываются только полной сборкой.
 
-`storage.py` отвечает только за inbox
-(`/api/store*`); CLI `import_remarks.py`/`export_remarks.py`
-переносят данные между файлами и БД (см. ниже).
+CLI `import_remarks.py`/`export_remarks.py` переносят данные между файлами и
+БД (см. ниже).
 
 ## Конфигурация (переменные окружения)
 
 | Переменная | Значение по умолчанию | Назначение |
 |---|---|---|
-| `STORAGE_DIR` | `/data` | Корень для inbox: `inbox/…` (`/api/store*`) |
 | `LOG_DIR` | `/app/logs` | Каталог для файла лога `redpen-api.log` |
 | `LOG_LEVEL` | `INFO` | Уровень логирования |
 | `CORS_ALLOW_ORIGINS` | `_` (→ `*`) | Список origin через запятую; `_`/`*` = разрешить все |
 | `AGENT_TOKENS` | (пусто) | Токены входа агентов: `token1:agent1,token2:agent2`. Пусто = вход по токену отключён. `EDITOR_TOKENS` — прежнее имя, читается для совместимости |
-| `DB_PATH` | `/var/redpen-db/redpen.db` | SQLite-файл: users/sessions/invites + remarks/remark_history/remark_tags/remark_ratings/remark_notes/sections/agent_runs + rating_pool/survey_respondents/survey_sessions/survey_answers. Не должен лежать в `STORAGE_DIR` |
+| `DB_PATH` | `/var/redpen-db/redpen.db` | SQLite-файл: users/sessions/invites + remarks/remark_history/remark_tags/remark_ratings/remark_notes/sections/agent_runs + rating_pool/survey_respondents/survey_sessions/survey_answers. Не должен лежать в `PUBLISH_DIR`: это рабочая копия публикуемого репозитория |
 | `RATE_LIMIT_PER_MINUTE` / `RATE_LIMIT_BURST` | `240` / `60` | Общее ведро для `/api/*` (кроме `/api/health`) |
-| `RATE_LIMIT_AUTH_PER_MINUTE` / `RATE_LIMIT_AUTH_BURST` | `12` / `6` | Жёсткое ведро для входа и записи опроса: `/api/auth/google`, `/api/auth/login`, `/api/survey/session`, `/api/survey/ratings` |
+| `RATE_LIMIT_AUTH_PER_MINUTE` / `RATE_LIMIT_AUTH_BURST` | `12` / `6` | Жёсткое ведро для входа и опроса: `/api/auth/google`, `/api/auth/login`, `/api/survey/session`, `/api/survey/ratings`, `/api/survey/batch` |
 | `PUBLISH_DIR` | (пусто) | Куда `publisher.py` пишет `<docId>/remarks/page_NNN.json`. Пусто = публикация отключена (тесты, dev без volume) |
 | `GOOGLE_CLIENT_ID` | (пусто) | OAuth client id для верификации Google ID-token. Пусто = `POST /api/auth/google` отвечает 503 |
 | `IDENTITY_PEPPER` | (пусто) | **Обязателен.** Перец для `HMAC(перец, google_sub)`. Пусто = `POST /api/auth/google` отвечает 503. Только в `.env.secrets`, никогда в git и в БД — см. `docs/anonymity-model.md` |
@@ -49,12 +47,12 @@ nginx (301), сам каталог удалён в фазе 6 переимено
 ```bash
 pip install -r scripts/api/requirements-api.txt
 cd scripts/api
-STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слушает :8080
+LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слушает :8080
 ```
 
 Через Docker Compose (сервис `api`, за прокси Caddy) — см. `docker-compose.yml`
-и корневой `.env`. Данные хранятся в volume `redpen_data`, примонтированном к
-`/var/redpen-data` (или к `STORAGE_DIR`).
+и корневой `.env`. Канон замечаний — SQLite по `DB_PATH` (том `redpen_db`);
+статика пишется в `PUBLISH_DIR` (том `redpen_public`).
 
 ## Эндпоинты
 
@@ -63,29 +61,16 @@ STORAGE_DIR=./.data LOG_DIR=./.logs LOG_LEVEL=INFO python main.py   # слуша
 > нужен. ⛔ = требует роль `admin` (⛔🔒 дополнительно требует CSRF).
 > Роли: `viewer < editor < admin` — см. раздел «Роли» ниже.
 >
-> **Публичны только** `GET /api/health`, `GET /api/hello`,
-> `GET /api/pages/{pageId}` и `GET /api/editor/{docId}/{pageNum}` (последний
-> отдаёт черновики лишь редакторской сессии). Всё остальное чтение —
+> **Публичны только** `GET /api/health` и `GET /api/editor/{docId}/{pageNum}`
+> (последний отдаёт черновики лишь редакторской сессии). Всё остальное чтение —
 > редакторское: до 2026-08-31 легенда обещала обратное, и это была ошибка
-> описания, а не кода.
+> описания, а не кода. `GET /api/hello` и `GET /api/pages/{pageId}` удалены
+> 2026-09-05 вместе с инбоксом этапа 0.
 
 Служебные:
 - `GET /api/health` → `{"status":"ok"}`
-- `GET /api/hello` → `{message, version, now}` (smoke-тест)
 - ⛔ `GET /logs` → HTML-просмотр лога; ⛔ `GET /api/logs?lines=N` → JSON
-
-Приём данных (inbox). **Клиентов нет:** это наследие этапа 0, когда правки
-складывались в файлы до появления SQLite-канона. Ни просмотрщик, ни `/work/`,
-ни content-sync сюда не обращаются; вместе с ними жив только ради
-них модуль `storage.py`. Оставлены намеренно (решение 2026-08-30).
-- 🔒 `POST /api/store` — сохраняет JSON-объект в `${STORAGE_DIR}/inbox/YYYYMMDD/<uuid>.json`.
-  Ответ: `{"status":"stored","path":"inbox/YYYYMMDD/<uuid>.json"}`.
-- 🔒 `POST /api/store-raw` — то же, плюс необязательные поля `bucket` и `pageId`.
-  Путь: `${STORAGE_DIR}/inbox/YYYYMMDD[/bucket]/<uuid>.json`. Значение
-  очищается (`sanitize_bucket`: только `[a-z0-9/_-]`, пробелы → `-`; для
-  `pageId` дополнительно `:` и `.` → `-`; максимум 3 сегмента, 120 символов).
-  При наличии обоих полей приоритет у `bucket`. Ответ содержит
-  `{stored,id,dateDir,bucket,relPath,size}`.
+  (`lines` — 1..5000; читается хвост файла, а не файл целиком)
 
 Редактор замечаний (канон — таблица `remarks` в `DB_PATH`; каждая мутация
 республикует голый массив в `${PUBLISH_DIR}/<docId>/remarks/page_NNN.json`):
@@ -358,8 +343,6 @@ curl -s http://localhost:8080/api/editor/medinsky11klass/7   # чтение, б�
 curl -s -c /tmp/redpen.cookies -X POST http://localhost:8080/api/auth/login \
   -H 'Content-Type: application/json' -d '{"token":"<значение из EDITOR_TOKENS>"}'
 CSRF=$(curl -s -b /tmp/redpen.cookies http://localhost:8080/api/auth/csrf | python3 -c 'import sys,json;print(json.load(sys.stdin)["csrfToken"])')
-curl -s -b /tmp/redpen.cookies -X POST http://localhost:8080/api/store \
-  -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d '{"hello":"world"}'
 curl -s -b /tmp/redpen.cookies -X POST http://localhost:8080/api/editor/medinsky11klass/7 \
   -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" \
   -d '{"kind":"minor","text":"Текст","coords":[100,200]}'

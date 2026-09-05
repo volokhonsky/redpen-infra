@@ -85,81 +85,6 @@ def test_health(client):
     assert r.json() == {"status": "ok"}
 
 
-def test_hello(client):
-    r = client.get("/api/hello")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["message"] == "Hello, RedPen!"
-    assert "version" in body and "now" in body
-
-
-# ---------------------------------------------------------------------------
-# /api/store
-# ---------------------------------------------------------------------------
-
-def test_store_valid_object(client):
-    r = client.post("/api/store", json={"foo": 1})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["status"] == "stored"
-    assert body["path"].startswith("inbox/")
-
-
-def test_store_rejects_non_object(client):
-    r = client.post("/api/store", json=[1, 2, 3])
-    assert r.status_code == 400
-
-
-def test_store_rejects_invalid_json(client):
-    r = client.post(
-        "/api/store",
-        content="not-json",
-        headers={"Content-Type": "application/json"},
-    )
-    assert r.status_code == 400
-
-
-# ---------------------------------------------------------------------------
-# /api/store-raw (bucket / pageId sanitization)
-# ---------------------------------------------------------------------------
-
-def test_store_raw_without_bucket(client):
-    r = client.post("/api/store-raw", json={"foo": 1})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["stored"] is True
-    assert body["bucket"] is None
-    assert body["relPath"] == f"inbox/{body['dateDir']}/{body['id']}.json"
-
-
-def test_store_raw_with_bucket_is_sanitized(client):
-    r = client.post("/api/store-raw", json={"bucket": "Editor Drafts", "msg": "hi"})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["bucket"] == "editor-drafts"
-    assert "/editor-drafts/" in body["relPath"]
-
-
-def test_store_raw_with_page_id_is_sanitized(client):
-    r = client.post(
-        "/api/store-raw",
-        json={"pageId": "book:medinsky11klass/page.007", "text": "ok"},
-    )
-    assert r.status_code == 200
-    body = r.json()
-    # ':' and '.' become '-' for pageId-derived buckets
-    assert body["bucket"] == "book-medinsky11klass/page-007"
-
-
-def test_store_raw_bucket_takes_priority_over_page_id(client):
-    r = client.post(
-        "/api/store-raw",
-        json={"bucket": "drafts", "pageId": "should-be-ignored", "x": 1},
-    )
-    assert r.status_code == 200
-    assert r.json()["bucket"] == "drafts"
-
-
 # ---------------------------------------------------------------------------
 # /api/editor GET + validation
 # ---------------------------------------------------------------------------
@@ -480,18 +405,6 @@ def test_csrf_endpoint_requires_session():
     assert r.status_code == 401
 
 
-def test_anonymous_store_is_rejected():
-    anon = TestClient(main.app)
-    r = anon.post("/api/store", json={"foo": 1})
-    assert r.status_code == 401
-
-
-def test_anonymous_store_raw_is_rejected():
-    anon = TestClient(main.app)
-    r = anon.post("/api/store-raw", json={"foo": 1})
-    assert r.status_code == 401
-
-
 def test_anonymous_logs_page_is_rejected():
     anon = TestClient(main.app)
     assert anon.get("/logs").status_code == 401
@@ -501,12 +414,6 @@ def test_anonymous_logs_page_is_rejected():
 def test_get_editor_page_remains_public():
     anon = TestClient(main.app)
     r = anon.get("/api/editor/medinsky11klass/32")
-    assert r.status_code == 200
-
-
-def test_get_legacy_pages_remains_public():
-    anon = TestClient(main.app)
-    r = anon.get("/api/pages/medinsky11klass_page_032")
     assert r.status_code == 200
 
 

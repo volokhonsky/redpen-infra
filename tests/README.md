@@ -19,7 +19,6 @@ pytest            # из корня репозитория; конфиг в pyte
 | Файл | Что покрывает |
 |---|---|
 | `test_remark_converter.py` | Конвертация Markdown ↔ JSON (`scripts/remark_converter.py`), round-trip |
-| `test_sanitize_bucket.py` | Санитизация bucket/pageId (`scripts/api/storage.py`) |
 | `test_db.py` | Users/sessions/allowlist в SQLite (`scripts/api/db.py`, стадия 1) |
 | `test_remarks_db.py` | Таблицы `remarks`/`remark_history` в SQLite (`scripts/api/db.py`, стадия 2) |
 | `test_publisher.py` | Рендер БД → голый массив, sha, запись `page_NNN.json` (`scripts/api/publisher.py`) |

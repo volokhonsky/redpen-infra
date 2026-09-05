@@ -39,7 +39,6 @@ services:
     env_file:
       - .env.secrets
     environment:
-      - STORAGE_DIR=/var/redpen-data
       - LOG_LEVEL=${LOG_LEVEL}
       - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS}
       - DB_PATH=/var/redpen-db/redpen.db
@@ -58,7 +57,6 @@ services:
       - MATOMO_EXPORT_STATE=/var/redpen-stats/matomo_export.json
       - DOMAIN=${DOMAIN}
     volumes:
-      - ./redpen-publish:/var/redpen-data:rw
       - ./redpen-content:/app/redpen-content:rw
       - redpen_db:/var/redpen-db
       - redpen_public:/srv/public

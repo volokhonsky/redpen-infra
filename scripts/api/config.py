@@ -2,7 +2,6 @@ import os
 from typing import Dict, List, Union
 
 # Defaults per spec
-DEFAULT_STORAGE_DIR = "/data"
 DEFAULT_LOG_LEVEL = "INFO"
 # Special handling for CORS: env default is "_" which we treat as wildcard "*"
 DEFAULT_CORS_ENV = "_"
@@ -63,7 +62,6 @@ def _parse_cors_origins(value: str) -> Union[List[str], List[str]]:
 DEFAULT_LOG_DIR = "/app/logs"
 
 # Public config values
-STORAGE_DIR: str = os.getenv("STORAGE_DIR", DEFAULT_STORAGE_DIR)
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", DEFAULT_LOG_LEVEL).upper()
 LOG_DIR: str = os.getenv("LOG_DIR", DEFAULT_LOG_DIR)
 CORS_ALLOW_ORIGINS_RAW: str = os.getenv("CORS_ALLOW_ORIGINS", DEFAULT_CORS_ENV)
@@ -81,7 +79,7 @@ AGENT_TOKENS: Dict[str, str] = _parse_editor_tokens(
 EDITOR_TOKENS: Dict[str, str] = AGENT_TOKENS
 
 # SQLite database for users/sessions/allowlist (stage 1). Deliberately NOT
-# under STORAGE_DIR: that path is the mounted redpen-publish working copy, and
+# under PUBLISH_DIR: that path is the mounted redpen-publish working copy, and
 # the DB file must not end up inside the publication git repo.
 DEFAULT_DB_PATH = "/var/redpen-db/redpen.db"
 DB_PATH: str = os.getenv("DB_PATH", DEFAULT_DB_PATH)
