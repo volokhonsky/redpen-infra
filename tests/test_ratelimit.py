@@ -54,16 +54,60 @@ def test_memory_does_not_grow_without_bound():
     assert len(bucket._buckets) <= bucket.MAX_KEYS + 1
 
 
-def test_client_key_prefers_the_proxy_header():
-    class Req:
-        headers = {"x-forwarded-for": "203.0.113.7, 10.0.0.1"}
-        client = type("C", (), {"host": "10.0.0.1"})()
-    assert ratelimit.client_key(Req()) == "203.0.113.7"
+def _req(headers, host="10.0.0.1"):
+    return type("Req", (), {
+        "headers": headers,
+        "client": type("C", (), {"host": host})(),
+    })()
 
-    class Direct:
-        headers = {}
-        client = type("C", (), {"host": "198.51.100.4"})()
-    assert ratelimit.client_key(Direct()) == "198.51.100.4"
+
+def test_client_key_takes_the_address_the_proxy_appended():
+    # Наш прокси дописывает адрес соединения В КОНЕЦ, поэтому ключ — последний
+    # элемент. Всё, что стоит перед ним, прислал сам клиент.
+    assert ratelimit.client_key(
+        _req({"x-forwarded-for": "203.0.113.7, 198.51.100.4"})) == "198.51.100.4"
+    assert ratelimit.client_key(
+        _req({"x-forwarded-for": "198.51.100.4"})) == "198.51.100.4"
+
+
+def test_client_key_falls_back_to_the_connection():
+    assert ratelimit.client_key(_req({}, host="198.51.100.4")) == "198.51.100.4"
+    # Пустой или мусорный заголовок не должен давать пустой ключ, общий для всех.
+    assert ratelimit.client_key(_req({"x-forwarded-for": "  "},
+                                     host="198.51.100.4")) == "198.51.100.4"
+    assert ratelimit.client_key(_req({"x-forwarded-for": "1.2.3.4,  "},
+                                     host="198.51.100.4")) == "198.51.100.4"
+
+
+def test_a_forged_header_does_not_buy_a_fresh_bucket():
+    """Главная проверка: подделанный заголовок не снимает предел.
+
+    До 2026-09-05 ключом был первый элемент, и такой обстрел не встречал
+    предела вовсе — каждый запрос получал новое полное ведро.
+    """
+    bucket = ratelimit.TokenBucket(rate_per_minute=60, burst=2)
+    verdicts = [
+        bucket.allow(ratelimit.client_key(
+            _req({"x-forwarded-for": f"10.1.1.{i}, 198.51.100.4"})), now=0.0)
+        for i in range(5)
+    ]
+    assert verdicts == [True, True, False, False, False]
+
+
+def test_eviction_keeps_the_buckets_that_are_being_spent():
+    """Переполнение не должно возвращать полный запас токенов заливающим.
+
+    Прежняя версия при нехватке места очищала словарь целиком — то есть
+    снимала ограничение ровно во время залива."""
+    bucket = ratelimit.TokenBucket(rate_per_minute=6, burst=1)
+    bucket.MAX_KEYS = 10
+    assert bucket.allow("активный", now=1000.0) is True
+    # Залив с меняющихся ключей вперемешку с запросами того, кто уже отбит.
+    for i in range(200):
+        now = 1000.0 + i * 0.001
+        bucket.allow(f"залив-{i}", now=now)
+        assert bucket.allow("активный", now=now) is False
+    assert len(bucket._buckets) <= bucket.MAX_KEYS
 
 
 # --- поведение API ------------------------------------------------------
