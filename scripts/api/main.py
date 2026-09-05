@@ -1,6 +1,9 @@
+import hashlib
 import json
 import logging
+import logging.handlers
 import sys
+import threading
 import time
 import secrets
 from uuid import uuid4
@@ -60,6 +63,11 @@ def verify_google_token(credential: str) -> Dict[str, Any]:
 # Absolute path of the log file, derived from the configurable log directory.
 LOG_FILE = os.path.join(config.LOG_DIR, "redpen-api.log")
 
+#: Предел на файл лога и число хранимых предыдущих файлов. Итого не больше
+#: LOG_MAX_BYTES * (LOG_BACKUP_COUNT + 1).
+LOG_MAX_BYTES = 20 * 1024 * 1024
+LOG_BACKUP_COUNT = 3
+
 
 def setup_logger() -> logging.Logger:
     logger = logging.getLogger("redpen.api")
@@ -75,8 +83,15 @@ def setup_logger() -> logging.Logger:
         console_handler.setFormatter(console_fmt)
         logger.addHandler(console_handler)
         
-        # File handler (logs/redpen-api.log)
-        file_handler = logging.FileHandler(LOG_FILE)
+        # File handler (logs/redpen-api.log).
+        #
+        # Ротация обязательна, и по причине из этой же работы: лог лежит не в
+        # томе, а в слое контейнера, то есть занимает диск хоста, и ничто его
+        # не чистит. Обычный FileHandler рос вечно — а под заливом растёт
+        # ровно так же быстро, как идёт залив.
+        file_handler = logging.handlers.RotatingFileHandler(
+            LOG_FILE, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8")
         file_fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s", "%Y-%m-%dT%H:%M:%S%z")
         file_handler.setFormatter(file_fmt)
         logger.addHandler(file_handler)
@@ -341,20 +356,44 @@ def _parse_remark_body(body: Dict[str, Any]) -> Dict[str, Any]:
 
 # ===== LOG VIEWER ENDPOINTS =====
 
+#: Сколько строк с конца лога показывает страница просмотра и сколько
+#: разрешено запросить у /api/logs. Верхний предел нужен, потому что файл
+#: ротируемый, но всё же крупный: до 2026-09-05 обе ручки читали его целиком.
+LOG_PAGE_LINES = 500
+MAX_LOG_LINES = 5000
+
+
+def tail_lines(path: str, count: int) -> List[str]:
+    """Последние `count` строк файла, не читая его целиком.
+
+    Файл читается с конца кусками, пока не наберётся нужное число переводов
+    строки. Прежняя версия делала `readlines()` ради последней сотни строк —
+    то есть держала в памяти весь лог."""
+    if not os.path.exists(path) or count <= 0:
+        return []
+    chunk = 64 * 1024
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        end = f.tell()
+        data = b""
+        while end > 0 and data.count(b"\n") <= count:
+            step = min(chunk, end)
+            end -= step
+            f.seek(end)
+            data = f.read(step) + data
+    text = data.decode("utf-8", errors="replace")
+    return text.splitlines()[-count:]
+
+
 @app.get("/logs")
 async def logs_page(request: Request, user: Dict[str, str] = Depends(require_admin)):
     """Serve logs viewer page"""
     try:
-        log_file = LOG_FILE
         logs_data = []
 
-        if os.path.exists(log_file):
-            with open(log_file, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-
-            for line in lines[-500:]:
-                if line.strip():
-                    logs_data.append(parse_log_line(line))
+        for line in tail_lines(LOG_FILE, LOG_PAGE_LINES):
+            if line.strip():
+                logs_data.append(parse_log_line(line))
 
         return templates.TemplateResponse("logs.html", {
             "request": request,
@@ -369,20 +408,21 @@ async def logs_page(request: Request, user: Dict[str, str] = Depends(require_adm
 @app.get("/api/logs")
 async def get_logs_json(lines: int = 100, user: Dict[str, str] = Depends(require_admin)):
     """Return logs as JSON"""
+    if lines < 1 or lines > MAX_LOG_LINES:
+        raise HTTPException(status_code=400,
+                            detail=f"lines must be between 1 and {MAX_LOG_LINES}")
     try:
-        log_file = LOG_FILE
         logs_data = []
-
-        if os.path.exists(log_file):
-            with open(log_file, "r", encoding="utf-8") as f:
-                all_lines = f.readlines()
-
-            for line in all_lines[-lines:]:
-                if line.strip():
-                    logs_data.append(parse_log_line(line))
+        tail = tail_lines(LOG_FILE, lines)
+        for line in tail:
+            if line.strip():
+                logs_data.append(parse_log_line(line))
 
         return {
-            "total_lines": len(all_lines) if os.path.exists(log_file) else 0,
+            # `total_lines` раньше означало «сколько строк в файле», и ради
+            # этого числа файл читался целиком. Теперь — сколько строк
+            # прочитано с конца.
+            "total_lines": len(tail),
             "returned_lines": len(logs_data),
             "logs": logs_data
         }
@@ -402,23 +442,88 @@ _rate_general = ratelimit.TokenBucket(config.RATE_LIMIT_PER_MINUTE, config.RATE_
 _rate_auth = ratelimit.TokenBucket(config.RATE_LIMIT_AUTH_PER_MINUTE, config.RATE_LIMIT_AUTH_BURST)
 
 
+def _limit_key(request: Request, path: str) -> str:
+    """Ключ ведра: адрес клиента, а для опроса — заход.
+
+    Опрос — единственный анонимный путь записи, и адрес для него плохой ключ в
+    обе стороны. Школьный класс за общим NAT — это один адрес на тридцать
+    человек, и один отвечающий отбивал бы остальных. Наоборот, один заход,
+    меняющий адрес, получал бы новое ведро на каждую смену. Поэтому там, где
+    заход назван, считаем по нему.
+
+    Токен в ключ не кладётся: у ведра свой словарь, и хранить в нём секреты
+    незачем. Кладётся хеш."""
+    if path.startswith("/api/survey/"):
+        token = request.headers.get("X-Survey-Token")
+        if token:
+            digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:32]
+            return f"survey:{digest}"
+    return ratelimit.client_key(request)
+
+
+#: Отбитые запросы считаются, а не пишутся по строке на каждый: строка на
+#: каждый отбитый запрос превращала защиту в ускоритель заполнения диска —
+#: чем сильнее залив, тем быстрее кончается место. В журнал идёт сводка, и не
+#: чаще раза в минуту.
+_REFUSED_REPORT_INTERVAL = 60.0
+_refused_lock = threading.Lock()
+_refused: Dict[str, Any] = {"count": 0, "keys": set(), "since": None}
+
+
+def _note_refusal(key: str, path: str) -> None:
+    """Учесть отбитый запрос; изредка — сводкой в журнал."""
+    now = time.monotonic()
+    report = None
+    with _refused_lock:
+        if _refused["since"] is None:
+            _refused["since"] = now
+        _refused["count"] += 1
+        _refused["keys"].add(key)
+        if now - _refused["since"] >= _REFUSED_REPORT_INTERVAL:
+            report = (_refused["count"], len(_refused["keys"]),
+                      now - _refused["since"])
+            _refused.update({"count": 0, "keys": set(), "since": now})
+    if report:
+        logger.warning("rate limit: отбито %d запросов с %d адресов за %.0f с",
+                       *report)
+
+
+def _too_many_requests(request: Request) -> JSONResponse:
+    """429 со своими заголовками CORS.
+
+    Заголовки проставляются здесь, потому что этот middleware обёрнут вокруг
+    CORSMiddleware и до него ответ не доходит. Без них браузер показывает
+    отказ как «нет связи с сервером», а не как «слишком часто»."""
+    headers = {"Retry-After": "60"}
+    origin = request.headers.get("origin")
+    allowed = config.CORS_ALLOW_ORIGINS
+    if origin and (allowed == ["*"] or origin in allowed):
+        headers["Access-Control-Allow-Origin"] = origin
+        if allowed != ["*"]:
+            headers["Access-Control-Allow-Credentials"] = "true"
+        headers["Vary"] = "Origin"
+    return JSONResponse(status_code=429,
+                        content={"detail": "too many requests"},
+                        headers=headers)
+
+
 @app.middleware("http")
 async def rate_limit(request: Request, call_next):
-    """Ограничить частоту запросов к API по адресу клиента.
+    """Ограничить частоту запросов по адресу клиента.
 
     `/api/health` не ограничивается: это проверка живости, и глушить её значит
-    ослепнуть ровно тогда, когда что-то происходит."""
+    ослепнуть ровно тогда, когда что-то происходит.
+
+    `/logs` попадает сюда наравне с `/api/*`: маршрут читает файл лога и до
+    2026-09-05 под ограничитель не попадал вовсе, потому что не начинается
+    с `/api/`."""
     path = request.url.path
-    if path.startswith("/api/") and path != "/api/health":
-        key = ratelimit.client_key(request)
+    if (path.startswith("/api/") or path == "/logs") and path != "/api/health":
+        key = _limit_key(request, path)
         bucket = _rate_auth if path in AUTH_PATHS else _rate_general
         if not bucket.allow(key):
-            logger.warning("rate limit hit path=%s", path)
-            return JSONResponse(
-                status_code=429,
-                content={"detail": "too many requests"},
-                headers={"Retry-After": "60"},
-            )
+            _note_refusal(key, path)
+            return _too_many_requests(request)
     return await call_next(request)
 
 

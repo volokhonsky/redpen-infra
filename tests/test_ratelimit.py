@@ -146,6 +146,35 @@ def test_login_has_its_own_stricter_limit(strict, monkeypatch):
     assert third.status_code == 429
 
 
-def test_static_paths_are_not_limited(strict):
-    # Ограничитель трогает только /api/*: сайт раздаёт nginx, и он тут ни при чём.
-    assert all(strict.get("/logs").status_code in (401, 403) for _ in range(10))
+def test_the_log_page_is_limited_too(strict):
+    """`/logs` читает файл лога, но не начинается с /api/.
+
+    До 2026-09-05 условие в middleware смотрело только на префикс /api/, и этот
+    маршрут не ограничивался вовсе."""
+    codes = [strict.get("/logs").status_code for _ in range(6)]
+    assert 429 in codes
+
+
+def test_refusal_carries_cors_headers(strict):
+    """429 должен доезжать до браузера как «слишком часто», а не как «нет связи».
+
+    Middleware ограничителя обёрнут вокруг CORSMiddleware, поэтому заголовки
+    проставляются в самом ответе."""
+    origin = "https://medinsky.net"
+    for _ in range(6):
+        response = strict.get("/api/tags", headers={"Origin": origin})
+    assert response.status_code == 429
+    assert response.headers.get("Access-Control-Allow-Origin") in (origin, "*")
+
+
+def test_survey_is_counted_by_session_not_by_address(strict):
+    """Два захода с одного адреса не должны отбивать друг друга.
+
+    Класс за общим NAT — это один адрес на тридцать человек."""
+    first = {"X-Survey-Token": "token-one"}
+    second = {"X-Survey-Token": "token-two"}
+    codes = [strict.get("/api/survey/batch", headers=first).status_code
+             for _ in range(4)]
+    assert 429 in codes
+    # У другого захода своё ведро, хотя адрес тот же.
+    assert strict.get("/api/survey/batch", headers=second).status_code != 429
