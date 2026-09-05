@@ -206,8 +206,9 @@ Compose (сервис `api`) за прокси Caddy. Полное описан�
 
 Кратко:
 - Переменные окружения читаются из корневого `.env` и `.env.secrets`:
-  `STORAGE_DIR`, `LOG_DIR`, `LOG_LEVEL`, `CORS_ALLOW_ORIGINS`, `DB_PATH`,
-  `PUBLISH_DIR`, `IDENTITY_PEPPER`.
+  `LOG_DIR`, `LOG_LEVEL`, `CORS_ALLOW_ORIGINS`, `DB_PATH`, `PUBLISH_DIR`,
+  `IDENTITY_PEPPER`, `RATE_LIMIT_*` (`STORAGE_DIR` упразднён 2026-09-05
+  вместе с инбоксом этапа 0).
 - `GET /api/health` → `{"status":"ok"}`
 - `GET|POST|PUT|PATCH|DELETE /api/editor/{docId}/{pageNum}[/{remarkId}]` —
   правка замечаний; канон — SQLite (`db.py`), каждая запись публикуется в
