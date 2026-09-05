@@ -28,7 +28,13 @@ services:
     networks:
       - redpen
     restart: unless-stopped
- 
+    # Пределы памяти. Их не было ни у одного контейнера, то есть всплеск в
+    # любом из них — разбор большого лога, импорт в Matomo, залив запросами —
+    # мог утянуть весь хост, а не только свой сервис. Числа взяты с запасом от
+    # обычного потребления; задача предела не в экономии, а в том, чтобы
+    # падение было локальным.
+    mem_limit: 256m
+
   api:
     build:
       context: .
@@ -70,6 +76,8 @@ services:
     networks:
       - redpen
     restart: unless-stopped
+    # Здесь же, через docker exec, крон гоняет разбор логов и импорт в Matomo.
+    mem_limit: 1g
 
   caddy:
     image: caddy:alpine
@@ -143,6 +151,7 @@ services:
     networks:
       - redpen
     restart: unless-stopped
+    mem_limit: 1g
 
   content-sync:
     env_file:
@@ -164,3 +173,5 @@ services:
     expose:
       - "9000"
     restart: unless-stopped
+    # git fetch и rsync целого сайта.
+    mem_limit: 512m
