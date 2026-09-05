@@ -2881,19 +2881,42 @@ def start_survey_session(pseudonym: str) -> Dict[str, Any]:
     }
 
 
+#: Насколько часто пересчитывается отметка «ещё отвечает». Отметка нужна
+#: админу, чтобы отличить брошенный заход от живого, и минутной точности для
+#: этого более чем достаточно.
+LAST_SEEN_GRANULARITY_SEC = 60
+
+
+def _last_seen_is_fresh(stored: Optional[str], now: datetime) -> bool:
+    """Стоит ли оставить записанную отметку как есть."""
+    if not stored:
+        return False
+    try:
+        was = datetime.fromisoformat(stored)
+    except ValueError:
+        return False
+    return 0 <= (now - was).total_seconds() < LAST_SEEN_GRANULARITY_SEC
+
+
 def get_session_by_token(token: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Сессия по токену вместе с её псевдонимом. Отметка last_seen_at
-    обновляется здесь же — и у сессии, и у респондента: другого места, где
-    видно, что человек ещё отвечает, нет."""
+    """Сессия по токену вместе с её псевдонимом.
+
+    Отметка last_seen_at обновляется здесь же — и у сессии, и у респондента:
+    другого места, где видно, что человек ещё отвечает, нет. Но не на каждом
+    запросе: до 2026-09-05 любое чтение опроса стоило двух UPDATE и commit,
+    то есть записи на диск, — а через эту функцию проходит каждый запрос
+    опроса, включая раздачу очередной порции. Теперь запись идёт не чаще раза
+    в LAST_SEEN_GRANULARITY_SEC."""
     if not token:
         return None
     conn = get_connection()
-    now = _now_iso()
+    now = datetime.utcnow()
     with _lock:
         row = conn.execute(
             """
             SELECT s.id AS session_id, s.respondent_id, s.created_at,
-                   r.pseudonym AS pseudonym
+                   s.last_seen_at AS session_seen,
+                   r.pseudonym AS pseudonym, r.last_seen_at AS respondent_seen
             FROM survey_sessions s
             JOIN survey_respondents r ON r.id = s.respondent_id
             WHERE s.token_hash = ?
@@ -2902,11 +2925,18 @@ def get_session_by_token(token: Optional[str]) -> Optional[Dict[str, Any]]:
         ).fetchone()
         if row is None:
             return None
-        conn.execute("UPDATE survey_sessions SET last_seen_at = ? WHERE id = ?",
-                     (now, row["session_id"]))
-        conn.execute("UPDATE survey_respondents SET last_seen_at = ? WHERE id = ?",
-                     (now, row["respondent_id"]))
-        conn.commit()
+        stamp = now.isoformat()
+        wrote = False
+        if not _last_seen_is_fresh(row["session_seen"], now):
+            conn.execute("UPDATE survey_sessions SET last_seen_at = ? WHERE id = ?",
+                         (stamp, row["session_id"]))
+            wrote = True
+        if not _last_seen_is_fresh(row["respondent_seen"], now):
+            conn.execute("UPDATE survey_respondents SET last_seen_at = ? WHERE id = ?",
+                         (stamp, row["respondent_id"]))
+            wrote = True
+        if wrote:
+            conn.commit()
     return {
         "sessionId": row["session_id"],
         "respondentId": row["respondent_id"],
@@ -3029,6 +3059,59 @@ def delete_respondent(respondent_id: int) -> Optional[Dict[str, Any]]:
         conn.execute("DELETE FROM survey_respondents WHERE id = ?", (respondent_id,))
         conn.commit()
     return {"answers": answers, "sessions": sessions, "pseudonym": row["pseudonym"]}
+
+
+def prune_empty_survey_sessions(older_than_days: int,
+                                apply: bool = False) -> Dict[str, int]:
+    """Убрать заходы опроса, не оставившие ни одного ответа.
+
+    Завести заход может кто угодно: `POST /api/survey/session` — единственный
+    путь в системе, где посторонний человек создаёт строки. Срока жизни у этих
+    строк не было, уборки тоже, так что таблицы росли ровно столько, сколько
+    кто-нибудь стучится в опрос.
+
+    Убираются только заходы без ответов и старше указанного срока, а вместе с
+    ними — псевдонимы, у которых после этого не осталось ни заходов, ни
+    ответов. Псевдоним, сказавший хоть слово, не трогается никогда: это данные
+    опроса, а не мусор.
+
+    Без `apply` только считает.
+    """
+    cutoff = (datetime.utcnow() - timedelta(days=older_than_days)).isoformat()
+    conn = get_connection()
+    with _lock:
+        sessions = [row["id"] for row in conn.execute(
+            """
+            SELECT s.id FROM survey_sessions s
+            WHERE s.created_at < ?
+              AND NOT EXISTS (SELECT 1 FROM survey_answers a
+                              WHERE a.session_id = s.id)
+            """,
+            (cutoff,),
+        ).fetchall()]
+        respondents = [row["id"] for row in conn.execute(
+            """
+            SELECT r.id FROM survey_respondents r
+            WHERE NOT EXISTS (SELECT 1 FROM survey_answers a
+                              WHERE a.respondent_id = r.id)
+              AND NOT EXISTS (SELECT 1 FROM survey_sessions s
+                              WHERE s.respondent_id = r.id
+                                AND s.id NOT IN (%s))
+            """ % ",".join("?" * len(sessions) or ["-1"]),
+            # `-1` вместо пустого списка: `s.id NOT IN (NULL)` в SQL даёт NULL,
+            # а не «истину», и пустой список молча превратил бы условие в
+            # «сессий нет ни у кого».
+            tuple(sessions),
+        ).fetchall()]
+        if apply and sessions:
+            conn.executemany("DELETE FROM survey_sessions WHERE id = ?",
+                             [(sid,) for sid in sessions])
+        if apply and respondents:
+            conn.executemany("DELETE FROM survey_respondents WHERE id = ?",
+                             [(rid,) for rid in respondents])
+        if apply and (sessions or respondents):
+            conn.commit()
+    return {"sessions": len(sessions), "respondents": len(respondents)}
 
 
 # --- ответы ---------------------------------------------------------------

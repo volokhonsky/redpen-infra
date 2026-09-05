@@ -454,7 +454,13 @@ def get_logs_json(lines: int = 100, user: Dict[str, str] = Depends(require_admin
 #: Опросные маршруты здесь же, но по другой причине: это единственные
 #: анонимные пути записи в системе, и общий предел для них слишком щедр.
 AUTH_PATHS = ("/api/auth/google", "/api/auth/login",
-              "/api/survey/session", "/api/survey/ratings")
+              "/api/survey/session", "/api/survey/ratings",
+              # `/api/survey/batch` попал сюда 2026-09-05. Он выглядит как
+              # обычное чтение, но внутри — два обхода всего пула со связанным
+              # NOT EXISTS и ORDER BY RANDOM(), то есть полный проход таблицы с
+              # сортировкой на каждый вызов, под общим замком базы. В щедром
+              # ведре это 240 таких проходов в минуту с одного захода.
+              "/api/survey/batch")
 
 _rate_general = ratelimit.TokenBucket(config.RATE_LIMIT_PER_MINUTE, config.RATE_LIMIT_BURST)
 _rate_auth = ratelimit.TokenBucket(config.RATE_LIMIT_AUTH_PER_MINUTE, config.RATE_LIMIT_AUTH_BURST)
