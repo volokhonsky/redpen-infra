@@ -102,6 +102,24 @@ def _rename_legacy_column(conn: sqlite3.Connection) -> None:
 # ingest
 # --------------------------------------------------------------------------
 
+#: Сколько разобранных строк держать в памяти до записи.
+INGEST_BATCH = 5000
+
+
+def _write_hits(conn: sqlite3.Connection, batch: List[Dict[str, Any]]) -> None:
+    if not batch:
+        return
+    conn.executemany(
+        """INSERT INTO hits (ts, day, kind, doc_id, page_label, remark_id,
+                             legacy_param, tag_filter, path, status,
+                             referer_source, ua_class)
+           VALUES (:ts, :day, :kind, :doc_id, :page_label, :remark_id,
+                   :legacy_param, :tag_filter, :path, :status,
+                   :referer_source, :ua_class)""",
+        batch,
+    )
+
+
 def ingest(conn: sqlite3.Connection, log_dir: str,
            own_hosts: Tuple[str, ...] = (), verbose: bool = False) -> Dict[str, int]:
     stats = {"files": 0, "lines": 0, "hits": 0, "skipped": 0}
@@ -135,16 +153,15 @@ def ingest(conn: sqlite3.Connection, log_dir: str,
                     stats["skipped"] += 1
                     continue
                 batch.append(hit)
+                # Пачками, а не одним списком на весь файл: разбор идёт внутри
+                # контейнера API, рядом с единственным воркером, и под заливом
+                # «весь файл сразу» — это сотни тысяч словарей в его памяти.
+                if len(batch) >= INGEST_BATCH:
+                    _write_hits(conn, batch)
+                    stats["hits"] += len(batch)
+                    batch = []
 
-        conn.executemany(
-            """INSERT INTO hits (ts, day, kind, doc_id, page_label, remark_id,
-                                 legacy_param, tag_filter, path, status,
-                                 referer_source, ua_class)
-               VALUES (:ts, :day, :kind, :doc_id, :page_label, :remark_id,
-                       :legacy_param, :tag_filter, :path, :status,
-                       :referer_source, :ua_class)""",
-            batch,
-        )
+        _write_hits(conn, batch)
         stats["hits"] += len(batch)
         conn.execute(
             """INSERT INTO ingest_state (source, signature, offset, updated_at)

@@ -15,6 +15,26 @@
 # продолжают строиться, просто по пустоте.
 set -eu
 
+# Один прогон за раз. Под заливом разбор лога легко выходит за час, и следующий
+# запуск по крону начинал бы читать от той же позиции: те же строки попадали бы
+# в счётчики дважды, а в MariaDB — параллельным импортом. flock просто
+# пропускает такой запуск: следующего часа он дождётся.
+LOCK=/var/lock/redpen-stats.lock
+if [ "${REDPEN_STATS_LOCKED:-}" != "1" ]; then
+    REDPEN_STATS_LOCKED=1
+    export REDPEN_STATS_LOCKED
+    # -E 99: свой код возврата на «замок занят», чтобы отличить его от ошибки
+    # внутри самого прогона. Занятый замок — не ошибка, письма от крона он не
+    # заслуживает; всё остальное заслуживает и уходит наружу как есть.
+    flock --nonblock -E 99 "$LOCK" "$0" "$@" && exit 0
+    status=$?
+    if [ "$status" = 99 ]; then
+        echo "redpen-stats: предыдущий прогон ещё идёт, этот час пропускаем" >&2
+        exit 0
+    fi
+    exit "$status"
+fi
+
 COMPOSE=/root/apps/redpen/infra/docker-compose.yml
 EXPORT=/var/redpen-stats/matomo-import.log
 STATE=/var/redpen-stats/matomo_export.json

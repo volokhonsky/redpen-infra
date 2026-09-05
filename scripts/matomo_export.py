@@ -71,10 +71,21 @@ def commit_state(state_path: str) -> bool:
     return True
 
 
+#: Сколько строк выгружается за один прогон. Предела не было: при заливе
+#: часовая порция могла оказаться миллионной, и весь этот файл целиком уходил
+#: импортёру Matomo — то есть в MariaDB на том же хосте. Остаток дождётся
+#: следующего часа: позиция сдвигается только после успешного импорта, так что
+#: ничего не теряется, просто отстаёт.
+MAX_LINES_PER_RUN = 200_000
+
+
 def export(log_dir: str, out_path: str, state_path: str,
            site_dir: Optional[str] = None, dry_run: bool = False,
-           section_prefix: str = "§", own_hosts: Tuple[str, ...] = ()) -> int:
-    """Дописать новые строки лога в файл для импорта. Возвращает их число."""
+           section_prefix: str = "§", own_hosts: Tuple[str, ...] = (),
+           max_lines: int = MAX_LINES_PER_RUN) -> int:
+    """Дописать новые строки лога в файл для импорта. Возвращает их число.
+
+    Больше `max_lines` за прогон не выгружается."""
     state = load_state(state_path)
     manifests = page_sections.ManifestCache(site_dir) if site_dir else None
     written = 0
@@ -117,7 +128,13 @@ def export(log_dir: str, out_path: str, state_path: str,
                     if out:
                         out.write(analytics.combined_line(parsed, uri) + "\n")
                     written += 1
+                    if written >= max_lines:
+                        # Позиция запоминается по фактически прочитанному:
+                        # остальное разберётся на следующем прогоне.
+                        break
             state[path] = {"signature": sig, "offset": consumed}
+            if written >= max_lines:
+                break
     finally:
         if out:
             out.close()
@@ -133,6 +150,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--log-dir", default=DEFAULT_LOG_DIR)
     parser.add_argument("--out", help="файл для import_logs.py (кроме --commit)")
     parser.add_argument("--state", default=DEFAULT_STATE)
+    parser.add_argument("--max-lines", type=int, default=MAX_LINES_PER_RUN,
+                        help="предел строк за один прогон (остаток — на следующий)")
     parser.add_argument("--site-dir", default=DEFAULT_SITE_DIR,
                         help="каталог сайта: нужен, чтобы подставить параграф в адрес")
     parser.add_argument("--no-sections", action="store_true",
@@ -157,7 +176,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                   (args.host or [os.getenv("DOMAIN", "medinsky.net")]))
     count = export(args.log_dir, args.out, args.state,
                    None if args.no_sections else args.site_dir, args.dry_run,
-                   args.section_prefix, hosts)
+                   args.section_prefix, hosts, args.max_lines)
     print(f"matomo-export: строк {count} → {args.out}")
     return 0
 
