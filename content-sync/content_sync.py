@@ -5,7 +5,7 @@ import json
 import os
 import sys
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 import subprocess
 import fcntl
@@ -353,48 +353,98 @@ class PollingWatcher:
                 time.sleep(max(2, self.interval))
 
 # ---------------- HTTP/Webhook and server bootstrap ----------------
+#: Больше этого вебхук не читает. Тело события GitHub про один push — это
+#: килобайты JSON. Предел стоит здесь, а не только в Caddy: маршрут открыт
+#: наружу, тело читается в память целиком, и без предела один большой POST
+#: стоит дороже тысячи обычных. Проверяется ДО чтения, по Content-Length:
+#: читать гигабайт, чтобы потом отвергнуть его по подписи, незачем.
+MAX_WEBHOOK_BODY = 256 * 1024
+
+
+#: Синхронизация идёт в фоне, и звать её второй раз, пока идёт первая, незачем:
+#: она в любом случае забирает текущее состояние репозитория, а не то, которое
+#: было в момент вызова. Флаг заодно не даёт развести потоки без счёта.
+_sync_pending = threading.Lock()
+
+
+def run_sync_under_lock() -> None:
+    """Синхронизация под межпроцессным замком. Вызывается из потока вебхука."""
+    try:
+        _run_sync_body()
+    finally:
+        _sync_pending.release()
+
+
+def _run_sync_body() -> None:
+    with open(LOCK_FILE, "a+") as lf:
+        log("acquiring lock")
+        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        try:
+            parent = Path(os.environ.get("REPO_DIR", "/srv/repo"))
+            # Use PUBLIC_DIR if provided; fallback to /srv/public for backward compatibility
+            public = Path(os.environ.get("PUBLIC_DIR", "/srv/public"))
+            staging = Path(os.environ.get("STAGING_DIR", "/srv/staging"))
+            git_ref = os.environ.get("GIT_REF", "main")
+            api_base = os.environ.get("API_BASE_URL", "")
+            ok = process_update(parent, public, staging, git_ref, api_base)
+            if ok:
+                fp = compute_fingerprint(parent, git_ref)
+                write_fingerprint(fp)
+            else:
+                log("sync failed; fingerprint not updated")
+        except Exception as exc:
+            log("sync failed with an exception:", exc)
+        finally:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+
+
 class Handler(BaseHTTPRequestHandler):
+    def _reply(self, code: int, body: bytes = b"") -> None:
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
     def do_POST(self):
         parsed = urlparse(self.path)
         if parsed.path not in ("/webhook", "/.hooks/redpen-publish"):
-            self.send_response(404)
-            self.end_headers()
+            self._reply(404)
             return
-        length = int(self.headers.get("Content-Length", "0"))
+        raw_length = self.headers.get("Content-Length", "0")
+        try:
+            length = int(raw_length)
+        except (TypeError, ValueError):
+            # Мусор в заголовке прежде ронял обработчик исключением.
+            log("bad Content-Length:", raw_length)
+            self._reply(400)
+            return
+        if length < 0 or length > MAX_WEBHOOK_BODY:
+            log("body too large:", length)
+            self._reply(413)
+            return
         payload = self.rfile.read(length)
         signature = self.headers.get("X-Hub-Signature-256", "")
         secret = os.environ.get("WEBHOOK_SECRET", "")
         if not secret or not verify_signature(secret, payload, signature):
             log("invalid signature")
-            self.send_response(401)
-            self.end_headers()
+            self._reply(401)
             return
         evt = self.headers.get("X-GitHub-Event", "")
         if evt and evt != "push":
-            self.send_response(202)
-            self.end_headers()
+            self._reply(202)
             return
-        with open(LOCK_FILE, "a+") as lf:
-            log("acquiring lock")
-            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
-            try:
-                parent = Path(os.environ.get("REPO_DIR", "/srv/repo"))
-                # Use PUBLIC_DIR if provided; fallback to /srv/public for backward compatibility
-                public = Path(os.environ.get("PUBLIC_DIR", "/srv/public"))
-                staging = Path(os.environ.get("STAGING_DIR", "/srv/staging"))
-                git_ref = os.environ.get("GIT_REF", "main")
-                api_base = os.environ.get("API_BASE_URL", "")
-                ok = process_update(parent, public, staging, git_ref, api_base)
-                if ok:
-                    fp = compute_fingerprint(parent, git_ref)
-                    write_fingerprint(fp)
-                else:
-                    log("sync failed; fingerprint not updated")
-            finally:
-                fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
+        # Ответ раньше работы: git fetch и rsync занимают минуты, и держать
+        # ради них соединение открытым незачем — отправитель вебхука
+        # результата всё равно не читает. Работа идёт в отдельном потоке,
+        # межпроцессный замок в run_sync_under_lock оставляет её
+        # единственной, даже если вебхук позвали десять раз подряд.
+        self._reply(202, b"accepted")
+        if not _sync_pending.acquire(blocking=False):
+            log("sync already running; this call is folded into it")
+            return
+        threading.Thread(target=run_sync_under_lock,
+                         name="webhook-sync", daemon=True).start()
 
     def log_message(self, fmt, *args):
         log(fmt % args)
@@ -435,7 +485,11 @@ def start_server(addr: str, port: int, parent: Path, public: Path, staging: Path
     else:
         log("publish submodule directory not found; publish watcher disabled")
 
-    httpd = HTTPServer((addr, port), Handler)
+    # ThreadingHTTPServer, а не HTTPServer: одиночный сервер обслуживал по
+    # одному соединению за раз, и одного медленного клиента хватало, чтобы
+    # вебхук перестал отвечать. Маршрут открыт наружу (Caddy проксирует
+    # /.hooks/redpen-publish), поэтому занять его может кто угодно.
+    httpd = ThreadingHTTPServer((addr, port), Handler)
     log(f"Webhook server listening on {addr}:{port}; fs watch interval={watch_interval}s, debounce={debounce}s")
     httpd.serve_forever()
 

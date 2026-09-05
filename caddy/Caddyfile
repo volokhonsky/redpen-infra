@@ -72,6 +72,12 @@
       header {
         Cache-Control "no-store"
       }
+      # Предел тела. На хосте API такой предел стоит с 2026-08-23, а этот
+      # маршрут остался без него, хотя открыт наружу ровно так же. Тело
+      # события GitHub про один push — килобайты; 64 КБ с запасом.
+      request_body {
+        max_size 64KB
+      }
       reverse_proxy content-sync:9000
     }
 
