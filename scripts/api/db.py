@@ -42,6 +42,10 @@ def _now_iso() -> str:
     return datetime.utcnow().isoformat()
 
 
+#: Сколько ждать освобождения базы, прежде чем ответить ошибкой (мс).
+BUSY_TIMEOUT_MS = 5000
+
+
 def get_connection() -> sqlite3.Connection:
     global _conn
     if _conn is None:
@@ -57,6 +61,12 @@ def init_db() -> None:
     _conn.row_factory = sqlite3.Row
     with _lock:
         _conn.execute("PRAGMA journal_mode=WAL")
+        # Ждать освобождения базы, а не отказывать сразу. Внутри процесса
+        # доступ и так выстроен в очередь общим замком, но к файлу ходит ещё
+        # один процесс: ежедневный VACUUM INTO из scripts/ops/redpen-db-backup
+        # запускается через docker exec. Без busy_timeout совпадение по времени
+        # означает мгновенное «database is locked» вместо короткого ожидания.
+        _conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
         # Строго до executescript: DDL ниже содержит CREATE TABLE IF NOT EXISTS
         # remarks, и на старой базе он создал бы пустышку, после чего
         # ALTER TABLE annotations RENAME TO remarks упал бы, а API не поднялся.

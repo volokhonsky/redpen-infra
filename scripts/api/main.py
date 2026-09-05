@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
@@ -136,19 +137,36 @@ os.makedirs(TEMPLATES_DIR, exist_ok=True)
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 
+#: Поток восстановления тома со старта. Хранится, чтобы тесту было чего
+#: дождаться: в бою его никто не ждёт, в том и смысл.
+_startup_publish_thread: Optional[threading.Thread] = None
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
     db.init_db()
     logger.info("service started LOG_LEVEL=%s storage_dir=%s db_path=%s", config.LOG_LEVEL, config.STORAGE_DIR, config.DB_PATH)
 
     # Self-heal the published static volume (e.g. after a fresh/recreated
-    # container): republish everything already in the DB. Never block startup.
+    # container): republish everything already in the DB.
+    #
+    # В отдельном потоке, а не здесь: обход занимает порядка девятисот страниц,
+    # и до 2026-09-05 он выполнялся до готовности API — перезапуск контейнера
+    # выглядел как недоступность сервиса. Комментарий обещал «never block
+    # startup», но обещание не исполнялось.
     if config.PUBLISH_DIR:
-        try:
-            result = publisher.publish_all()
-            logger.info("startup publish_all pages=%d failed=%d", result["pages"], result["failed"])
-        except Exception:
-            logger.exception("startup publish_all failed")
+        def _self_heal() -> None:
+            try:
+                result = publisher.publish_all()
+                logger.info("startup publish_all pages=%d failed=%d",
+                            result["pages"], result["failed"])
+            except Exception:
+                logger.exception("startup publish_all failed")
+
+        global _startup_publish_thread
+        _startup_publish_thread = threading.Thread(
+            target=_self_heal, name="startup-publish-all", daemon=True)
+        _startup_publish_thread.start()
 
 
 # ===== HELPER FUNCTIONS =====
@@ -386,7 +404,7 @@ def tail_lines(path: str, count: int) -> List[str]:
 
 
 @app.get("/logs")
-async def logs_page(request: Request, user: Dict[str, str] = Depends(require_admin)):
+def logs_page(request: Request, user: Dict[str, str] = Depends(require_admin)):
     """Serve logs viewer page"""
     try:
         logs_data = []
@@ -406,7 +424,7 @@ async def logs_page(request: Request, user: Dict[str, str] = Depends(require_adm
 
 
 @app.get("/api/logs")
-async def get_logs_json(lines: int = 100, user: Dict[str, str] = Depends(require_admin)):
+def get_logs_json(lines: int = 100, user: Dict[str, str] = Depends(require_admin)):
     """Return logs as JSON"""
     if lines < 1 or lines > MAX_LOG_LINES:
         raise HTTPException(status_code=400,
@@ -528,7 +546,7 @@ async def rate_limit(request: Request, call_next):
 
 
 @app.get("/api/health")
-async def health():
+def health():
     return {"status": "ok"}
 
 
@@ -566,7 +584,7 @@ async def login(request: Request, response: Response):
 
 
 @app.get("/api/auth/csrf")
-async def get_csrf(user: Dict[str, Any] = Depends(require_user)):
+def get_csrf(user: Dict[str, Any] = Depends(require_user)):
     """Issue a CSRF token bound to the current session (requires login)"""
     csrf_token = f"csrf-{secrets.token_hex(16)}"
     db.set_session_csrf(user["sessionId"], csrf_token)
@@ -575,7 +593,7 @@ async def get_csrf(user: Dict[str, Any] = Depends(require_user)):
 
 
 @app.get("/api/auth/me")
-async def get_me(response: Response, user: Dict[str, Any] = Depends(require_user)):
+def get_me(response: Response, user: Dict[str, Any] = Depends(require_user)):
     """Return current user info from session"""
     # Личность и роль актора: кэшировать нечего и негде. На общей машине
     # соседний вход не должен вытащить чужой ответ из истории/bfcache, а смена
@@ -595,7 +613,7 @@ async def get_me(response: Response, user: Dict[str, Any] = Depends(require_user
 
 
 @app.post("/api/auth/logout")
-async def logout(request: Request, response: Response):
+def logout(request: Request, response: Response):
     """Delete the current session and clear its cookie"""
     session_id = request.cookies.get("redpen_session")
     if session_id:
@@ -620,7 +638,10 @@ async def auth_google(request: Request, response: Response):
         raise HTTPException(status_code=400, detail="credential is required")
 
     try:
-        claims = verify_google_token(credential)
+        # В пуле потоков: проверка идёт по сети к Google и считает подпись, а
+        # API работает одним воркером — на время этого вызова вставал весь
+        # сервис, включая /api/health.
+        claims = await run_in_threadpool(verify_google_token, credential)
     except Exception as e:
         logger.warning("google auth: token verification failed: %s", type(e).__name__)
         raise HTTPException(status_code=401, detail="invalid credential")
@@ -659,7 +680,7 @@ async def auth_google(request: Request, response: Response):
 # ===== ADMIN: EDITOR ALLOWLIST =====
 
 @app.get("/api/admin/invites")
-async def get_invites(user: Dict[str, Any] = Depends(require_admin)):
+def get_invites(user: Dict[str, Any] = Depends(require_admin)):
     """Выданные приглашения. Кодов здесь нет — в БД лежат только их хеши."""
     return {"invites": db.list_invites()}
 
@@ -695,7 +716,7 @@ async def create_invite(request: Request, user: Dict[str, Any] = Depends(require
 
 
 @app.delete("/api/admin/invites/{codeHash}")
-async def revoke_invite(codeHash: str, user: Dict[str, Any] = Depends(require_admin_csrf)):
+def revoke_invite(codeHash: str, user: Dict[str, Any] = Depends(require_admin_csrf)):
     if not db.revoke_invite(codeHash):
         raise HTTPException(status_code=404, detail="not found or already used")
     logger.info("admin: invite revoked by=%s", user["userId"])
@@ -721,7 +742,7 @@ async def set_user_role(userId: int, request: Request,
 
 
 @app.post("/api/admin/users/{userId}/retire")
-async def retire_user(userId: int, user: Dict[str, Any] = Depends(require_admin_csrf)):
+def retire_user(userId: int, user: Dict[str, Any] = Depends(require_admin_csrf)):
     """Отвязать участника от аккаунта, сохранив связность истории."""
     updated = db.retire_user(userId)
     if updated is None:
@@ -747,7 +768,7 @@ async def set_display_name(request: Request, user: Dict[str, Any] = Depends(requ
 
 
 @app.post("/api/auth/leave")
-async def leave_project(user: Dict[str, Any] = Depends(require_csrf)):
+def leave_project(user: Dict[str, Any] = Depends(require_csrf)):
     """«Покинуть проект»: то же, что admin retire, но по своей воле."""
     db.retire_user(user["userId"])
     logger.info("auth: user left userId=%s", user["userId"])
@@ -755,9 +776,17 @@ async def leave_project(user: Dict[str, Any] = Depends(require_csrf)):
 
 
 @app.post("/api/admin/publish-all")
-async def admin_publish_all(user: Dict[str, Any] = Depends(require_admin_csrf)):
-    """Republish every page in the DB to PUBLISH_DIR (volume self-heal / manual repair)."""
-    result = publisher.publish_all()
+def admin_publish_all(user: Dict[str, Any] = Depends(require_admin_csrf)):
+    """Republish every page in the DB to PUBLISH_DIR (volume self-heal / manual repair).
+
+    Обработчик синхронный намеренно (`def`, а не `async def`): FastAPI уводит
+    такой обработчик в пул потоков, и обход девятисот страниц перестаёт
+    останавливать весь API — включая /api/health, который во время обхода
+    молчал."""
+    try:
+        result = publisher.publish_all()
+    except publisher.PublishAllBusy:
+        raise HTTPException(status_code=409, detail="publish-all is already running")
     logger.info("admin: publish-all pages=%d failed=%d by=%s",
                 result["pages"], result["failed"], user["userId"])
     return result
@@ -773,7 +802,7 @@ async def admin_publish_all(user: Dict[str, Any] = Depends(require_admin_csrf)):
 
 
 @app.get("/api/hello")
-async def hello():
+def hello():
     # Minimal Hello endpoint for local smoke tests
     now = datetime.now().isoformat()
     version = "local-dev"
@@ -892,7 +921,7 @@ async def store(request: Request, user: Dict[str, str] = Depends(require_editor)
     return {"status": "stored", "path": rel_path}
 
 @app.get("/api/pages/{pageId}")
-async def get_page(pageId: str):
+def get_page(pageId: str):
     """GET page data by pageId (legacy endpoint, for backwards compatibility).
     Rendered from the SQLite remarks store (stage 2); imageUrl/origW/origH
     were never populated by this endpoint and remain placeholders."""
@@ -971,7 +1000,7 @@ def _resolve_tags(parsed: Dict[str, Any]) -> Optional[List[str]]:
 
 
 @app.get("/api/editor/{docId}/{pageNum}")
-async def get_editor_page(docId: str, pageNum: str, user: Optional[Dict[str, Any]] = Depends(get_optional_user)):
+def get_editor_page(docId: str, pageNum: str, user: Optional[Dict[str, Any]] = Depends(get_optional_user)):
     """GET page data for editor, rendered from the SQLite remarks store.
     Anonymous/viewer callers see only published remarks; editor/admin
     additionally see drafts, flagged draft=true.
@@ -1068,9 +1097,9 @@ async def post_editor_remark(docId: str, pageNum: str, request: Request, user: D
         category=_resolve_category(ann),
         summary=ann.get("summary"),
     )
-    write_ok = publisher.publish_page(docId, page_num_str)
+    write_ok, new_sha = await run_in_threadpool(
+        _publish_and_sha, docId, page_num_str)
     published = write_ok and status == "published"
-    new_sha = _current_page_sha(docId, page_num_str)
 
     logger.info(
         "POST editor SUCCESS docId=%s pageKey=%s remarkId=%s status=%s published=%s",
@@ -1115,9 +1144,9 @@ async def put_editor_remark(docId: str, pageNum: str, remarkId: str, request: Re
         category=_resolve_category(parsed),
         summary=parsed.get("summary"),
     )
-    write_ok = publisher.publish_page(docId, page_num_str)
+    write_ok, new_sha = await run_in_threadpool(
+        _publish_and_sha, docId, page_num_str)
     published = write_ok and status == "published"
-    new_sha = _current_page_sha(docId, page_num_str)
 
     logger.info(
         "PUT editor SUCCESS docId=%s pageKey=%s remarkId=%s status=%s published=%s",
@@ -1127,7 +1156,7 @@ async def put_editor_remark(docId: str, pageNum: str, remarkId: str, request: Re
 
 
 @app.delete("/api/editor/{docId}/{pageNum}/{remarkId}")
-async def delete_editor_remark(docId: str, pageNum: str, remarkId: str, user: Dict[str, Any] = Depends(require_editor)):
+def delete_editor_remark(docId: str, pageNum: str, remarkId: str, user: Dict[str, Any] = Depends(require_editor)):
     """Убрать замечание в архив и перепубликовать страницу.
 
     Обратимо: вернуть из архива можно PATCH .../status. Стереть навсегда —
@@ -1154,7 +1183,7 @@ async def delete_editor_remark(docId: str, pageNum: str, remarkId: str, user: Di
 
 
 @app.delete("/api/editor/{docId}/{pageNum}/{remarkId}/purge")
-async def purge_editor_remark(docId: str, pageNum: str, remarkId: str,
+def purge_editor_remark(docId: str, pageNum: str, remarkId: str,
                               user: Dict[str, Any] = Depends(require_admin_csrf)):
     """Стереть замечание навсегда: строку, все связанные данные и историю.
 
@@ -1225,10 +1254,23 @@ def _patch_summary(body: Dict[str, Any]) -> Optional[str]:
     return summary or None
 
 
-def _patch_result(docId: str, page_num_str: str, remarkId: str,
-                  ann: Dict[str, Any], operation: str) -> Dict[str, Any]:
-    published = publisher.publish_page(docId, page_num_str)
-    new_sha = _current_page_sha(docId, page_num_str)
+def _publish_and_sha(doc_id: str, page_num_str: str):
+    """Записать страницу в статику и посчитать её хеш.
+
+    Обе половины — работа с диском: publish_page разбирает metadata.json,
+    перечитывает JSON страницы, перерисовывает HTML и делает две записи с
+    fsync, а хеш считается по ещё одному рендеру. Из обработчиков, которые
+    читают тело запроса (то есть остаются `async`), вызывается через
+    run_in_threadpool: API работает одним воркером, и эта работа на цикле
+    событий останавливала весь сервис."""
+    published = publisher.publish_page(doc_id, page_num_str)
+    return published, _current_page_sha(doc_id, page_num_str)
+
+
+async def _patch_result(docId: str, page_num_str: str, remarkId: str,
+                        ann: Dict[str, Any], operation: str) -> Dict[str, Any]:
+    published, new_sha = await run_in_threadpool(
+        _publish_and_sha, docId, page_num_str)
     logger.info(
         "PATCH %s SUCCESS docId=%s pageKey=%s remarkId=%s status=%s published=%s",
         operation, docId, page_num_str, remarkId, ann["status"], published,
@@ -1257,7 +1299,7 @@ async def patch_remark_status(docId: str, pageNum: str, remarkId: str, request: 
                            author_id=user["userId"], summary=_patch_summary(body))
     if ann is None:
         raise HTTPException(status_code=404, detail="remark not found")
-    return _patch_result(docId, page_num_str, remarkId, ann, "status")
+    return await _patch_result(docId, page_num_str, remarkId, ann, "status")
 
 
 @app.patch("/api/editor/{docId}/{pageNum}/{remarkId}/category")
@@ -1280,7 +1322,7 @@ async def patch_remark_category(docId: str, pageNum: str, remarkId: str, request
                              author_id=user["userId"], summary=_patch_summary(body))
     if ann is None:
         raise HTTPException(status_code=404, detail="remark not found")
-    return _patch_result(docId, page_num_str, remarkId, ann, "category")
+    return await _patch_result(docId, page_num_str, remarkId, ann, "category")
 
 
 @app.patch("/api/editor/{docId}/{pageNum}/{remarkId}/tags")
@@ -1300,7 +1342,7 @@ async def patch_remark_tags(docId: str, pageNum: str, remarkId: str, request: Re
                          author_id=user["userId"], summary=_patch_summary(body))
     if ann is None:
         raise HTTPException(status_code=404, detail="remark not found")
-    return _patch_result(docId, page_num_str, remarkId, ann, "tags")
+    return await _patch_result(docId, page_num_str, remarkId, ann, "tags")
 
 
 # ===== CABINET (stage 3) =====
@@ -1341,7 +1383,7 @@ def _validate_list_params(
 
 
 @app.get("/api/remarks")
-async def list_remarks(
+def list_remarks(
     docId: Optional[str] = None,
     pageKey: Optional[str] = None,
     kind: Optional[str] = None,
@@ -1397,7 +1439,7 @@ async def list_remarks(
 
 
 @app.get("/api/remarks/{docId}/{pageKey}/{remarkId}")
-async def get_one_remark(docId: str, pageKey: str, remarkId: str,
+def get_one_remark(docId: str, pageKey: str, remarkId: str,
                              user: Dict[str, Any] = Depends(require_editor_read)):
     """Одно замечание целиком — вход карточки в редакторе.
 
@@ -1434,13 +1476,13 @@ def _remark_target(docId: str, pageKey: str, remarkId: str) -> str:
 
 
 @app.get("/api/rating-scales")
-async def get_rating_scales(user: Dict[str, Any] = Depends(require_editor_read)):
+def get_rating_scales(user: Dict[str, Any] = Depends(require_editor_read)):
     """Какие шкалы существуют и как называются — единственный источник для UI."""
     return {"scales": rating_scales.describe()}
 
 
 @app.get("/api/remarks/{docId}/{pageKey}/{remarkId}/ratings")
-async def get_remark_ratings(docId: str, pageKey: str, remarkId: str,
+def get_remark_ratings(docId: str, pageKey: str, remarkId: str,
                              user: Dict[str, Any] = Depends(require_editor_read)):
     page_num_str = _remark_target(docId, pageKey, remarkId)
     return {
@@ -1477,7 +1519,7 @@ async def put_remark_rating(docId: str, pageKey: str, remarkId: str, scale: str,
 
 
 @app.delete("/api/remarks/{docId}/{pageKey}/{remarkId}/ratings/{scale}")
-async def delete_remark_rating(docId: str, pageKey: str, remarkId: str, scale: str,
+def delete_remark_rating(docId: str, pageKey: str, remarkId: str, scale: str,
                                user: Dict[str, Any] = Depends(require_editor)):
     """Снять свою оценку. Чужие оценки этим маршрутом не трогаются."""
     page_num_str = _remark_target(docId, pageKey, remarkId)
@@ -1492,7 +1534,7 @@ async def delete_remark_rating(docId: str, pageKey: str, remarkId: str, scale: s
 
 
 @app.get("/api/remarks/{docId}/{pageKey}/{remarkId}/notes")
-async def get_remark_notes(docId: str, pageKey: str, remarkId: str,
+def get_remark_notes(docId: str, pageKey: str, remarkId: str,
                            user: Dict[str, Any] = Depends(require_editor_read)):
     page_num_str = _remark_target(docId, pageKey, remarkId)
     return {"items": db.list_notes(docId, page_num_str, remarkId),
@@ -1560,7 +1602,7 @@ async def patch_note(noteId: int, request: Request,
 
 
 @app.delete("/api/notes/{noteId}")
-async def delete_note(noteId: int, user: Dict[str, Any] = Depends(require_editor)):
+def delete_note(noteId: int, user: Dict[str, Any] = Depends(require_editor)):
     """Мягко удалить свой комментарий: строка остаётся ради связности треда,
     тело затирается."""
     _own_note_or_403(noteId, user)
@@ -1571,7 +1613,7 @@ async def delete_note(noteId: int, user: Dict[str, Any] = Depends(require_editor
 
 
 @app.get("/api/remarks/{docId}/{pageKey}/{remarkId}/timeline")
-async def get_remark_timeline(docId: str, pageKey: str, remarkId: str,
+def get_remark_timeline(docId: str, pageKey: str, remarkId: str,
                               limit: int = 100,
                               user: Dict[str, Any] = Depends(require_editor_read)):
     """Всё, что происходило с замечанием, одним списком: ревизии, оценки
@@ -1708,7 +1750,7 @@ async def require_respondent(request: Request) -> Dict[str, Any]:
 
 
 @app.post("/api/survey/session")
-async def create_survey_session(body: Dict[str, Any]):
+def create_survey_session(body: Dict[str, Any]):
     """Начать заход: назваться псевдонимом и получить токен сессии.
 
     Единственный маршрут в системе, который заводит субъекта без приглашения.
@@ -1734,7 +1776,7 @@ async def create_survey_session(body: Dict[str, Any]):
 
 
 @app.get("/api/survey/batch")
-async def get_survey_batch(limit: int = db.SURVEY_BATCH_SIZE,
+def get_survey_batch(limit: int = db.SURVEY_BATCH_SIZE,
                            respondent: Dict[str, Any] = Depends(require_respondent)):
     """Очередная порция замечаний: случайные из пула, которых этот респондент
     ещё не оценивал.
@@ -1758,7 +1800,7 @@ async def get_survey_batch(limit: int = db.SURVEY_BATCH_SIZE,
 
 
 @app.put("/api/survey/ratings")
-async def put_survey_rating(body: Dict[str, Any],
+def put_survey_rating(body: Dict[str, Any],
                             respondent: Dict[str, Any] = Depends(require_respondent)):
     """Ответы по одному замечанию — все вопросы одним вызовом.
 
@@ -1817,7 +1859,7 @@ async def put_survey_rating(body: Dict[str, Any],
 
 
 @app.get("/api/survey/pool")
-async def get_survey_pool(docId: Optional[str] = None, limit: int = 200, offset: int = 0,
+def get_survey_pool(docId: Optional[str] = None, limit: int = 200, offset: int = 0,
                           user: Dict[str, Any] = Depends(require_editor_read)):
     """Пул — редакторская работа: положить замечание на оценку решает тот, кто
     его читает. Админской остаётся сводка ответов (`/api/survey/results`):
@@ -1829,7 +1871,7 @@ async def get_survey_pool(docId: Optional[str] = None, limit: int = 200, offset:
 
 
 @app.post("/api/survey/pool")
-async def add_to_survey_pool(body: Dict[str, Any],
+def add_to_survey_pool(body: Dict[str, Any],
                              user: Dict[str, Any] = Depends(require_editor)):
     """Вынести замечание на оценку. Повтор — не ошибка."""
     page_num_str = _remark_target(str(body.get("docId") or ""),
@@ -1841,7 +1883,7 @@ async def add_to_survey_pool(body: Dict[str, Any],
 
 
 @app.delete("/api/survey/pool/{docId}/{pageKey}/{remarkId}")
-async def remove_from_survey_pool(docId: str, pageKey: str, remarkId: str,
+def remove_from_survey_pool(docId: str, pageKey: str, remarkId: str,
                                   user: Dict[str, Any] = Depends(require_editor)):
     """Убрать из раздачи. Уже полученные ответы остаются: снять вопрос и
     стереть ответы — разные действия, и второе здесь не подразумевается."""
@@ -1856,7 +1898,7 @@ async def remove_from_survey_pool(docId: str, pageKey: str, remarkId: str,
 
 
 @app.get("/api/survey/results")
-async def get_survey_results(docId: Optional[str] = None, limit: int = 100, offset: int = 0,
+def get_survey_results(docId: Optional[str] = None, limit: int = 100, offset: int = 0,
                              user: Dict[str, Any] = Depends(require_admin)):
     """Таблица результатов. Считается по ответам, а не по пулу: замечание могли
     снять с раздачи, но полученные ответы от этого не исчезли."""
@@ -1867,7 +1909,7 @@ async def get_survey_results(docId: Optional[str] = None, limit: int = 100, offs
 
 
 @app.get("/api/survey/respondents")
-async def get_survey_respondents(limit: int = 100, offset: int = 0,
+def get_survey_respondents(limit: int = 100, offset: int = 0,
                                  user: Dict[str, Any] = Depends(require_admin)):
     """Кто отвечал: псевдонимы со счётчиками заходов и ответов.
 
@@ -1878,14 +1920,14 @@ async def get_survey_respondents(limit: int = 100, offset: int = 0,
 
 
 @app.get("/api/survey/respondents/{respondentId}/sessions")
-async def get_survey_sessions(respondentId: int,
+def get_survey_sessions(respondentId: int,
                               user: Dict[str, Any] = Depends(require_admin)):
     """Заходы одного псевдонима."""
     return {"items": db.list_survey_sessions(respondentId)}
 
 
 @app.delete("/api/survey/sessions/{sessionId}")
-async def delete_survey_session(sessionId: int,
+def delete_survey_session(sessionId: int,
                                 user: Dict[str, Any] = Depends(require_admin_csrf)):
     """Стереть один заход вместе с его ответами. Только админ, необратимо.
 
@@ -1902,7 +1944,7 @@ async def delete_survey_session(sessionId: int,
 
 
 @app.delete("/api/survey/respondents/{respondentId}")
-async def delete_survey_respondent(respondentId: int,
+def delete_survey_respondent(respondentId: int,
                                    user: Dict[str, Any] = Depends(require_admin_csrf)):
     """Стереть псевдоним целиком: все заходы и все ответы. Только админ,
     необратимо."""
@@ -1916,7 +1958,7 @@ async def delete_survey_respondent(respondentId: int,
 
 
 @app.get("/api/sections")
-async def get_sections(docId: str, user: Dict[str, Any] = Depends(require_editor_read)):
+def get_sections(docId: str, user: Dict[str, Any] = Depends(require_editor_read)):
     """Параграфы документа со сводкой — доска работ редактора.
 
     Сводка включает число черновиков и неразобранных по категориям, поэтому
@@ -1928,7 +1970,7 @@ async def get_sections(docId: str, user: Dict[str, Any] = Depends(require_editor
 
 
 @app.get("/api/tags")
-async def get_tags(docId: Optional[str] = None, user: Dict[str, Any] = Depends(require_editor_read)):
+def get_tags(docId: Optional[str] = None, user: Dict[str, Any] = Depends(require_editor_read)):
     """Tag vocabulary in use, with counts -- populates the cabinet's filter."""
     if docId is not None and not _validate_doc_id(docId):
         raise HTTPException(status_code=400, detail="invalid docId")
@@ -1936,7 +1978,7 @@ async def get_tags(docId: Optional[str] = None, user: Dict[str, Any] = Depends(r
 
 
 @app.get("/api/history")
-async def list_history(
+def list_history(
     docId: Optional[str] = None,
     pageKey: Optional[str] = None,
     remarkId: Optional[str] = None,
@@ -1963,12 +2005,12 @@ async def list_history(
 
 
 @app.get("/api/stats")
-async def get_stats(user: Dict[str, Any] = Depends(require_user)):
+def get_stats(user: Dict[str, Any] = Depends(require_user)):
     return db.get_stats()
 
 
 @app.post("/api/history/{histId}/revert")
-async def revert_history(histId: int, user: Dict[str, Any] = Depends(require_editor)):
+def revert_history(histId: int, user: Dict[str, Any] = Depends(require_editor)):
     """Restore a remark to the exact state recorded in a history
     snapshot (including that snapshot's own status -- reverting to an
     archive-record re-archives, which is intentional: the cabinet shows every
@@ -2008,7 +2050,7 @@ async def revert_history(histId: int, user: Dict[str, Any] = Depends(require_edi
 
 
 @app.get("/api/admin/users")
-async def get_admin_users(user: Dict[str, Any] = Depends(require_admin)):
+def get_admin_users(user: Dict[str, Any] = Depends(require_admin)):
     return {"users": db.list_users()}
 
 

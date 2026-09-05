@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 import tempfile
+import threading
 from typing import Any, Dict, List
 
 # Общий модуль категорий лежит в scripts/, а на sys.path у контейнера только
@@ -201,12 +202,30 @@ def publish_page(doc_id: str, page_num: str) -> bool:
     return True
 
 
+#: Полная перепубликация идёт по всем страницам с замечаниями — это порядка
+#: девятисот проходов, каждый разбирает metadata.json заново и пишет два файла.
+#: Замок не даёт запустить второй такой обход поверх первого: он не ускорит
+#: ничего, а работы удвоит. Кто не успел — получает отказ, а не очередь.
+_publish_all_lock = threading.Lock()
+
+
+class PublishAllBusy(RuntimeError):
+    """Полная перепубликация уже идёт."""
+
+
 def publish_all() -> Dict[str, int]:
     """Republish every page that has at least one remark row. Used by the
-    admin endpoint and on startup to self-heal the volume."""
-    pages = db.list_pages()
-    failed = 0
-    for doc_id, page_num in pages:
-        if not publish_page(doc_id, page_num):
-            failed += 1
-    return {"pages": len(pages), "failed": failed}
+    admin endpoint and on startup to self-heal the volume.
+
+    Вызов во время уже идущего обхода бросает PublishAllBusy."""
+    if not _publish_all_lock.acquire(blocking=False):
+        raise PublishAllBusy("publish-all is already running")
+    try:
+        pages = db.list_pages()
+        failed = 0
+        for doc_id, page_num in pages:
+            if not publish_page(doc_id, page_num):
+                failed += 1
+        return {"pages": len(pages), "failed": failed}
+    finally:
+        _publish_all_lock.release()

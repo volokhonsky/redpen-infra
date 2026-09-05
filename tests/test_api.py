@@ -398,6 +398,12 @@ def test_startup_self_heals_publish_dir():
     with TestClient(main.app):
         pass  # entering the context fires the startup event
 
+    # Восстановление тома идёт в отдельном потоке — старт его больше не ждёт
+    # (обход девятисот страниц до готовности API выглядел как недоступность
+    # сервиса). Тесту дождаться нужно.
+    assert main._startup_publish_thread is not None
+    main._startup_publish_thread.join(timeout=30)
+
     assert os.path.exists(path)
 
 
