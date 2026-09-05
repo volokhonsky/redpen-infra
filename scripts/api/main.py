@@ -259,6 +259,19 @@ async def require_csrf(request: Request, user: Dict[str, str] = Depends(require_
 EDITOR_ROLES = ("editor", "admin")
 
 MAX_SUMMARY_LENGTH = 200
+
+#: Предел на длину текста замечания. Пределы есть у резюме правки (200), у
+#: тегов (64), у рабочего комментария (4000) и у открытого ответа опроса
+#: (1000) — у самого текста замечания не было. Каждая правка копирует его
+#: целиком в remark_history и перерисовывает им страницу статики, так что цену
+#: длинного текста платят и база, и диск, и все последующие ревизии. Самое
+#: длинное замечание в корпусе — около четырёх тысяч символов.
+MAX_REMARK_TEXT_LENGTH = 20000
+
+#: Предел на длину идентификаторов, приходящих из адреса. `docId` проверялся
+#: регулярным выражением без предела длины, `remarkId` не проверялся вовсе,
+#: хотя служит ключом в пяти таблицах.
+MAX_ID_LENGTH = 128
 REMARK_STATUSES = ("published", "draft", "archived")
 # "general" ушёл: см. docs/general-migration-map.json. Строки со status='archived'
 # могут по-прежнему иметь kind='general' — их никто не читает, кроме истории.
@@ -320,6 +333,10 @@ def _parse_remark_body(body: Dict[str, Any]) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"kind must be one of {', '.join(REMARK_KINDS)}")
     if not isinstance(text, str):
         raise HTTPException(status_code=400, detail="text must be a string")
+    if len(text) > MAX_REMARK_TEXT_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"text must be at most {MAX_REMARK_TEXT_LENGTH} characters")
 
     ann: Dict[str, Any] = {"kind": remark_kind, "text": text}
 
@@ -335,7 +352,10 @@ def _parse_remark_body(body: Dict[str, Any]) -> Dict[str, Any]:
             raise HTTPException(status_code=400, detail="coords must be [x,y] integers")
 
     if "id" in body and isinstance(body["id"], str) and body["id"].strip() != "":
-        ann["id"] = body["id"].strip()
+        remark_id = body["id"].strip()
+        if not _validate_remark_id(remark_id):
+            raise HTTPException(status_code=400, detail="invalid id")
+        ann["id"] = remark_id
 
     if "status" in body:
         status = body["status"]
@@ -800,7 +820,18 @@ def admin_publish_all(user: Dict[str, Any] = Depends(require_admin_csrf)):
 
 def _validate_doc_id(doc_id: str) -> bool:
     """Validate docId: alphanumeric, underscore, hyphen"""
-    return bool(re.fullmatch(r"[a-z0-9_-]+", doc_id or ""))
+    if not doc_id or len(doc_id) > MAX_ID_LENGTH:
+        return False
+    return bool(re.fullmatch(r"[a-z0-9_-]+", doc_id))
+
+
+def _validate_remark_id(remark_id: str) -> bool:
+    """Идентификатор замечания приходит из адреса и становится ключом строки в
+    remarks, remark_tags, remark_history, rating_pool и survey_answers.
+    Проверки на него не было вовсе."""
+    if not remark_id or len(remark_id) > MAX_ID_LENGTH:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9_.:-]+", remark_id))
 
 
 def _validate_page_key(key: str) -> Optional[str]:
@@ -1320,6 +1351,8 @@ def _remark_target(docId: str, pageKey: str, remarkId: str) -> str:
     page_num_str = _validate_page_key(pageKey)
     if page_num_str is None:
         raise HTTPException(status_code=400, detail="invalid pageKey")
+    if not _validate_remark_id(remarkId):
+        raise HTTPException(status_code=400, detail="invalid remarkId")
     if db.get_remark(docId, page_num_str, remarkId) is None:
         raise HTTPException(status_code=404, detail="remark not found")
     return page_num_str
@@ -1466,6 +1499,8 @@ def delete_note(noteId: int, user: Dict[str, Any] = Depends(require_editor)):
 def get_remark_timeline(docId: str, pageKey: str, remarkId: str,
                               limit: int = 100,
                               user: Dict[str, Any] = Depends(require_editor_read)):
+    # Проверки на limit не было, а значение уходит и в list_history, и ещё в
+    # три выборки, которые потом сливаются и сортируются в памяти.
     """Всё, что происходило с замечанием, одним списком: ревизии, оценки
     участников, ответы опроса, комментарии. Новые сверху.
 
@@ -1474,6 +1509,9 @@ def get_remark_timeline(docId: str, pageKey: str, remarkId: str,
     а ответ опроса приходит от человека вне круга и в `users` не заводится),
     и сводить их в одну таблицу ради удобства чтения значило бы сломать откат.
     """
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=400,
+                            detail="limit must be between 1 and 200")
     page_num_str = _remark_target(docId, pageKey, remarkId)
     items: List[Dict[str, Any]] = []
 
