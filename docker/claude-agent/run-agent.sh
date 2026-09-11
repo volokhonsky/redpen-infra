@@ -13,9 +13,19 @@
 #   prompt_file is mounted read-only at /prompt.txt; the repo at /work.
 #   Prompts must reference container paths (/work), not host paths.
 #
-# Session limit: a Pro session limit ends the run with an unknown reset time,
-# so the runner sleeps RETRY_INTERVAL (default 20 min) and tries again, up to
-# MAX_ATTEMPTS (default 24 ≈ 8 h). Retries RESUME the same conversation —
+# Result check: EXPECT_FILES (or $BASE/<label>.expect, one path per line) lists the
+# files without which the job is NOT done. claude exiting 0 is not proof of work —
+# on 2026-09-04 the factchecker closed one paragraph of two, announced it would
+# "continue in the background" (it has none) and exited 0. Missing files send the
+# run back with a resume message naming them, up to INCOMPLETE_MAX (default 3)
+# times, then the run ends with exit=3.
+#
+# Session limit: a Pro session limit ends the run, and the refusal usually NAMES
+# the reset time ("resets 5:30am (UTC)") — the runner parses it and sleeps until
+# then, instead of knocking on a closed door every RETRY_INTERVAL. Without a
+# usable hint it falls back to RETRY_INTERVAL (default 20 min). Bounded twice:
+# MAX_ATTEMPTS (default 24) and MAX_WALL (default 12 h from start), because a
+# sleep-until-reset can be hours long. Retries RESUME the same conversation —
 # claude's state dir lives on the host ($BASE/state/<label>) and is mounted as
 # CLAUDE_CONFIG_DIR, so --continue picks up where the run stopped; if there is
 # no conversation to continue, the attempt falls back to a fresh start.
@@ -41,6 +51,19 @@ export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.pyenv/shims:$PATH"
 
 RETRY_INTERVAL="${RETRY_INTERVAL:-1200}"   # seconds between attempts (20 min)
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-24}"         # 24 × 20 min ≈ 8 h of waiting out the limit
+# Сон до сброса лимита бывает многочасовым, поэтому одного счётчика попыток мало:
+# без общего срока прогон может растянуться на сутки. MAX_WALL — предел по часам
+# от старта, после которого раннер не ложится спать заново.
+MAX_WALL="${MAX_WALL:-43200}"              # 12 часов
+
+# Claude может выйти с кодом 0, не записав результат: 2026-09-04 фактчекер закрыл
+# один параграф из двух, отчитался «работа идёт в фоне» (фона у него нет) и вышел
+# успешно — раннер счёл задание выполненным. EXPECT_FILES перечисляет файлы, без
+# которых работа НЕ сделана; пути относительные считаются от каталога репозитория.
+# Список берётся из аргумента, из переменной окружения или из $BASE/<label>.expect.
+EXPECT_FILES="${EXPECT_FILES:-}"
+[[ -z "$EXPECT_FILES" && -r "$BASE/${LABEL}.expect" ]] && EXPECT_FILES="$(grep -v '^[[:space:]]*#' "$BASE/${LABEL}.expect" | tr '\n' ' ')"
+INCOMPLETE_MAX="${INCOMPLETE_MAX:-3}"      # столько раз просим дописать недостающее
 
 # Markers of "the subscription window is exhausted", not of a broken task.
 LIMIT_RE='(session limit|usage limit|limit reached|rate.?limit|429|Please wait.*(before|until).*(try|retry))'
@@ -49,6 +72,52 @@ LIMIT_RE='(session limit|usage limit|limit reached|rate.?limit|429|Please wait.*
 RETRY_RE="${LIMIT_RE}|Cannot connect to the Docker daemon|docker daemon is not running|Is the docker daemon running"
 
 log() { print -r -- "$(date '+%F %T %Z') | $*" >>"$LOG"; }
+
+# Печатает недостающие из EXPECT_FILES (пусто = всё на месте / проверять нечего).
+missing_expected() {
+  local f p out=""
+  [[ -n "$EXPECT_FILES" ]] || return 0
+  for f in ${=EXPECT_FILES}; do
+    [[ "$f" == /* ]] && p="$f" || p="$HOST_REPO/$f"
+    [[ -s "$p" ]] || out="$out $f"
+  done
+  print -r -- "${out# }"
+}
+
+# Claude печатает время сброса окна подписки прямо в сообщении об отказе:
+#   "You've hit your session limit · resets 5:30am (UTC)"
+# Спать до этого времени вместо слепых RETRY_INTERVAL — единственный способ не
+# долбиться в закрытую дверь каждые 20 минут (16 пустых попыток за ночь на
+# 2026-09-04). Печатает секунды сна на stdout; молчит, если подсказки нет или
+# она в незнакомом часовом поясе — тогда зовущий берёт RETRY_INTERVAL.
+sleep_until_reset() {
+  local file="$1" hint hh mm ampm target now secs today
+  hint="$(grep -oiE 'resets [0-9]{1,2}(:[0-9]{2})? ?(am|pm) \(UTC\)' "$file" | tail -1)" || return 1
+  [[ -n "$hint" ]] || return 1
+  hh="${${hint#resets }%%[:ap ]*}"
+  mm="$(print -r -- "$hint" | grep -oE ':[0-9]{2}' | tr -d ':')"
+  [[ -n "$mm" ]] || mm=00
+  ampm="$(print -r -- "$hint" | grep -oiE '(am|pm) \(UTC\)' | cut -c1-2 | tr 'A-Z' 'a-z')"
+  (( hh = 10#$hh % 12 ))
+  [[ "$ampm" == "pm" ]] && (( hh += 12 ))
+  today="$(date -u +%Y-%m-%d)"
+  target="$(date -u -j -f '%Y-%m-%d %H:%M:%S' "$today $(printf '%02d' $hh):$mm:00" +%s 2>/dev/null)" || return 1
+  now="$(date +%s)"
+  # Время сброса уже прошло? Если только что (в пределах полутора часов) — окно
+  # вот-вот откроется или уже открылось, ждать сутки бессмысленно: пробуем через
+  # пять минут. Если давно — подсказка странная, пусть решает RETRY_INTERVAL.
+  if (( target <= now )); then
+    if (( now - target <= 5400 )); then
+      print -r -- 300      # окно вот-вот откроется или уже открылось
+      return 0
+    fi
+    (( target += 86400 ))  # прошло давно — значит названо завтрашнее время
+  fi
+  (( secs = target - now + 120 ))                # запас, чтобы не попасть в секунду сброса
+  (( secs < 60 )) && secs=60
+  (( secs > 28800 )) && return 1                 # больше 8 часов — не верим подсказке
+  print -r -- "$secs"
+}
 
 [[ -r "$PROMPT_FILE" ]] || { echo "FATAL: prompt not readable: $PROMPT_FILE"; exit 10; }
 if [[ ! -s "$TOKEN_FILE" ]]; then
@@ -61,6 +130,7 @@ export CLAUDE_CODE_OAUTH_TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
 
 mkdir -p "$STATE_DIR"
 
+STARTED_AT="$(date +%s)"
 log "==================== START $LABEL (docker) ===================="
 
 # ssh known_hosts (github + prod) so deploy/push work non-interactively.
@@ -96,6 +166,8 @@ ensure_docker() {
 
 attempt=1
 RC=1
+incomplete=0
+RESUME_REASON=""
 while (( attempt <= MAX_ATTEMPTS )); do
   ensure_docker || true   # failure here surfaces as a retryable exit=125 below
   # First attempt starts the task; later ones resume the conversation that the
@@ -111,6 +183,7 @@ while (( attempt <= MAX_ATTEMPTS )); do
     -e CLAUDE_CONFIG_DIR=/state \
     -e HOST_UID="$HOST_UID" \
     -e RESUME="$RESUME" \
+    -e RESUME_REASON="$RESUME_REASON" \
     -e GIT_AUTHOR_NAME=volokhonsky -e GIT_AUTHOR_EMAIL=volokhonsky@gmail.com \
     -e GIT_COMMITTER_NAME=volokhonsky -e GIT_COMMITTER_EMAIL=volokhonsky@gmail.com \
     -v "$HOST_REPO":/work \
@@ -134,10 +207,10 @@ while (( attempt <= MAX_ATTEMPTS )); do
       git config --system --add safe.directory /work || true
       cd /work
       # -w: keep the injected token/base-url across the privilege drop (never in argv).
-      exec su agent -w CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_BASE_URL,CLAUDE_CONFIG_DIR,RESUME -c '"'"'
+      exec su agent -w CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_BASE_URL,CLAUDE_CONFIG_DIR,RESUME,RESUME_REASON -c '"'"'
         cd /work
         if [ "$RESUME" = "1" ]; then
-          MSG="Продолжай прерванную работу с места остановки: сессия оборвалась по лимиту подписки.
+          MSG="Продолжай прерванную работу с места остановки. ${RESUME_REASON:-Сессия оборвалась по лимиту подписки.}
 Сначала проверь, что уже сделано (файлы на диске), и не переделывай готовое.
 Исходное задание ниже.
 
@@ -163,19 +236,53 @@ $(cat /prompt.txt)"
   cat "$ATTEMPT_LOG" >>"$LOG"
 
   if (( RC == 0 )); then
+    MISSING="$(missing_expected)"
+    if [[ -z "$MISSING" ]]; then
+      rm -f "$ATTEMPT_LOG"
+      log "attempt $attempt finished OK"
+      break
+    fi
     rm -f "$ATTEMPT_LOG"
-    log "attempt $attempt finished OK"
-    break
+    (( incomplete++ ))
+    log "attempt $attempt: агент вышел с кодом 0, но не записал:$MISSING"
+    if (( incomplete > INCOMPLETE_MAX )); then
+      log "недостающие файлы не появились после $INCOMPLETE_MAX просьб дописать — останавливаюсь"
+      RC=3
+      break
+    fi
+    if (( attempt == MAX_ATTEMPTS )); then
+      log "попытки исчерпаны ($MAX_ATTEMPTS), результат неполон — останавливаюсь"
+      RC=3
+      break
+    fi
+    RESUME_REASON="Ты вышел, но результат не записан: нет файлов$MISSING. Никакого фонового процесса у тебя нет — контейнер уничтожается вместе с тобой, поэтому незаписанное пропадает. Допиши недостающее сейчас и убедись, что файлы на диске."
+    log "прошу дописать недостающее (попытка ${incomplete} из ${INCOMPLETE_MAX})"
+    sleep 30
+    (( attempt++ ))
+    continue
   fi
 
   if grep -qiE "$RETRY_RE" "$ATTEMPT_LOG"; then
-    rm -f "$ATTEMPT_LOG"
     if (( attempt == MAX_ATTEMPTS )); then
+      rm -f "$ATTEMPT_LOG"
       log "transient failure again, attempts exhausted ($MAX_ATTEMPTS) — giving up"
       break
     fi
-    log "transient failure (exit=$RC: session limit or docker down); sleeping ${RETRY_INTERVAL}s, then resuming"
-    sleep "$RETRY_INTERVAL"
+    RESUME_REASON="Сессия оборвалась по лимиту подписки."
+    ELAPSED=$(( $(date +%s) - STARTED_AT ))
+    SLEEP="$(sleep_until_reset "$ATTEMPT_LOG")" || SLEEP=""
+    if [[ -n "$SLEEP" ]]; then
+      log "transient failure (exit=$RC); лимит сбросится через ${SLEEP}s — сплю до сброса, а не ${RETRY_INTERVAL}s"
+    else
+      SLEEP="$RETRY_INTERVAL"
+      log "transient failure (exit=$RC: session limit or docker down); времени сброса в ответе нет — сплю ${SLEEP}s, потом продолжаю"
+    fi
+    rm -f "$ATTEMPT_LOG"
+    if (( ELAPSED + SLEEP > MAX_WALL )); then
+      log "прогон идёт уже ${ELAPSED}s, сон ещё ${SLEEP}s не уложится в MAX_WALL=${MAX_WALL}s — останавливаюсь"
+      break
+    fi
+    sleep "$SLEEP"
     (( attempt++ ))
     continue
   fi
