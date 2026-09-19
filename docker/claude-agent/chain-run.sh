@@ -31,7 +31,19 @@ LOCK="$BASE/agent.lock"
 QUEUE="$BASE/agent.queue"
 LOG="$BASE/${LABEL}.log"
 PLIST="$HOME/Library/LaunchAgents/com.redpen.agent.${LABEL}.plist"
-RUN_AGENT="${RUN_AGENT:-$BASE/run-agent.sh}"
+# На ноутбуке раннер берётся из рабочей копии в $BASE; на devenv копии нет, и
+# раннер запускается прямо из репозитория, рядом с этим скриптом.
+if [[ -z "${RUN_AGENT:-}" ]]; then
+  if [[ -f "$BASE/run-agent.sh" ]]; then RUN_AGENT="$BASE/run-agent.sh"
+  else RUN_AGENT="${0:A:h}/run-agent.sh"; fi
+fi
+
+# LaunchAgent есть только на macOS. На Linux одноразовое задание ставится снаружи
+# (systemd-run, tmux — см. docs/local-docker-agent.md), снимать за собой нечего.
+unload_launch_agent() {
+  command -v launchctl >/dev/null 2>&1 || return 0
+  launchctl bootout "gui/$(id -u)/com.redpen.agent.${LABEL}" 2>/dev/null
+}
 
 export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.pyenv/shims:$PATH"
 
@@ -116,7 +128,7 @@ while true; do
   if (( waited >= MAX_WAIT )); then
     log "очередь не подошла за ${MAX_WAIT}s — этот запуск отменён"
     rm -f "$PLIST"
-    launchctl bootout "gui/$(id -u)/com.redpen.agent.${LABEL}" 2>/dev/null
+    unload_launch_agent
     exit 75
   fi
   sleep "$POLL"
@@ -134,6 +146,6 @@ cleanup
 if [[ -f "$PLIST" ]]; then
   rm -f "$PLIST"
   log "LaunchAgent снят (exit=$RC)"
-  launchctl bootout "gui/$(id -u)/com.redpen.agent.${LABEL}" 2>/dev/null
+  unload_launch_agent
 fi
 exit $RC

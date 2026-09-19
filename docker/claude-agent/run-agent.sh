@@ -31,11 +31,24 @@
 # no conversation to continue, the attempt falls back to a fresh start.
 # Any non-limit failure stops the loop — retrying a broken task is waste.
 #   RETRY_INTERVAL=600 MAX_ATTEMPTS=6 run-agent.sh ...   # override
+#
+# Платформы: macOS (ноутбук, Docker Desktop) и Linux (devenv, 45.82.56.27, с
+# 2026-09-19). Различия собраны в четырёх местах: разбор даты в
+# sleep_until_reset, подъём демона в ensure_docker, ssh-ключ для контейнера
+# (AGENT_SSH_KEY) и запуск под root (IS_SANDBOX, см. HOST_UID ниже).
 # ---------------------------------------------------------------------------
 set -u
 LABEL="${1:?usage: run-agent.sh <label> <prompt_file> [host_repo_dir]}"
 PROMPT_FILE="${2:?prompt_file required}"
-HOST_REPO="${3:-$HOME/Documents/redpen}"
+# Каталог проекта. Запущен прямо из репозитория (…/docker/claude-agent/run-agent.sh,
+# так на devenv) — корень берётся из собственного пути. Запущен из рабочей копии
+# в ~/.claude-agent-docker (так на ноутбуке) — прежнее ~/Documents/redpen.
+SELF_DIR="${0:A:h}"
+if [[ -z "${3:-}" && "${SELF_DIR:t}" == claude-agent && -f "${SELF_DIR:h:h}/CLAUDE.md" ]]; then
+  HOST_REPO="${SELF_DIR:h:h}"
+else
+  HOST_REPO="${3:-$HOME/Documents/redpen}"
+fi
 
 BASE="$HOME/.claude-agent-docker"
 LOG="$BASE/${LABEL}.log"
@@ -101,7 +114,12 @@ sleep_until_reset() {
   (( hh = 10#$hh % 12 ))
   [[ "$ampm" == "pm" ]] && (( hh += 12 ))
   today="$(date -u +%Y-%m-%d)"
-  target="$(date -u -j -f '%Y-%m-%d %H:%M:%S' "$today $(printf '%02d' $hh):$mm:00" +%s 2>/dev/null)" || return 1
+  local stamp="$today $(printf '%02d' $hh):$mm:00"
+  # GNU date (Linux) понимает -d, BSD date (macOS) — только -j -f. До 2026-09-19
+  # здесь был один BSD-вариант, и на Linux функция молча отдавала «подсказки нет».
+  target="$(date -u -d "$stamp" +%s 2>/dev/null)" \
+    || target="$(date -u -j -f '%Y-%m-%d %H:%M:%S' "$stamp" +%s 2>/dev/null)" \
+    || return 1
   now="$(date +%s)"
   # Время сброса уже прошло? Если только что (в пределах полутора часов) — окно
   # вот-вот откроется или уже открылось, ждать сутки бессмысленно: пробуем через
@@ -141,6 +159,29 @@ KH="$BASE/known_hosts"
 # unprivileged user created at start with the HOST uid — that also keeps files it
 # writes into the bind-mounted repo owned by us.
 HOST_UID="$(id -u)"
+# На devenv всё живёт под root, и «пользователь с uid хозяина» — тоже uid 0: claude
+# отказался бы работать. Завести другой uid нельзя — файлы в /root/projects/redpen
+# стали бы чужими и недоступными ему на запись. Поэтому под root отказ снимается
+# штатной переменной IS_SANDBOX=1: изоляцию здесь и так даёт контейнер --rm.
+IS_SANDBOX=0
+(( HOST_UID == 0 )) && IS_SANDBOX=1
+
+# ssh-ключ для контейнера. На ноутбуке раньше монтировался личный ключ владельца,
+# и это поведение сохранено. На Linux ~/.ssh/id_ed25519 — чужой ключ (на devenv это
+# deploy-key репозитория runpod), а агенту по его правилам ключ не нужен вовсе:
+# он не пушит и прод не трогает. Поэтому на Linux по умолчанию ключа нет.
+# AGENT_SSH_KEY=<путь> задаёт ключ явно, AGENT_SSH_KEY= (пусто) отключает.
+if [[ "$(uname -s)" == Darwin ]]; then
+  AGENT_SSH_KEY="${AGENT_SSH_KEY-$HOME/.ssh/id_ed25519}"
+else
+  AGENT_SSH_KEY="${AGENT_SSH_KEY-}"
+fi
+# Образ. Переопределяется для проверок на подменённом claude, чтобы не подсовывать
+# тестовый образ под именем настоящего.
+AGENT_IMAGE="${AGENT_IMAGE:-claude-agent:latest}"
+
+KEY_MOUNT=()
+[[ -n "$AGENT_SSH_KEY" && -r "$AGENT_SSH_KEY" ]] && KEY_MOUNT=(-v "$AGENT_SSH_KEY":/keys/id_ed25519:ro)
 
 # Scheduled runs can land while Docker Desktop is not up (the daemon is per-user and
 # does not autostart) — bring it up and wait, instead of failing on exit=125.
@@ -150,8 +191,13 @@ ensure_docker() {
     return 1
   fi
   docker info >/dev/null 2>&1 && return 0
-  log "docker daemon down — starting Docker Desktop"
-  open -ga Docker 2>/dev/null || return 1
+  if [[ "$(uname -s)" == Darwin ]]; then
+    log "docker daemon down — starting Docker Desktop"
+    open -ga Docker 2>/dev/null || return 1
+  else
+    log "docker daemon down — systemctl start docker"
+    systemctl start docker 2>/dev/null || return 1
+  fi
   local i
   for i in {1..60}; do          # up to ~5 minutes
     sleep 5
@@ -173,7 +219,8 @@ while (( attempt <= MAX_ATTEMPTS )); do
   # First attempt starts the task; later ones resume the conversation that the
   # limit cut short (RESUME=1 is read inside the container).
   if (( attempt == 1 )); then RESUME=0; else RESUME=1; fi
-  ATTEMPT_LOG="$(mktemp -t "agent-${LABEL}")"
+  # Шаблон с XXXXXX: GNU mktemp без него падает («too few X's»), BSD принимает оба.
+  ATTEMPT_LOG="$(mktemp "${TMPDIR:-/tmp}/agent-${LABEL}.XXXXXX")"
   log "-------- attempt $attempt/$MAX_ATTEMPTS (resume=$RESUME) --------"
 
   docker rm -f "claude-agent-${LABEL}" >/dev/null 2>&1 || true
@@ -182,6 +229,7 @@ while (( attempt <= MAX_ATTEMPTS )); do
     -e ANTHROPIC_BASE_URL=https://api.anthropic.com \
     -e CLAUDE_CONFIG_DIR=/state \
     -e HOST_UID="$HOST_UID" \
+    -e IS_SANDBOX="$IS_SANDBOX" \
     -e RESUME="$RESUME" \
     -e RESUME_REASON="$RESUME_REASON" \
     -e GIT_AUTHOR_NAME=volokhonsky -e GIT_AUTHOR_EMAIL=volokhonsky@gmail.com \
@@ -189,9 +237,9 @@ while (( attempt <= MAX_ATTEMPTS )); do
     -v "$HOST_REPO":/work \
     -v "$PROMPT_FILE":/prompt.txt:ro \
     -v "$STATE_DIR":/state \
-    -v "$HOME/.ssh/id_ed25519":/keys/id_ed25519:ro \
+    "${KEY_MOUNT[@]}" \
     -v "$KH":/keys/known_hosts \
-    claude-agent:latest \
+    "$AGENT_IMAGE" \
     bash -lc '
       set -e
       id -u agent >/dev/null 2>&1 || useradd -m -u "$HOST_UID" -s /bin/bash agent 2>/dev/null \
@@ -207,7 +255,7 @@ while (( attempt <= MAX_ATTEMPTS )); do
       git config --system --add safe.directory /work || true
       cd /work
       # -w: keep the injected token/base-url across the privilege drop (never in argv).
-      exec su agent -w CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_BASE_URL,CLAUDE_CONFIG_DIR,RESUME,RESUME_REASON -c '"'"'
+      exec su agent -w CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_BASE_URL,CLAUDE_CONFIG_DIR,IS_SANDBOX,RESUME,RESUME_REASON -c '"'"'
         cd /work
         if [ "$RESUME" = "1" ]; then
           MSG="Продолжай прерванную работу с места остановки. ${RESUME_REASON:-Сессия оборвалась по лимиту подписки.}
