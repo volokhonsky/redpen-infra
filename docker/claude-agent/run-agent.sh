@@ -214,11 +214,16 @@ attempt=1
 RC=1
 incomplete=0
 RESUME_REASON=""
+# RESUME_FIRST=1 — продолжить сохранённый разговор с первой же попытки, а не
+# начинать задание заново: для прогона, который остановили руками. Без этого
+# агент перечитал бы все правила и мог переписать уже готовые страницы.
+RESUME_FIRST="${RESUME_FIRST:-0}"
+[[ "$RESUME_FIRST" == 1 ]] && RESUME_REASON="Прогон был остановлен вручную."
 while (( attempt <= MAX_ATTEMPTS )); do
   ensure_docker || true   # failure here surfaces as a retryable exit=125 below
   # First attempt starts the task; later ones resume the conversation that the
   # limit cut short (RESUME=1 is read inside the container).
-  if (( attempt == 1 )); then RESUME=0; else RESUME=1; fi
+  if (( attempt == 1 )) && [[ "$RESUME_FIRST" != 1 ]]; then RESUME=0; else RESUME=1; fi
   # Шаблон с XXXXXX: GNU mktemp без него падает («too few X's»), BSD принимает оба.
   ATTEMPT_LOG="$(mktemp "${TMPDIR:-/tmp}/agent-${LABEL}.XXXXXX")"
   log "-------- attempt $attempt/$MAX_ATTEMPTS (resume=$RESUME) --------"
