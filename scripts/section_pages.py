@@ -424,7 +424,7 @@ def build_section_pages(doc_dir: str, source_dir: str, timestamp: str,
     def link_to(section: Dict[str, Any]) -> Tuple[str, str]:
         short = section["name"].split(".", 1)[0]          # «§ 2»
         if section.get("hasPage"):
-            return f"{SECTIONS_DIRNAME}/{section['id']}/", short
+            return f"{SECTIONS_DIRNAME}/{section['id']}/index.html", short
         return page_html.page_href(str(section["startPage"])), short
 
     numbered = [s for _, s in all_sections if str(s.get("name", "")).startswith("§")]

@@ -157,11 +157,11 @@ def test_toc_and_reader_page_link_to_the_section_page(tmp_path):
     page_html.build_pages(doc, "27.09.2026")
 
     toc = open(os.path.join(doc, "index.html"), encoding="utf-8").read()
-    assert 'href="sections/1/"' in toc
-    assert 'href="sections/2/"' not in toc
+    assert 'href="sections/1/index.html"' in toc
+    assert 'href="sections/2/index.html"' not in toc
 
     page6 = open(os.path.join(doc, "pages", "6", "index.html"), encoding="utf-8").read()
-    assert 'href="../../sections/1/"' in page6
+    assert 'href="../../sections/1/index.html"' in page6
     page8 = open(os.path.join(doc, "pages", "8", "index.html"), encoding="utf-8").read()
     assert "sections/" not in page8
 
@@ -180,3 +180,15 @@ def test_real_sources_build(tmp_path):
         assert parsed["theses"] and parsed["questions"], name
         for item in parsed["theses"] + parsed["questions"]:
             section_pages.rewrite_page_links(item["body"], labels, "../../")
+
+
+def test_links_to_section_pages_name_the_file_for_offline_use(tmp_path):
+    """С флешки (file://) ссылка на каталог не открывается -- нужен index.html."""
+    doc, src = _site(tmp_path, remarks=PUBLISHED_ON_6)
+    open(os.path.join(src, "2.md"), "w", encoding="utf-8").write(SOURCE)
+    written = section_pages.build_section_pages(doc, src, "27.09.2026")
+    page_html.build_pages(doc, "27.09.2026")
+    first = open(written[0], encoding="utf-8").read()
+    assert 'href="../../sections/2/index.html"' in first
+    page6 = open(os.path.join(doc, "pages", "6", "index.html"), encoding="utf-8").read()
+    assert 'sections/1/"' not in page6

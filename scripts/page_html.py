@@ -148,7 +148,7 @@ def section_href(section: Optional[Dict[str, Any]]) -> Optional[str]:
     """
     if not section or not section.get("hasPage") or not section.get("id"):
         return None
-    return f"sections/{section['id']}/"
+    return f"sections/{section['id']}/index.html"
 
 
 def _breadcrumbs(root: str, doc_rel: str, doc_title: str, located: Dict[str, Any], label: str) -> str:
