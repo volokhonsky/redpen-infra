@@ -18,6 +18,7 @@
 | `/` | титульная: выбор книги, статистика, блок блога | — |
 | `/blog/`, `/blog/<slug>/` | блог (`scripts/blog.py`) | — |
 | `<doc>/index.html` | оглавление книги (`page_html.render_toc`) | `legacy-page-redirect.js` |
+| `<doc>/sections/<id>/index.html` | страница параграфа: краткое содержание, пропагандистские тезисы, вопросы учителю (`scripts/section_pages.py`, исходник — `redpen-content/<doc>/sections/<id>.md`) | — |
 | `<doc>/pages/<label>/index.html` | страница разбора — основной и единственный путь читателя | `redpen-categories.js`, `redpen-markers.js`, `page-view.js` |
 
 Читательский путь **не делает ни одного сетевого запроса**. Замечания страницы
@@ -102,6 +103,7 @@ git redpen-publish ──▶ content-sync ──▶ тот же том, но К�
 | Роль | Файл |
 |---|---|
 | страницы читателя и оглавление | `scripts/page_html.py` |
+| страницы параграфов | `scripts/section_pages.py` + `templates/css/section-page.css` |
 | поведение страницы у читателя | `templates/js/page-view.js` |
 | геометрия и цвет маркеров (общие с редактором) | `templates/js/redpen-markers.js` |
 | фрейм с одним замечанием (общий с редактором и опросом) | `templates/js/redpen-preview.js` |
@@ -135,6 +137,12 @@ git redpen-publish ──▶ content-sync ──▶ тот же том, но К�
   аватар не читаются из токена вовсе. Нормативный документ —
   `docs/anonymity-model.md`, и ослабление схемы начинается с правки его, а не
   кода.
+- **Признак `hasPage` у параграфа в `metadata.json`** ставит сборка
+  (`section_pages.build_section_pages`) между `chapters.generate` и
+  `page_html.build_pages`. По нему оглавление и страницы учебника ставят
+  ссылку на страницу параграфа. Страницы учебника на проде перерисовывает API,
+  у которого нет `redpen-content`, поэтому признак хранится в манифесте, а не
+  вычисляется по наличию исходника.
 - **Каталоги `<doc>/remarks/` и `<doc>/pages/` принадлежат API** (uid 10001).
   content-sync исключает первый из rsync и восстанавливает владение обоими
   (`content-sync/entrypoint.sh`).

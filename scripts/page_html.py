@@ -139,6 +139,18 @@ def _heading(label: str, page_name: Optional[str]) -> str:
     return f"Страница {label}"
 
 
+def section_href(section: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Адрес страницы параграфа относительно <doc>/, если она есть.
+
+    Признак `hasPage` ставит section_pages.build_section_pages при сборке.
+    Страницы учебника на проде перерисовывает API, у которого нет исходников
+    параграфов, поэтому решение «есть ли страница» берётся из манифеста.
+    """
+    if not section or not section.get("hasPage") or not section.get("id"):
+        return None
+    return f"sections/{section['id']}/"
+
+
 def _breadcrumbs(root: str, doc_rel: str, doc_title: str, located: Dict[str, Any], label: str) -> str:
     crumbs = [
         f'<a href="{root}index.html">Мединский.нет</a>',
@@ -149,7 +161,11 @@ def _breadcrumbs(root: str, doc_rel: str, doc_title: str, located: Dict[str, Any
     if chapter:
         crumbs.append(f'<span>{_esc(chapter["name"])}</span>')
     if section:
-        crumbs.append(f'<span>{_esc(section["name"])}</span>')
+        href = section_href(section)
+        if href:
+            crumbs.append(f'<a href="{doc_rel}{href}">{_esc(section["name"])}</a>')
+        else:
+            crumbs.append(f'<span>{_esc(section["name"])}</span>')
     crumbs.append(f'<span aria-current="page">стр. {_esc(label)}</span>')
     return (
         '  <nav class="breadcrumbs" aria-label="Навигационная цепочка">\n    '
@@ -333,7 +349,7 @@ def render_page(
     <aside id="page-panel">
       <div id="panel-context">
         <h1 class="panel-context__title">{_esc(heading)}</h1>
-        {f'<p class="panel-context__section">{_esc(context_line)}</p>' if context_line else ''}
+        {_context_line_html(context_line, section_href(section), doc_rel)}
         <p class="panel-context__count">{_remarks_summary(len(published))}</p>
       </div>{panel_tags_block}
 {_panel_list(published)}
@@ -356,6 +372,17 @@ def render_page(
 </body>
 </html>
 """
+
+
+def _context_line_html(context_line: str, href: Optional[str], doc_rel: str) -> str:
+    if not context_line:
+        return ""
+    if href:
+        return (
+            f'<p class="panel-context__section"><a href="{doc_rel}{href}">{_esc(context_line)}</a>'
+            f' <a class="panel-context__section-more" href="{doc_rel}{href}">кратко, тезисы, вопросы учителю →</a></p>'
+        )
+    return f'<p class="panel-context__section">{_esc(context_line)}</p>'
 
 
 def _remarks_summary(total: int) -> str:
@@ -409,6 +436,7 @@ def render_toc(
             groups.append({
                 "chapter": (chapter or {}).get("name"),
                 "section": (section or {}).get("name"),
+                "section_href": section_href(section),
                 "pages": [],
             })
         groups[-1]["pages"].append((label, page.get("name"), counts.get(label, 0)))
@@ -420,7 +448,12 @@ def render_toc(
             last_chapter = group["chapter"]
             if last_chapter:
                 blocks.append(f'    <h2 class="toc-chapter">{_esc(last_chapter)}</h2>')
-        if group["section"]:
+        if group["section"] and group["section_href"]:
+            blocks.append(
+                f'    <h3 class="toc-section toc-section--page"><a href="{group["section_href"]}">{_esc(group["section"])}</a>'
+                f' <a class="toc-section__more" href="{group["section_href"]}">кратко, тезисы, вопросы учителю</a></h3>'
+            )
+        elif group["section"]:
             blocks.append(f'    <h3 class="toc-section">{_esc(group["section"])}</h3>')
         links = []
         for label, name, count in group["pages"]:

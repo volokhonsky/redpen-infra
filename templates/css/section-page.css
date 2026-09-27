@@ -1,0 +1,257 @@
+/*
+ * Страница параграфа (<doc>/sections/<id>/index.html): краткое содержание,
+ * пропагандистские тезисы, вопросы учителю. HTML собирает
+ * scripts/section_pages.py. Хлебные крошки, плашки страниц (.toc-page) и
+ * навигация внизу (.page-nav) берутся из page-panel.css.
+ */
+
+.section-page {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 3rem;
+  line-height: 1.55;
+  color: #222;
+}
+
+/* --- Шапка параграфа ---------------------------------------------------- */
+
+.section-hero {
+  margin-bottom: 2rem;
+}
+
+.section-hero__chapter {
+  margin: 0 0 0.3rem;
+  font-size: 0.85rem;
+  color: #DC143C;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.section-hero h1 {
+  margin: 0 0 0.5rem;
+  font-size: 1.8rem;
+  line-height: 1.25;
+}
+
+.section-hero__pages,
+.section-hero__updated {
+  margin: 0 0 0.25rem;
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.section-hero__updated {
+  color: #999;
+  font-size: 0.8rem;
+}
+
+.section-hero a,
+.section-prose a {
+  color: #c00;
+}
+
+/* Быстрый переход к блокам */
+.section-jump {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 1rem;
+}
+
+.section-jump a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.75rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 999px;
+  background: #fff;
+  color: #333;
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+
+.section-jump a:hover {
+  border-color: #DC143C;
+  color: #c00;
+}
+
+.section-jump__n {
+  font-size: 0.7rem;
+  color: #fff;
+  background: #DC143C;
+  border-radius: 999px;
+  padding: 0 0.35rem;
+  line-height: 1.4;
+}
+
+/* --- Блоки -------------------------------------------------------------- */
+
+.section-block {
+  margin: 0 0 2.5rem;
+  scroll-margin-top: 1rem;
+}
+
+.section-block > h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.3rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 2px solid #DC143C;
+}
+
+.section-block__lead {
+  margin: 0 0 1rem;
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.section-prose p {
+  margin: 0 0 0.75rem;
+}
+
+.section-prose p:last-child {
+  margin-bottom: 0;
+}
+
+.section-prose blockquote {
+  margin: 0 0 0.75rem;
+  padding: 0.1rem 0 0.1rem 0.9rem;
+  border-left: 3px solid #ddd;
+  color: #555;
+}
+
+.section-summary .section-prose {
+  font-size: 1.05rem;
+}
+
+/* --- Тезисы ------------------------------------------------------------- */
+
+.thesis-list,
+.question-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.thesis {
+  background: #fff;
+  border: 1px solid #eee;
+  border-left: 4px solid #DC143C;
+  border-radius: 4px;
+  padding: 0.9rem 1.1rem;
+  margin: 0 0 0.9rem;
+  scroll-margin-top: 1rem;
+}
+
+.thesis__title {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+  line-height: 1.35;
+}
+
+.thesis__num {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  background: #DC143C;
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: bold;
+}
+
+.thesis__body {
+  font-size: 0.95rem;
+  color: #333;
+}
+
+/* --- Вопросы учителю ---------------------------------------------------- */
+/* Отдельная сущность — и отдельный вид: карточка-листок, вопрос крупно,
+   пояснение мельче и под чертой. Вопрос можно показать на телефоне прямо
+   на уроке, поэтому он читается без пояснения. */
+
+.question {
+  background: #fffdf6;
+  border: 1px solid #efe6cc;
+  border-radius: 6px;
+  padding: 1rem 1.1rem;
+  margin: 0 0 1rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  scroll-margin-top: 1rem;
+}
+
+.question:target {
+  border-color: #DC143C;
+  box-shadow: 0 0 0 2px rgba(220, 20, 60, 0.2);
+}
+
+.question__text {
+  display: flex;
+  gap: 0.7rem;
+  align-items: baseline;
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: bold;
+  line-height: 1.4;
+  color: #1f2a36;
+}
+
+.question__anchor {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  border-radius: 50%;
+  border: 2px solid #1f2a36;
+  color: #1f2a36;
+  font-size: 0.85rem;
+  text-decoration: none;
+}
+
+.question__anchor:hover {
+  border-color: #DC143C;
+  color: #DC143C;
+}
+
+.question__context {
+  margin: 0.8rem 0 0 2.4rem;
+  padding-top: 0.7rem;
+  border-top: 1px dashed #e3d7b4;
+  font-size: 0.92rem;
+  color: #444;
+}
+
+.question__context-label {
+  margin: 0 0 0.35rem !important;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #9a8a5a;
+}
+
+@media (max-width: 600px) {
+  .section-hero h1 { font-size: 1.45rem; }
+  .question__context { margin-left: 0; }
+  .question__text { font-size: 1.05rem; }
+}
+
+/* --- Печать ------------------------------------------------------------- */
+/* Вопросы учителю естественно распечатать и взять на урок. */
+
+@media print {
+  header, .home-button, .breadcrumbs, .section-jump, .page-nav, .section-pages {
+    display: none !important;
+  }
+  body { background: #fff; }
+  .section-page { max-width: none; padding: 0; }
+  .thesis, .question { break-inside: avoid; box-shadow: none; }
+  .section-prose a { color: inherit; }
+}

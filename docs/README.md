@@ -102,6 +102,8 @@ redpen-content/<docId>/
   images_with_grid/   page_NNN.png # то же с координатной сеткой (в git не идёт)
   text/               page_NNN.json# извлечённый текст (сдвиг нумерации +1!)
   illustrations/                   # доп. иллюстрации (опционально)
+  sections/           <id>.md      # страница параграфа: краткое содержание,
+                                   # тезисы, вопросы учителю (section_pages.py)
   paragraphs_list.txt              # список параграфов (задания аннотатору)
   meta.json                        # метаданные (title, манифест страниц)
 ```
@@ -119,6 +121,8 @@ redpen-publish/
     index.html                     # оглавление документа (page_html.py)
     pages/<label>/index.html       # страница читателя: скан, панель, замечания
                                    # инлайновым блоком redpen-page-data
+    sections/<id>/index.html       # страница параграфа (section_pages.py;
+                                   # собирает только build_website, не API)
     metadata.json                  # копия meta.json + манифест страниц
     remarks/  page_NNN.json        # замечания (владелец — API, не сборка)
     images/                        # изображения + иллюстрации

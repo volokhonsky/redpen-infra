@@ -64,6 +64,19 @@
   color: #666;
 }
 
+.panel-context__section a {
+  color: #666;
+}
+
+/* Ссылка на страницу параграфа — появляется, когда она есть. */
+.panel-context__section-more {
+  display: inline-block;
+  margin-left: 0.2rem;
+  color: #c00 !important;
+  font-size: 0.8rem;
+  text-decoration: none;
+}
+
 .panel-context__count {
   margin: 0;
   font-size: 0.8rem;
@@ -288,6 +301,27 @@
   font-size: 1rem;
   font-weight: normal;
   color: #444;
+}
+
+.toc-section--page a {
+  color: #222;
+  text-decoration: none;
+}
+
+.toc-section--page a:hover {
+  color: #c00;
+}
+
+/* Пометка у параграфа, для которого есть отдельная страница. */
+.toc-section .toc-section__more {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  background: #fff0f3;
+  color: #c00;
+  font-size: 0.75rem;
+  vertical-align: middle;
 }
 
 .toc-pages {

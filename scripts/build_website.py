@@ -117,6 +117,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import blog as blog_builder  # noqa: E402  (после правки sys.path)
 import chapters  # noqa: E402
 import page_html  # noqa: E402
+import section_pages  # noqa: E402
 import sitemap  # noqa: E402
 
 def get_document_folders(specific_folders=None):
@@ -282,9 +283,20 @@ def generate_page_html(target_dir=None, document=None, specific_folders=None):
         paragraphs_path = os.path.join(project_root, 'redpen-content', doc, 'paragraphs_list.txt')
         try:
             chapters.generate(doc_dir, paragraphs_path)
+            # Между chapters.generate (он стирает отметки `hasPage`) и
+            # build_pages (ему они нужны для ссылок на страницы параграфов).
+            section_pages.build_section_pages(
+                doc_dir,
+                os.path.join(project_root, 'redpen-content', doc, section_pages.SECTIONS_DIRNAME),
+                current_timestamp,
+                auto_header=auto_hdr,
+            )
             page_html.build_pages(doc_dir, current_timestamp, auto_header=auto_hdr)
         except chapters.ChaptersError as e:
             print(f"Error building chapters for {doc}: {e}")
+            success = False
+        except section_pages.SectionPageError as e:
+            print(f"Error building section pages for {doc}: {e}")
             success = False
         except (OSError, ValueError, KeyError) as e:
             print(f"Error building per-page HTML for {doc}: {e}")
