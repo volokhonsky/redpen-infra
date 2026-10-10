@@ -844,10 +844,19 @@ def create_index_page(target_dir=None, specific_folders=None):
         # Add cover if available
         cover_html = ""
         if doc.get('icon'):
-            cover_html = f"""
+            cover_img = f"""<img src="{doc['id']}/{doc['icon']}" alt="Обложка: {_esc(doc['title'], quote=True)}" width="104">"""
+            # Без разбора оглавление книги пусто (в нём только страницы с
+            # опубликованными замечаниями), поэтому обложка никуда не ведёт.
+            if has_remarks:
+                cover_html = f"""
           <a class="document-card__cover" href="{doc['id']}/index.html">
-            <img src="{doc['id']}/{doc['icon']}" alt="Обложка: {_esc(doc['title'], quote=True)}" width="104">
+            {cover_img}
           </a>"""
+            else:
+                cover_html = f"""
+          <span class="document-card__cover">
+            {cover_img}
+          </span>"""
 
         subtitle_html = ""
         if doc.get('subtitle'):
@@ -869,11 +878,12 @@ def create_index_page(target_dir=None, specific_folders=None):
             button_html = f"""<a class="btn" href="{doc['id']}/index.html">Открыть разбор</a>"""
             card_class = "document-card"
         else:
-            # Книга уже опубликована постранично, но разбора ещё нет — честно
-            # говорим об этом и всё равно даём открыть сам учебник.
+            # Разбора ещё нет — честно говорим об этом. Ссылки в книгу нет:
+            # оглавление показывает только страницы с опубликованным разбором
+            # и было бы пустым. Сами страницы по прямым адресам открываются.
             stats_html = """
             <p class="document-card__stats">Разбор ещё готовится</p>"""
-            button_html = f"""<a class="btn btn--ghost" href="{doc['id']}/index.html">Смотреть страницы</a>"""
+            button_html = ""
             card_class = "document-card document-card--pending"
 
         html_content += f"""        <article class="{card_class}">{cover_html}

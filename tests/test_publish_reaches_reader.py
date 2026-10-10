@@ -210,3 +210,40 @@ def test_unwritable_pages_dir_does_not_break_json_publication(site):
             assert "новый текст" in f.read()
     finally:
         os.chmod(pages_dir, mode)
+
+
+def _toc(doc_dir):
+    with open(os.path.join(doc_dir, "index.html"), encoding="utf-8") as f:
+        return f.read()
+
+
+def test_first_published_remark_puts_the_page_into_the_toc(site):
+    """Оглавление показывает только разобранные страницы, поэтому публикатор
+    обязан перерисовать его сам — иначе принятое в /work/ замечание дождалось
+    бы следующей сборки сайта."""
+    db.upsert_remark_db(DOC, "006", "a1", "major", "первое", coord_x=1, coord_y=1,
+                        action="create")
+    publisher.publish_page(DOC, "006")
+    assert 'href="pages/6/index.html"' in _toc(site)
+    assert 'href="pages/8/index.html"' not in _toc(site)
+
+    db.upsert_remark_db(DOC, "008", "b1", "major", "второе", coord_x=1, coord_y=1,
+                        action="create")
+    publisher.publish_page(DOC, "008")
+    assert 'href="pages/8/index.html"' in _toc(site)
+    # Сосед перерисован: стрелка со стр. 6 перепрыгивает пустую стр. 7.
+    assert 'rel="next" href="../../pages/8/index.html"' in _page_html(site, "6")
+
+
+def test_unpublishing_the_last_remark_removes_the_page_from_the_toc(site):
+    db.upsert_remark_db(DOC, "006", "a1", "major", "первое", coord_x=1, coord_y=1,
+                        action="create")
+    db.upsert_remark_db(DOC, "008", "b1", "major", "второе", coord_x=1, coord_y=1,
+                        action="create")
+    publisher.publish_all()
+    assert 'href="pages/8/index.html"' in _toc(site)
+
+    db.set_status_db(DOC, "008", "b1", "draft")
+    publisher.publish_page(DOC, "008")
+    assert 'href="pages/8/index.html"' not in _toc(site)
+    assert 'rel="next"' not in _page_html(site, "6")

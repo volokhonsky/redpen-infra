@@ -441,6 +441,16 @@ def render_toc(
             })
         groups[-1]["pages"].append((label, page.get("name"), counts.get(label, 0)))
 
+    # В оглавлении только страницы с опубликованным разбором. Пустая страница
+    # по прямому адресу открывается, но читателя туда не зовём: оглавление,
+    # где разобрана каждая десятая страница, выглядит недоделанным, а за
+    # серой плашкой ничего нет. Раздел без страниц пропадает целиком, если у
+    # него нет своей страницы параграфа; глава — если не осталось ни одного
+    # раздела.
+    for group in groups:
+        group["pages"] = [p for p in group["pages"] if p[2]]
+    groups = [g for g in groups if g["pages"] or g["section_href"]]
+
     blocks = []
     last_chapter = None
     for group in groups:
@@ -455,14 +465,14 @@ def render_toc(
             )
         elif group["section"]:
             blocks.append(f'    <h3 class="toc-section">{_esc(group["section"])}</h3>')
+        if not group["pages"]:
+            continue
         links = []
         for label, name, count in group["pages"]:
             title_attr = f' title="{_esc(name, quote=True)}"' if name else ""
-            badge = f'<span class="toc-page__count">{count}</span>' if count else ""
-            cls = "toc-page" + ("" if count else " toc-page--empty")
             links.append(
-                f'<li><a class="{cls}" href="{page_href(label)}"{title_attr}>'
-                f'{_esc(name or label)}{badge}</a></li>'
+                f'<li><a class="toc-page" href="{page_href(label)}"{title_attr}>'
+                f'{_esc(name or label)}<span class="toc-page__count">{count}</span></a></li>'
             )
         blocks.append('    <ul class="toc-pages">' + "".join(links) + '</ul>')
 
@@ -526,6 +536,37 @@ def load_remarks(doc_dir: str, page_file: str) -> List[Dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
+def published_counts(doc_dir: str, pages: List[Dict[str, Any]]) -> Dict[str, int]:
+    """метка страницы -> число опубликованных замечаний на ней.
+
+    Нужно всем, кто решает, звать ли читателя на страницу: оглавлению и
+    стрелкам «предыдущая/следующая». Считается по файлам на диске — это
+    несколько сотен маленьких JSON, дешевле, чем держать счётчики в манифесте
+    и следить за их свежестью."""
+    counts: Dict[str, int] = {}
+    for page in pages:
+        label, page_file = str(page.get("label") or ""), page.get("file")
+        if not label or not page_file:
+            continue
+        counts[label] = sum(1 for a in load_remarks(doc_dir, page_file) if is_published(a))
+    return counts
+
+
+def neighbour_labels(pages: List[Dict[str, Any]], index: int,
+                     counts: Dict[str, int]) -> "tuple[Optional[str], Optional[str]]":
+    """Ближайшие страницы с опубликованным разбором слева и справа от `index`.
+
+    Стрелки ведут через пустые страницы насквозь: иначе с последней разобранной
+    страницы читатель уходил бы в череду сканов без единого замечания."""
+    def scan(rng) -> Optional[str]:
+        for j in rng:
+            label = str(pages[j].get("label") or "")
+            if label and counts.get(label):
+                return label
+        return None
+    return scan(range(index - 1, -1, -1)), scan(range(index + 1, len(pages)))
+
+
 #: Метка «последнее обновление» — с точностью до дня, не до минуты.
 #: Читателю нужна свежесть, а минуты складываются в публичное расписание правок:
 #: часы суток выдают часовой пояс, а при двух-трёх участниках — и людей.
@@ -575,7 +616,8 @@ def _write_page_preserving_stamp(out_path: str, html_text: str) -> bool:
 
 def build_single_page(doc_dir: str, page_file: str,
                       timestamp: Optional[str] = None,
-                      auto_header: Optional[str] = None) -> Optional[str]:
+                      auto_header: Optional[str] = None,
+                      counts: Optional[Dict[str, int]] = None) -> Optional[str]:
     """Перерисовать HTML одной страницы. Возвращает путь или None.
 
     Нужна публикатору API: просмотрщик читает замечания не из
@@ -586,6 +628,9 @@ def build_single_page(doc_dir: str, page_file: str,
     None означает «страницу отрисовать нечем» — нет манифеста или в нём нет
     такого файла. Это не ошибка: в `PUBLISH_DIR` может не быть собранного
     сайта (dev без тома), и падать из-за этого публикация не должна.
+
+    `counts` — результат published_counts(); передаётся, когда страниц
+    рисуется много подряд, чтобы не пересчитывать его на каждую.
     """
     metadata_path = os.path.join(doc_dir, "metadata.json")
     if not os.path.exists(metadata_path):
@@ -606,6 +651,10 @@ def build_single_page(doc_dir: str, page_file: str,
     if not label:
         return None
 
+    if counts is None:
+        counts = published_counts(doc_dir, pages)
+    prev_label, next_label = neighbour_labels(pages, index, counts)
+
     doc_id = os.path.basename(os.path.normpath(doc_dir))
     html_text = render_page(
         doc_id=doc_id,
@@ -615,8 +664,8 @@ def build_single_page(doc_dir: str, page_file: str,
         page_name=page.get("name"),
         remarks=load_remarks(doc_dir, page_file),
         located=locate_label(metadata.get("chapters") or [], label),
-        prev_label=str(pages[index - 1].get("label")) if index > 0 else None,
-        next_label=str(pages[index + 1].get("label")) if index + 1 < len(pages) else None,
+        prev_label=prev_label,
+        next_label=next_label,
         timestamp=timestamp or day_stamp(),
     )
 
@@ -625,6 +674,45 @@ def build_single_page(doc_dir: str, page_file: str,
     out_path = os.path.join(out_dir, "index.html")
     header = AUTO_HEADER if auto_header is None else auto_header
     _write_page_preserving_stamp(out_path, header + html_text)
+    return out_path
+
+
+def build_toc(doc_dir: str, timestamp: Optional[str] = None,
+              auto_header: Optional[str] = None,
+              counts: Optional[Dict[str, int]] = None) -> Optional[str]:
+    """Перерисовать оглавление книги — <doc>/index.html. Возвращает путь или None.
+
+    Пишут его двое, как и страницы: сборка и публикатор API. Второй нужен
+    потому, что оглавление показывает только страницы с опубликованным
+    разбором: приняли первое замечание на странице — она должна появиться в
+    оглавлении сразу, а не после следующей сборки.
+
+    None — рисовать нечем (нет манифеста), как у build_single_page."""
+    metadata_path = os.path.join(doc_dir, "metadata.json")
+    if not os.path.exists(metadata_path):
+        return None
+    with open(metadata_path, "r", encoding="utf-8") as f:
+        metadata = json.load(f)
+    pages = metadata.get("pages")
+    if not isinstance(pages, list) or not pages:
+        return None
+
+    doc_id = os.path.basename(os.path.normpath(doc_dir))
+    doc_title = metadata.get("title") or doc_id
+    if counts is None:
+        counts = published_counts(doc_dir, pages)
+    toc = render_toc(
+        doc_id=doc_id,
+        doc_title=doc_title,
+        description=metadata.get("description") or f"Постраничный разбор учебника «{doc_title}».",
+        pages=pages,
+        counts=counts,
+        chapter_list=metadata.get("chapters") or [],
+        timestamp=timestamp or day_stamp(),
+    )
+    out_path = os.path.join(doc_dir, "index.html")
+    header = AUTO_HEADER if auto_header is None else auto_header
+    _write_page_preserving_stamp(out_path, header + toc)
     return out_path
 
 
@@ -662,9 +750,9 @@ def build_pages(doc_dir: str, timestamp: str, auto_header: str = "") -> List[str
         )
 
     written = []
-    published_total = 0
-    indexable = 0
-    counts: Dict[str, int] = {}
+    counts = published_counts(doc_dir, pages)
+    published_total = sum(counts.values())
+    indexable = sum(1 for c in counts.values() if c)
     for i, page in enumerate(pages):
         label = str(page.get("label") or "")
         page_file = page.get("file")
@@ -672,13 +760,8 @@ def build_pages(doc_dir: str, timestamp: str, auto_header: str = "") -> List[str
             continue
 
         located = locate_label(chapter_list, label)
-
         remarks = load_remarks(doc_dir, page_file)
-        published = [a for a in remarks if is_published(a)]
-        published_total += len(published)
-        counts[label] = len(published)
-        if published:
-            indexable += 1
+        prev_label, next_label = neighbour_labels(pages, i, counts)
 
         out_dir = os.path.join(doc_dir, PAGES_DIRNAME, label)
         os.makedirs(out_dir, exist_ok=True)
@@ -692,8 +775,8 @@ def build_pages(doc_dir: str, timestamp: str, auto_header: str = "") -> List[str
             page_name=page.get("name"),
             remarks=remarks,
             located=located,
-            prev_label=str(pages[i - 1].get("label")) if i > 0 else None,
-            next_label=str(pages[i + 1].get("label")) if i + 1 < len(pages) else None,
+            prev_label=prev_label,
+            next_label=next_label,
             timestamp=timestamp,
         )
         _write_page_preserving_stamp(out_path, auto_header + html_text)
@@ -701,17 +784,7 @@ def build_pages(doc_dir: str, timestamp: str, auto_header: str = "") -> List[str
 
     # The contents page: without it every per-page file is an orphan that
     # nothing links to, and a crawler has no route into the book.
-    toc = render_toc(
-        doc_id=doc_id,
-        doc_title=doc_title,
-        description=metadata.get("description") or f"Постраничный разбор учебника «{doc_title}».",
-        pages=pages,
-        counts=counts,
-        chapter_list=chapter_list,
-        timestamp=timestamp,
-    )
-    with open(os.path.join(doc_dir, "index.html"), "w", encoding="utf-8") as f:
-        f.write(auto_header + toc)
+    build_toc(doc_dir, timestamp, auto_header=auto_header, counts=counts)
 
     print(
         f"[page_html] wrote {len(written)} per-page HTML files to {os.path.join(doc_dir, PAGES_DIRNAME)}; "

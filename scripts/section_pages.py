@@ -155,6 +155,14 @@ def rewrite_page_links(text: str, labels: Dict[str, str], doc_rel: str,
     Незнакомая метка страницы -- ошибка: это опечатка, и ссылка вела бы в 404.
     Незнакомый id замечания -- только предупреждение: сборка в свежий
     каталог идёт без замечаний (их кладёт API), и падать из-за этого нельзя.
+
+    Ссылка на неопубликованное замечание теряет `?only=` и ведёт на страницу
+    целиком, с предупреждением. `?only=` показывает и черновик, а со страницы
+    параграфа читатель не должен одним кликом попадать в непринятое. Ошибкой
+    это не сделано: тексты параграфов пишутся раньше приёмки замечаний, и
+    сборка не должна вставать, пока приёмка не закончена.
+    `known_remarks` — метка -> {id: опубликовано ли} (или просто множество id,
+    тогда статус не проверяется).
     """
     def repl(m: "re.Match[str]") -> str:
         label, remark_id = m.group(1), m.group(2)
@@ -162,10 +170,15 @@ def rewrite_page_links(text: str, labels: Dict[str, str], doc_rel: str,
             raise SectionPageError(f"ссылка на несуществующую страницу «{label}»")
         href = f"{doc_rel}{page_html.page_href(label)}"
         if remark_id:
-            if known_remarks is not None and warnings is not None:
-                ids = known_remarks.get(label)
-                if ids is not None and remark_id not in ids:
+            ids = known_remarks.get(label) if known_remarks is not None else None
+            if ids is not None and remark_id not in ids:
+                if warnings is not None:
                     warnings.append(f"замечания {remark_id} нет на стр. {label}")
+            elif isinstance(ids, dict) and not ids[remark_id]:
+                if warnings is not None:
+                    warnings.append(f"замечание {remark_id} на стр. {label} не опубликовано; "
+                                    f"ссылка ведёт на страницу целиком")
+                return f"({href})"
             href += f"?only={remark_id}"
         return f"({href})"
     return _PAGE_LINK_RE.sub(repl, text)
@@ -235,7 +248,8 @@ def render_section_page(
         jump.append(f'<a href="#theses">Тезисы <span class="section-jump__n">{len(theses)}</span></a>')
     if questions:
         jump.append(f'<a href="#questions">Вопросы учителю <span class="section-jump__n">{len(questions)}</span></a>')
-    jump.append('<a href="#pages">Страницы</a>')
+    if page_labels:
+        jump.append('<a href="#pages">Страницы</a>')
 
     first_label = page_labels[0][0] if page_labels else None
     read_link = (
@@ -294,7 +308,8 @@ def render_section_page(
         f'{f" title={chr(34)}{_esc(pname, quote=True)}{chr(34)}" if pname else ""}>{_esc(pname or label)}</a></li>'
         for label, pname in page_labels
     )
-    blocks.append(f"""    <section id="pages" class="section-block section-pages">
+    if pills:
+        blocks.append(f"""    <section id="pages" class="section-block section-pages">
       <h2>Страницы параграфа</h2>
       <ul class="toc-pages">{pills}</ul>
     </section>""")
@@ -371,16 +386,20 @@ def _iter_sections(chapter_list: List[Dict[str, Any]]):
             yield chapter, section
 
 
-def _load_known_remarks(doc_dir: str, pages: List[Dict[str, Any]]) -> Dict[str, set]:
-    """метка страницы -> id её замечаний; только для страниц, где файл есть."""
-    known: Dict[str, set] = {}
+def _load_known_remarks(doc_dir: str, pages: List[Dict[str, Any]]) -> Dict[str, Dict[str, bool]]:
+    """метка страницы -> {id замечания: опубликовано ли}; только для страниц,
+    где файл есть."""
+    known: Dict[str, Dict[str, bool]] = {}
     for page in pages:
         label, page_file = str(page.get("label") or ""), page.get("file")
         if not label or not page_file:
             continue
         path = os.path.join(doc_dir, "remarks", f"{page_file}.json")
         if os.path.exists(path):
-            known[label] = {str(r.get("id")) for r in page_html.load_remarks(doc_dir, page_file)}
+            known[label] = {
+                str(r.get("id")): page_html.is_published(r)
+                for r in page_html.load_remarks(doc_dir, page_file)
+            }
     return known
 
 
@@ -458,10 +477,18 @@ def build_section_pages(doc_dir: str, source_dir: str, timestamp: str,
             print(f"[section_pages] WARNING {sources[sid]}: {w}")
 
         start, end = section["startPage"], section.get("endPage") or section["startPage"]
+        # Только страницы с опубликованным разбором — то же правило, что у
+        # оглавления книги (page_html.render_toc). Если замечаний нет вовсе
+        # (сборка в свежий каталог), показываем все: иначе блок был бы пуст.
         page_labels = [
             (str(p["label"]), p.get("name")) for p in pages
             if str(p.get("label", "")).isdigit() and start <= int(p["label"]) <= end
         ]
+        if known_remarks:
+            page_labels = [
+                (label, pname) for label, pname in page_labels
+                if any((known_remarks.get(label) or {}).values())
+            ]
 
         idx = next((i for i, s in enumerate(numbered) if s is section), None)
         prev_link = link_to(numbered[idx - 1]) if idx else None

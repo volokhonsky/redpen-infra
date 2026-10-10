@@ -262,7 +262,25 @@ def test_index_page_lists_document_title(synthetic_project, tmp_path):
 
     index_html = (target / "index.html").read_text("utf-8")
     assert "Test Book" in index_html          # title from meta.json
-    assert f"{DOC}/index.html" in index_html   # link to the document
+    # Опубликованных замечаний нет: оглавление книги было бы пустым, поэтому
+    # карточка честно говорит «готовится» и в книгу не ведёт.
+    assert "Разбор ещё готовится" in index_html
+    assert f"{DOC}/index.html" not in index_html
+
+
+def test_index_page_links_a_document_with_published_remarks(synthetic_project, tmp_path):
+    build, _ = synthetic_project
+    target = tmp_path / "out"
+    build.publish_website_data(str(target))
+    remarks = target / DOC / "remarks"
+    remarks.mkdir(parents=True, exist_ok=True)
+    (remarks / "page_007.json").write_text(
+        '[{"id": "a1", "text": "x", "kind": "major"}]', encoding="utf-8")
+    build.create_index_page(str(target))
+
+    index_html = (target / "index.html").read_text("utf-8")
+    assert f"{DOC}/index.html" in index_html
+    assert "Разбор ещё готовится" not in index_html
 
 
 def test_count_published_remarks_ignores_drafts(tmp_path):

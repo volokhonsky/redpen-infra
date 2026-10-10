@@ -142,6 +142,68 @@ def _atomic_write_json(target: str, rendered: List[Dict[str, Any]]) -> None:
             os.remove(tmp_path)
 
 
+def _page_html():
+    """`page_html` или None. Импорт ленивый: модуль тянет за собой сборочные
+    (`blog`, `chapters`), и API не должен от них зависеть на старте."""
+    try:
+        import page_html
+    except Exception:
+        logger.warning("page_html is unavailable; reader pages will stay stale "
+                       "until the next site build")
+        return None
+    return page_html
+
+
+def _published_count(rendered: List[Dict[str, Any]]) -> int:
+    return sum(1 for item in rendered if not item.get("draft"))
+
+
+def _read_published_count(path: str) -> int:
+    """Сколько опубликованных замечаний в уже лежащем на диске файле страницы."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return 0
+    return _published_count(data) if isinstance(data, list) else 0
+
+
+def refresh_navigation(doc_id: str, page_num: str, toc_only: bool = False) -> None:
+    """Перерисовать оглавление и, если нужно, стрелки у соседей страницы.
+
+    Оглавление показывает только страницы с опубликованным разбором, а стрелки
+    «предыдущая/следующая» ведут к ближайшей такой странице. Поэтому, когда
+    страница становится пустой или перестаёт быть пустой, меняются оглавление
+    и две соседние разобранные страницы. Когда меняется только число
+    замечаний — одно оглавление (в нём стоит счётчик), `toc_only=True`.
+
+    Ошибки только в лог, как и у render_page_html: JSON уже записан."""
+    page_html = _page_html()
+    if page_html is None:
+        return
+    doc_dir = os.path.join(config.PUBLISH_DIR, doc_id)
+    try:
+        metadata_path = os.path.join(doc_dir, "metadata.json")
+        if not os.path.exists(metadata_path):
+            return
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            pages = json.load(f).get("pages") or []
+        counts = page_html.published_counts(doc_dir, pages)
+        page_html.build_toc(doc_dir, counts=counts)
+        if toc_only:
+            return
+        index = next((i for i, p in enumerate(pages) if p.get("file") == f"page_{page_num}"), None)
+        if index is None:
+            return
+        by_label = {str(p.get("label")): p.get("file") for p in pages}
+        for label in page_html.neighbour_labels(pages, index, counts):
+            if label and by_label.get(label):
+                page_html.build_single_page(doc_dir, by_label[label], counts=counts)
+    except Exception:
+        logger.error("refresh_navigation failed doc_id=%s page_num=%s",
+                     doc_id, page_num, exc_info=True)
+
+
 def render_page_html(doc_id: str, page_num: str) -> bool:
     """Перерисовать HTML страницы читателя. True, если файл записан.
 
@@ -154,13 +216,9 @@ def render_page_html(doc_id: str, page_num: str) -> bool:
     сайта (dev без тома, тесты) или страницы нет в манифесте. Публикация из-за
     этого падать не должна — запись в БД уже состоялась.
 
-    `page_html` импортируется лениво: он тянет за собой сборочные модули
-    (`blog`, `chapters`), и API не должен от них зависеть на старте."""
-    try:
-        import page_html
-    except Exception:
-        logger.warning("render_page_html: page_html is unavailable; "
-                       "reader pages will stay stale until the next site build")
+    `page_html` импортируется лениво, см. _page_html()."""
+    page_html = _page_html()
+    if page_html is None:
         return False
 
     doc_dir = os.path.join(config.PUBLISH_DIR, doc_id)
@@ -189,13 +247,21 @@ def publish_page(doc_id: str, page_num: str) -> bool:
 
     try:
         rendered = render_page_static(doc_id, page_num)
-        _atomic_write_json(_page_file_path(doc_id, page_num), rendered)
+        path = _page_file_path(doc_id, page_num)
+        before = _read_published_count(path)
+        _atomic_write_json(path, rendered)
 
         # HTML рисуется после JSON и намеренно не влияет на возвращаемое
         # значение: JSON — канон публикации, а страница читателя может
         # отсутствовать (нет собранного сайта в томе). Ошибку здесь мы хотим
         # видеть в логе, но не хотим ронять ею публикацию.
         render_page_html(doc_id, page_num)
+
+        after = _published_count(rendered)
+        if bool(before) != bool(after):
+            refresh_navigation(doc_id, page_num)
+        elif before != after:
+            refresh_navigation(doc_id, page_num, toc_only=True)
     except Exception:
         logger.error("publish_page failed doc_id=%s page_num=%s", doc_id, page_num, exc_info=True)
         return False
@@ -223,9 +289,59 @@ def publish_all() -> Dict[str, int]:
     try:
         pages = db.list_pages()
         failed = 0
+        # Два прохода, а не publish_page в цикле: стрелки и оглавление зависят
+        # от того, что опубликовано на *других* страницах. Пока JSON пишутся
+        # по одному, соседи ещё старые, и страница получила бы стрелки по
+        # устаревшим данным. Поэтому сначала все JSON, потом весь HTML с
+        # одним подсчётом на книгу, потом оглавление.
+        written = []
         for doc_id, page_num in pages:
-            if not publish_page(doc_id, page_num):
+            if not config.PUBLISH_DIR:
                 failed += 1
+                continue
+            try:
+                _atomic_write_json(_page_file_path(doc_id, page_num),
+                                   render_page_static(doc_id, page_num))
+                written.append((doc_id, page_num))
+            except Exception:
+                logger.error("publish_all: json failed doc_id=%s page_num=%s",
+                             doc_id, page_num, exc_info=True)
+                failed += 1
+        _render_all_html(written)
         return {"pages": len(pages), "failed": failed}
     finally:
         _publish_all_lock.release()
+
+
+def _render_all_html(pages: List[tuple]) -> None:
+    """Второй проход publish_all: HTML страниц и оглавление каждой книги.
+
+    Ошибки только в лог — как у render_page_html."""
+    page_html = _page_html()
+    if page_html is None:
+        return
+    by_doc: Dict[str, List[str]] = {}
+    for doc_id, page_num in pages:
+        by_doc.setdefault(doc_id, []).append(page_num)
+    for doc_id, page_nums in by_doc.items():
+        doc_dir = os.path.join(config.PUBLISH_DIR, doc_id)
+        try:
+            metadata_path = os.path.join(doc_dir, "metadata.json")
+            if not os.path.exists(metadata_path):
+                continue
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f).get("pages") or []
+            counts = page_html.published_counts(doc_dir, manifest)
+        except Exception:
+            logger.error("publish_all: counts failed doc_id=%s", doc_id, exc_info=True)
+            continue
+        for page_num in page_nums:
+            try:
+                page_html.build_single_page(doc_dir, f"page_{page_num}", counts=counts)
+            except Exception:
+                logger.error("publish_all: html failed doc_id=%s page_num=%s",
+                             doc_id, page_num, exc_info=True)
+        try:
+            page_html.build_toc(doc_dir, counts=counts)
+        except Exception:
+            logger.error("publish_all: toc failed doc_id=%s", doc_id, exc_info=True)

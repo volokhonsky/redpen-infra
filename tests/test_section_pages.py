@@ -107,6 +107,19 @@ def test_unknown_remark_id_is_a_warning_not_an_error():
     assert warnings and "nope" in warnings[0]
 
 
+def test_link_to_a_draft_loses_only_and_warns():
+    """?only= показывает и черновик, поэтому со страницы параграфа ссылка на
+    непринятое замечание ведёт на страницу целиком: там черновики скрыты."""
+    warnings = []
+    out = section_pages.rewrite_page_links(
+        "[a](p:6/d1) [b](p:6/a1)", {"6": "page_006"}, "../../",
+        {"6": {"d1": False, "a1": True}}, warnings)
+    assert "(../../pages/6/index.html)" in out
+    assert "?only=d1" not in out
+    assert "(../../pages/6/index.html?only=a1)" in out
+    assert warnings and "d1" in warnings[0]
+
+
 def test_build_writes_page_and_marks_metadata(tmp_path):
     doc, src = _site(tmp_path, remarks=PUBLISHED_ON_6)
     written = section_pages.build_section_pages(doc, src, "27.09.2026")

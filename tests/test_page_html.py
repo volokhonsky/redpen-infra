@@ -242,18 +242,96 @@ def test_rendered_page_pulls_no_json():
 
 # --- оглавление -----------------------------------------------------------
 
-def test_toc_links_every_page_and_shows_counts():
+def test_toc_lists_only_pages_with_published_remarks():
     pages = [{"file": "page_006", "label": "6"}, {"file": "page_007", "label": "7"}]
     html = page_html.render_toc(
         doc_id="testdoc", doc_title="Тестовый учебник", description="Описание",
         pages=pages, counts={"6": 0, "7": 3}, chapter_list=CHAPTERS, timestamp="16.08.2026",
     )
-    assert 'href="pages/6/index.html"' in html
     assert 'href="pages/7/index.html"' in html
     assert "§ 1. Раздел" in html
     assert '<span class="toc-page__count">3</span>' in html
-    # A page with nothing published is still reachable, just muted.
-    assert "toc-page--empty" in html
+    # Страница без опубликованного разбора в оглавление не попадает.
+    assert 'href="pages/6/index.html"' not in html
+    assert "toc-page--empty" not in html
+
+
+def test_toc_drops_empty_sections_and_chapters():
+    chapters = [
+        {"name": "Глава I", "startPage": 6, "endPage": 9, "sections": [
+            {"id": "1", "name": "§ 1. Первый", "startPage": 6, "endPage": 7},
+            {"id": "2", "name": "§ 2. Второй", "startPage": 8, "endPage": 9},
+        ]},
+        {"name": "Глава II", "startPage": 10, "endPage": 11, "sections": [
+            {"id": "3", "name": "§ 3. Третий", "startPage": 10, "endPage": 11},
+        ]},
+    ]
+    pages = [{"file": f"page_{n:03d}", "label": str(n)} for n in range(6, 12)]
+    html = page_html.render_toc(
+        doc_id="testdoc", doc_title="Т", description="О", pages=pages,
+        counts={"6": 2}, chapter_list=chapters, timestamp="10.10.2026",
+    )
+    assert "§ 1. Первый" in html
+    assert "§ 2. Второй" not in html
+    assert "Глава II" not in html
+
+
+def test_toc_keeps_a_section_page_even_without_published_pages():
+    chapters = [{"name": "Глава I", "startPage": 6, "endPage": 9, "sections": [
+        {"id": "1", "name": "§ 1. Первый", "startPage": 6, "endPage": 9, "hasPage": True},
+    ]}]
+    pages = [{"file": f"page_{n:03d}", "label": str(n)} for n in range(6, 10)]
+    html = page_html.render_toc(
+        doc_id="testdoc", doc_title="Т", description="О", pages=pages,
+        counts={}, chapter_list=chapters, timestamp="10.10.2026",
+    )
+    assert 'href="sections/1/index.html"' in html
+    assert "toc-pages" not in html
+
+
+def test_neighbour_labels_skip_pages_without_published_remarks():
+    pages = [{"file": f"page_{n:03d}", "label": str(n)} for n in range(6, 12)]
+    counts = {"6": 1, "9": 2}
+    assert page_html.neighbour_labels(pages, 2, counts) == ("6", "9")   # стр. 8
+    assert page_html.neighbour_labels(pages, 3, counts) == ("6", None)  # стр. 9
+    assert page_html.neighbour_labels(pages, 0, counts) == (None, "9")  # стр. 6
+
+
+def _write_doc(tmp_path, remarks_by_file):
+    doc = tmp_path / "testdoc"
+    (doc / "remarks").mkdir(parents=True)
+    pages = [{"file": f"page_{n:03d}", "label": str(n)} for n in range(6, 12)]
+    (doc / "metadata.json").write_text(json.dumps(
+        {"title": "Т", "pages": pages, "chapters": CHAPTERS}, ensure_ascii=False), encoding="utf-8")
+    for page_file, items in remarks_by_file.items():
+        (doc / "remarks" / f"{page_file}.json").write_text(json.dumps(items), encoding="utf-8")
+    return doc
+
+
+def test_page_arrows_jump_over_empty_pages(tmp_path):
+    doc = _write_doc(tmp_path, {
+        "page_006": [{"id": "a", "text": "x", "kind": "major"}],
+        "page_007": [{"id": "d", "text": "x", "kind": "major", "draft": True}],
+        "page_009": [{"id": "b", "text": "x", "kind": "major"}],
+    })
+    page_html.build_pages(str(doc), "10.10.2026")
+    six = (doc / "pages" / "6" / "index.html").read_text("utf-8")
+    nine = (doc / "pages" / "9" / "index.html").read_text("utf-8")
+    assert 'rel="next" href="../../pages/9/index.html"' in six
+    assert 'rel="prev"' not in six
+    assert 'rel="prev" href="../../pages/6/index.html"' in nine
+    assert 'rel="next"' not in nine
+    toc = (doc / "index.html").read_text("utf-8")
+    assert 'href="pages/6/index.html"' in toc and 'href="pages/9/index.html"' in toc
+    # На стр. 7 только черновик — в оглавление она не попадает.
+    assert 'href="pages/7/index.html"' not in toc
+
+
+def test_build_toc_writes_contents_page(tmp_path):
+    doc = _write_doc(tmp_path, {"page_008": [{"id": "a", "text": "x", "kind": "major"}]})
+    assert page_html.build_toc(str(doc)) == str(doc / "index.html")
+    toc = (doc / "index.html").read_text("utf-8")
+    assert 'href="pages/8/index.html"' in toc
 
 
 # --- sitemap --------------------------------------------------------------

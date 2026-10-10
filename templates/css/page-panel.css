@@ -353,12 +353,6 @@
   background: #fff6f7;
 }
 
-/* Страницы без опубликованного разбора видно, но они не притягивают взгляд. */
-.toc-page--empty {
-  color: #aaa;
-  background: #fafafa;
-}
-
 .toc-page__count {
   font-size: 0.7rem;
   color: #fff;
